@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/proseco-gold.svg">
+    <img src="assets/proseco-green.svg" width="128" alt="proseco logo">
+  </picture>
+</p>
+
 # proseco
 
 Proactive security operations for a GitHub organisation.
