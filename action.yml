@@ -1,0 +1,38 @@
+name: proseco
+description: Keep one GitHub issue per repository listing its critical and high vulnerabilities that have a fix
+
+inputs:
+  config:
+    description: Path to the proseco config file, relative to the workspace
+    required: true
+  read-token:
+    description: Token that can read Dependabot alerts across the org and issues in the tickets repo
+    required: true
+  write-token:
+    description: Token that can write issues in the tickets repo, and add them to the project when one is configured
+    required: true
+  azure-subscription-id:
+    description: Subscription to read Defender findings from; required when the config enables the defender source, after azure/login
+    required: false
+    default: ""
+  dry-run:
+    description: Print the plan and write nothing
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "24"
+
+    - name: Raise findings as tickets
+      shell: bash
+      env:
+        PROSECO_CONFIG: ${{ inputs.config }}
+        GH_READ_TOKEN: ${{ inputs.read-token }}
+        GH_WRITE_TOKEN: ${{ inputs.write-token }}
+        AZURE_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id }}
+        PROSECO_DRY_RUN: ${{ inputs.dry-run }}
+      run: node "$GITHUB_ACTION_PATH/src/ticketer/main.ts"

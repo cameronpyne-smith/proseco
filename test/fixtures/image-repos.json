@@ -1,0 +1,5 @@
+{
+  "acme-api": "acme-api",
+  "billing-api": "acme-billing",
+  "sync-worker": "acme-sync"
+}

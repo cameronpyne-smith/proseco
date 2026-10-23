@@ -1,0 +1,527 @@
+[
+  {
+    "dependency": {
+      "manifest_path": "uv.lock",
+      "package": {
+        "ecosystem": "pip",
+        "name": "certifi"
+      },
+      "version_requirement": "= 2026.1.4"
+    },
+    "number": 1,
+    "repository": {
+      "full_name": "acme-org/acme-assistant",
+      "name": "acme-assistant"
+    },
+    "security_advisory": {
+      "cve_id": null,
+      "ghsa_id": "GHSA-6q48-6c7w-9gw2",
+      "severity": "critical"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "2026.10.19"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "certifi"
+      },
+      "severity": "critical"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "uv.lock",
+      "package": {
+        "ecosystem": "pip",
+        "name": "mcp"
+      },
+      "version_requirement": "= 1.26.0"
+    },
+    "number": 2,
+    "repository": {
+      "full_name": "acme-org/acme-assistant",
+      "name": "acme-assistant"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-59951",
+      "ghsa_id": "GHSA-84m7-p3x7-pcfv",
+      "severity": "medium"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "1.30.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "mcp"
+      },
+      "severity": "medium"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "uv.lock",
+      "package": {
+        "ecosystem": "pip",
+        "name": "urllib3"
+      },
+      "version_requirement": "= 2.6.3"
+    },
+    "number": 3,
+    "repository": {
+      "full_name": "acme-org/acme-assistant",
+      "name": "acme-assistant"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-97689",
+      "ghsa_id": "GHSA-vxq7-64xx-v4gw",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "2.8.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "urllib3"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "uv.lock",
+      "package": {
+        "ecosystem": "pip",
+        "name": "urllib3"
+      },
+      "version_requirement": "= 2.6.3"
+    },
+    "number": 4,
+    "repository": {
+      "full_name": "acme-org/acme-assistant",
+      "name": "acme-assistant"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-97687",
+      "ghsa_id": "GHSA-8988-9cw3-xx77",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "2.8.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "urllib3"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "tools/requirements.txt",
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "version_requirement": "= 12.3.0"
+    },
+    "number": 5,
+    "repository": {
+      "full_name": "acme-org/acme-reports",
+      "name": "acme-reports"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-112397",
+      "ghsa_id": "GHSA-58r4-6rv3-gfh8",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "13.0.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "tools/requirements.txt",
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "version_requirement": "= 12.3.0"
+    },
+    "number": 6,
+    "repository": {
+      "full_name": "acme-org/acme-reports",
+      "name": "acme-reports"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-112400",
+      "ghsa_id": "GHSA-65qm-jvmh-6pqg",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "13.0.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "tools/requirements.txt",
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "version_requirement": "= 12.3.0"
+    },
+    "number": 7,
+    "repository": {
+      "full_name": "acme-org/acme-reports",
+      "name": "acme-reports"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-112899",
+      "ghsa_id": "GHSA-vx6w-vv9f-6gvg",
+      "severity": "medium"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "13.0.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "severity": "medium"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "tools/requirements.txt",
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "version_requirement": "= 12.3.0"
+    },
+    "number": 8,
+    "repository": {
+      "full_name": "acme-org/acme-reports",
+      "name": "acme-reports"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-112897",
+      "ghsa_id": "GHSA-q45j-58j2-45rg",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "13.0.0"
+      },
+      "package": {
+        "ecosystem": "pip",
+        "name": "Pillow"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "pbkdf2"
+      },
+      "version_requirement": "3.1.5"
+    },
+    "number": 9,
+    "repository": {
+      "full_name": "acme-org/acme-e2e",
+      "name": "acme-e2e"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-102414",
+      "ghsa_id": "GHSA-477h-4r7f-fvrx",
+      "severity": "medium"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "3.1.7"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "pbkdf2"
+      },
+      "severity": "medium"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "braces"
+      },
+      "version_requirement": "3.0.3"
+    },
+    "number": 10,
+    "repository": {
+      "full_name": "acme-org/acme-e2e",
+      "name": "acme-e2e"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-93687",
+      "ghsa_id": "GHSA-vfj7-8cjw-p6xm",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": null,
+      "package": {
+        "ecosystem": "npm",
+        "name": "braces"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "version_requirement": "1.1.12"
+    },
+    "number": 11,
+    "repository": {
+      "full_name": "acme-org/acme-e2e",
+      "name": "acme-e2e"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-102278",
+      "ghsa_id": "GHSA-qhr7-859c-m2p7",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "1.1.20"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "version_requirement": "2.0.2"
+    },
+    "number": 12,
+    "repository": {
+      "full_name": "acme-org/acme-e2e",
+      "name": "acme-e2e"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-102278",
+      "ghsa_id": "GHSA-qhr7-859c-m2p7",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "2.1.6"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "version_requirement": "1.1.12"
+    },
+    "number": 13,
+    "repository": {
+      "full_name": "acme-org/acme-e2e",
+      "name": "acme-e2e"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-102276",
+      "ghsa_id": "GHSA-6j4f-fj2g-mc7p",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "1.1.19"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "brace-expansion"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "source-map-js"
+      },
+      "version_requirement": "1.2.1"
+    },
+    "number": 14,
+    "repository": {
+      "full_name": "acme-org/acme-help",
+      "name": "acme-help"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-93749",
+      "ghsa_id": "GHSA-68fv-2mgg-jv7q",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "1.2.2"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "source-map-js"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "nanoid"
+      },
+      "version_requirement": "3.3.11"
+    },
+    "number": 15,
+    "repository": {
+      "full_name": "acme-org/acme-help",
+      "name": "acme-help"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-73086",
+      "ghsa_id": "GHSA-xwg4-73v4-xw9w",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "3.3.12"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "nanoid"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "postcss"
+      },
+      "version_requirement": "8.5.6"
+    },
+    "number": 16,
+    "repository": {
+      "full_name": "acme-org/acme-help",
+      "name": "acme-help"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-69153",
+      "ghsa_id": "GHSA-fxqj-rqcc-2cmp",
+      "severity": "medium"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "8.5.23"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "postcss"
+      },
+      "severity": "medium"
+    },
+    "state": "open"
+  },
+  {
+    "dependency": {
+      "manifest_path": "package-lock.json",
+      "package": {
+        "ecosystem": "npm",
+        "name": "postcss"
+      },
+      "version_requirement": "8.5.6"
+    },
+    "number": 17,
+    "repository": {
+      "full_name": "acme-org/acme-help",
+      "name": "acme-help"
+    },
+    "security_advisory": {
+      "cve_id": "CVE-2026-73646",
+      "ghsa_id": "GHSA-r28c-9q8g-f849",
+      "severity": "high"
+    },
+    "security_vulnerability": {
+      "first_patched_version": {
+        "identifier": "8.5.18"
+      },
+      "package": {
+        "ecosystem": "npm",
+        "name": "postcss"
+      },
+      "severity": "high"
+    },
+    "state": "open"
+  }
+]
