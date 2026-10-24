@@ -1,7 +1,7 @@
 import { dirname } from "node:path/posix";
 import type { TicketRow } from "../core/ticket.ts";
 import type { Advisory } from "./advisories.ts";
-import { ecosystemFor } from "./ecosystems/ecosystem.ts";
+import { ecosystemFor, type Ecosystem } from "./ecosystems/ecosystem.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
 import { bodyHash, decide, type Attempt, type Decision } from "./state.ts";
 
@@ -43,22 +43,23 @@ function sibling(lockfile: string, file: string): string {
   return directory === "." ? file : `${directory}/${file}`;
 }
 
+export async function declaredToolchain(ecosystem: Ecosystem, lockfile: string, readFile: (path: string) => Promise<string | null>): Promise<string | null> {
+  const files: Record<string, string> = {};
+  for (const file of ecosystem.toolchainFiles) {
+    const beside = sibling(lockfile, file);
+    const text = (await readFile(beside)) ?? (beside === file ? null : await readFile(file));
+    if (text !== null) files[file] = text;
+  }
+  return ecosystem.toolchainVersion(files);
+}
+
 export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
   const hash = bodyHash(input.ticket.body);
   const units: DryRunReport["units"] = [];
   for (const unit of planUnits(input.rows, input.org)) {
     const ecosystem = ecosystemFor(unit.source);
     const lockfile = ecosystem ? await input.readFile(unit.source) : null;
-    let toolchain: string | null = null;
-    if (ecosystem) {
-      const files: Record<string, string> = {};
-      for (const file of ecosystem.toolchainFiles) {
-        const beside = sibling(unit.source, file);
-        const text = (await input.readFile(beside)) ?? (beside === file ? null : await input.readFile(file));
-        if (text !== null) files[file] = text;
-      }
-      toolchain = ecosystem.toolchainVersion(files);
-    }
+    const toolchain = ecosystem ? await declaredToolchain(ecosystem, unit.source, input.readFile) : null;
     const fixes: DryRunReport["units"][number]["fixes"] = [];
     for (const fix of unit.fixes) {
       const rows = [];

@@ -9,6 +9,7 @@
     "ticketer": "node src/ticketer/main.ts",
     "fixer": "node src/fixer/main.ts",
     "test": "node --test \"test/*.test.ts\"",
+    "test:docker": "PROSECO_DOCKER_TESTS=1 node --test test/sandbox.integration.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

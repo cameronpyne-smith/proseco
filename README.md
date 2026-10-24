@@ -62,7 +62,9 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
     "bot": "acme-proseco",
     "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678 },
     "cloneDir": "/var/lib/proseco/clones",
-    "stateFile": "/var/lib/proseco/state.json"
+    "stateFile": "/var/lib/proseco/state.json",
+    "proxy": { "allow": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"] },
+    "sandbox": { "memory": "8g", "cpus": 4 }
   }
 }
 ```
@@ -81,6 +83,8 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 | `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `bot`, `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
 | `fixer.cloneDir` | Directory holding the fixer's bare clones, one `<repo>.git` each. |
 | `fixer.stateFile` | JSON file recording each ticket's last attempt. |
+| `fixer.proxy.allow` | Optional. Hostnames the sandbox proxy lets a container reach: exact names, or `*.suffix` for subdomains only (it does not match the bare suffix). A configured list replaces the default, which is `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.nuget.org` and `*.nuget.org`. It must not be empty. |
+| `fixer.sandbox` | Optional `{ memory, cpus }` for the repository container. `memory` is a Docker size such as `8g` or `512m`, `cpus` a positive number. Defaults to `8g` and `4`. |
 
 Unknown keys are rejected, so a misspelt key fails the run instead of being ignored.
 
@@ -156,9 +160,31 @@ All commands need `PROSECO_CONFIG`. Credentials are one of:
 
 Git runs with no system or user configuration and no credential helper. The token reaches it through the environment for a single command and is never written to a clone.
 
-The sandbox, agent and pull request steps are next. See `docs/fixer.md`.
+- `npm run fixer -- sandbox <repo> <lockfile path> -- <command...>`: fetches the repository into the clone store, makes a worktree at the default branch head, and picks an image from the lockfile's ecosystem and declared toolchain (`proseco/node:<major>` for npm, `proseco/python:<major.minor>` for uv and requirements; a declaration it cannot read falls back to a current LTS). It builds the image if its tag does not exist, starts the sandbox, runs the command with a 10 minute timeout, prints the exit code and output, then removes the containers, network and worktree. It needs `contents: read` credentials like the dry run, and Docker.
+- `npm run fixer -- sandbox --sweep`: removes every container and network labelled `proseco.attempt` that is more than an hour old, for leftovers from a crashed run.
+
+The agent and pull request steps are next. See `docs/fixer.md`.
 - **Package managers will run only inside a throwaway container**, with scripts and builds disabled.
 - **The model reads repository files only from git objects or the container.**
+
+## The sandbox
+
+Repository code only runs in a throwaway container with no route to the internet except a proxy of our own.
+
+- A per-attempt Docker network `proseco-<attempt>` is created with `--internal`, so it has no gateway.
+- The proxy container (`proseco/proxy:<git short sha, or dev>`, built from `src/fixer/sandbox/proxy.ts` alone) sits on that network and on the default bridge. The repository container sits on the internal network only and reaches the proxy by name on port 3128.
+- The proxy is dependency-free Node (`node src/fixer/sandbox/proxy.ts --listen 0.0.0.0:3128 --allow host1,*.suffix`). It tunnels `CONNECT <allowed host>:443`. It answers 403 with the host named in the body to any other host or port, and to plain HTTP, so nothing leaves in clear. A malformed request gets 400 and the connection closes. It logs one line per request, `allowed|refused <host>:<port> bytes=<n>`.
+- The repository container runs as the daemon's uid and gid with the worktree at `/work`, `HOME=/tmp/home` on an `exec` tmpfs, all capabilities dropped, `no-new-privileges`, 2048 pids, and the configured memory and cpus. `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms are set, `NO_PROXY` is empty, and `NODE_USE_ENV_PROXY=1` makes Node 24's `fetch` honour the proxy. Commands run with `docker exec` under `timeout`, which kills the command's whole process group when the limit passes; output beyond 1 MiB per stream is dropped with a note.
+- Every container and network carries the label `proseco.attempt=<id>`. `stop()` removes both containers and the network even after a failed step.
+- The worktree's `.git` file points at the bare clone, which is not mounted, so git commands that need history do not work inside the container.
+
+Images live in `src/fixer/sandbox/images/`: `node` (`node:<major>-bookworm-slim`), `python` (`python:<major.minor>-slim-bookworm` plus uv, whose version is pinned once in `images.ts`) and `dotnet` (not used by any ecosystem yet). Each has git and `WORKDIR /work`.
+
+The unit tests need no Docker. The integration test builds the node image, installs a fixture lockfile through the proxy, and checks that other hosts and raw IPs are unreachable:
+
+```
+npm run test:docker
+```
 
 ## Development
 

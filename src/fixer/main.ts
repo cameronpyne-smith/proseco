@@ -6,10 +6,12 @@ import { isProsecoTicket, markerKey, parseRawTable } from "../core/ticket.ts";
 import { Advisories } from "./advisories.ts";
 import { dryRunReport } from "./dryrun.ts";
 import { GitStore } from "./git.ts";
+import { formatOutcome, runInSandbox } from "./sandbox/command.ts";
+import { Sandbox } from "./sandbox/sandbox.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters } from "./requests.ts";
 import { lastAttempt, lastCommentId, loadState, saveState } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> --dry-run";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> --dry-run | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -49,12 +51,28 @@ async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProv
   console.log(JSON.stringify(report, null, 2));
 }
 
+async function sandboxCommand(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, args: string[]): Promise<void> {
+  if (args[0] === "--sweep") {
+    const swept = await Sandbox.sweep();
+    console.log(`removed ${swept.containers} containers and ${swept.networks} networks`);
+    return;
+  }
+  const separator = args.indexOf("--");
+  const [repo, lockfile] = args.slice(0, separator === -1 ? args.length : separator);
+  const command = separator === -1 ? [] : args.slice(separator + 1);
+  if (!repo || !lockfile || command.length === 0) throw new Error(USAGE);
+  const token = await tokens({ repositories: [repo], permissions: { contents: "read" } });
+  const store = new GitStore({ cloneDir: config.fixer.cloneDir, remoteUrl: (name) => `https://github.com/${config.org}/${name}.git`, token });
+  console.log(formatOutcome(await runInSandbox({ store, repo, lockfile, command, fixer: config.fixer })));
+}
+
 async function main(args: string[]): Promise<void> {
   const config = loadConfig(requireEnv("PROSECO_CONFIG"));
   if (!config.fixer) throw new Error("the config has no fixer section");
   const fixer = config.fixer;
   const [command, argument, flag] = args;
   const tokens = tokenProvider(process.env, fixer.app);
+  if (command === "sandbox") return sandboxCommand({ ...config, fixer }, tokens, args.slice(1));
   const ticketToken = await tokens({
     repositories: [config.tickets.repo],
     permissions: { issues: command === "find" ? "write" : "read" },
