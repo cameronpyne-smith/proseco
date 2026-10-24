@@ -41,7 +41,7 @@ This document is the design. The README describes what is built.
 3. **Fetch.** Update the bare clone and make a local clone at the default branch head.
 4. **Sandbox.** Pick the image from the lockfile's ecosystem and the repository's declared toolchain version. Start the proxy container and the repository container on the internal network, with the clone mounted at `/work`.
 5. **Agent.** For each PR unit, run the tool loop with the unit's rows, advisories, parent chains and ecosystem notes. Tools: `read_file`, `list_dir`, `search`, `write_file`, `edit_file` (on the host, confined to the clone), `run` (a command in the container, with a timeout and captured output) and `finish`. The loop ends on `finish`, the time budget, the tool-call cap, or a model that stops calling tools. `outline` and `apply_patch` are not built.
-6. **Check.** Keep only the manifest and lockfile changes. Parse the resulting lockfile. Every package from the unit's rows must be at or above its fixed-in version, or gone. Otherwise the unit produces no PR and the comment says why. The harness then runs `npm ci` and `npm test` in the container: green is a ready PR, red a draft. The agent's summary is passed through a sceptical verification call that drops every sentence the diff does not support. (The `[Unverified]` marking is not built; unsupported sentences are removed.)
+6. **Check.** Keep only the manifest and lockfile changes. Parse the resulting lockfile. Every package from the unit's rows must be at or above its fixed-in version, or gone. Otherwise the unit produces no PR and the comment says why. The harness then runs the ecosystem's install and test commands in the container (`npm ci` and `npm test`; `uv sync --frozen` and `uv run pytest`; `pip install -r` and `pytest`): green is a ready PR, red a draft. The agent's summary is passed through a sceptical verification call that drops every sentence the diff does not support. (The `[Unverified]` marking is not built; unsupported sentences are removed.)
 7. **Publish.** Commit on `proseco/<lockfile slug>` or `proseco/<package>-<target>`, push with a token minted for that repository, open or update the PR. Draft when tests were red. Body: the rows and CVEs, the agent's summary, the test result, `Part of`.
 8. **Record.** Write or edit the ticket comment (`<!-- proseco:attempt <body hash> -->`), save the attempt and the last seen comment id in the state file, remove the clone and the containers.
 
@@ -49,8 +49,10 @@ This document is the design. The README describes what is built.
 
 ```
 src/fixer/
-  main.ts         CLI: find, read, run <n> [--dry-run | --local], sandbox, and later serve
-  run.ts          wires the real dependencies (tokens, git, Docker, Ollama, GitHub) into an attempt
+  main.ts         CLI: find, read, run <n> [--dry-run | --local], sandbox, check, serve
+  daemon.ts       the serve loop: poll, order, attempt one ticket at a time, log, stop on a signal
+  startup.ts      the startup checks shared by check and serve
+  run.ts          wires the real dependencies (tokens, git, Docker, Ollama, GitHub) into an attempt; find, shared by the CLI and the daemon
   attempt.ts      one ticket: decide, fetch, each unit, comment, state
   unit.ts         one unit: clone, sandbox, agent, guard, check, harness, verify, commit, publish
   state.ts        attempts by ticket: body hash, head SHA, PRs, outcome
@@ -71,8 +73,9 @@ src/fixer/
     images.ts     image choice and build
     images/       Dockerfiles: node, python-uv, dotnet, proxy
   ecosystems/
+    ecosystem.ts  the Ecosystem interface: image family, prompt notes, allowed commit files, harness
     npm.ts, uv.ts, requirements.ts
-                  toolchain version detection, lockfile parsing for the check, parent chains
+                  toolchain version detection, lockfile parsing for the check, parent chains, and the behaviour above
   agent/
     ollama.ts     chat with tools, usage, timeouts (ported from reviewdo)
     tools.ts      tool definitions and their execution
@@ -83,7 +86,7 @@ src/core/github.ts  GitHub API clients: tickets, and RepoApi for pull requests
 src/core/versions.ts  version comparison (semver and PEP 440)
 ```
 
-Config, under `fixer`, gains: `bot` (the app slug, matched in the command comment), `app` (client id, installation id), `cloneDir`, `stateFile`, `ollama` (url, model, numCtx, numPredict, think, timeoutMinutes), `budget` (minutes, toolCalls, commandMinutes), `proxy.allow` (registry hosts), and `ecosystems` (which are enabled). Unknown keys are still rejected.
+Config, under `fixer`, gains: `bot` (the app slug, matched in the command comment), `app` (client id, installation id), `cloneDir`, `stateFile`, `ollama` (url, model, numCtx, numPredict, think, timeoutMinutes), `pollMinutes` (default 1), `budget` (minutes, toolCalls, commandMinutes), `proxy.allow` (registry hosts), and `ecosystems` (which are enabled). Unknown keys are still rejected.
 
 ## Deployment
 

@@ -14,7 +14,7 @@ Proactive security operations for a GitHub organisation.
 - Keeps **one GitHub issue per repository**, and one per third-party image, listing the critical and high findings that have a fix.
 - Rewrites each issue on every run, closes it once nothing remains, and reopens it if findings return.
 
-**What comes next:** the **fixer**, which reads those issues, works each one with a local model, and opens fix pull requests. `fixer run <n>` does this for one npm ticket today; the polling daemon and Python come later.
+**What comes next:** the **fixer**, which reads those issues, works each one with a local model, and opens fix pull requests. `fixer run <n>` does this for one npm, uv or requirements.txt ticket, and `fixer serve` is the daemon that polls and works every open ticket.
 
 Proseco itself knows nothing about any particular organisation: the org, tickets repository, labels and project all come from a config file kept in the repository that runs it.
 
@@ -64,6 +64,7 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
     "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678 },
     "cloneDir": "/var/lib/proseco/clones",
     "stateFile": "/var/lib/proseco/state.json",
+    "pollMinutes": 1,
     "proxy": { "allow": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"] },
     "sandbox": { "memory": "8g", "cpus": 4 },
     "ollama": { "url": "http://127.0.0.1:11434", "model": "qwen3.8:27b", "numCtx": 65536, "numPredict": 12288, "think": true, "timeoutMinutes": 20 },
@@ -86,6 +87,7 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 | `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `bot`, `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
 | `fixer.cloneDir` | Directory holding the fixer's bare clones, one `<repo>.git` each. |
 | `fixer.stateFile` | JSON file recording each ticket's last attempt. |
+| `fixer.pollMinutes` | Optional. How often `fixer serve` polls for tickets, in minutes (a positive number). Default `1`. |
 | `fixer.proxy.allow` | Optional. Hostnames the sandbox proxy lets a container reach: exact names, or `*.suffix` for subdomains only (it does not match the bare suffix). A configured list replaces the default, which is `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `api.nuget.org` and `*.nuget.org`. It must not be empty. |
 | `fixer.sandbox` | Optional `{ memory, cpus }` for the repository container. `memory` is a Docker size such as `8g` or `512m`, `cpus` a positive number. Defaults to `8g` and `4`. |
 | `fixer.ollama` | Optional `{ url, model, numCtx, numPredict, think, timeoutMinutes }` for the model that drives the agent. Defaults: `http://127.0.0.1:11434`, `qwen3.8:27b`, `65536`, `12288`, `true`, `20`. `timeoutMinutes` limits one model call. |
@@ -170,7 +172,7 @@ It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only need
 
 ## The fixer
 
-`npm run fixer -- run <n>` takes one npm ticket all the way: an agent in the sandbox, a deterministic lockfile check, a pushed branch, a pull request opened or updated, a ticket comment and a state record. Running it again does nothing. The daemon loop (`serve`) and Python come later; see `docs/fixer.md`.
+`npm run fixer -- run <n>` takes one ticket all the way: an agent in the sandbox, a deterministic lockfile check, a pushed branch, a pull request opened or updated, a ticket comment and a state record. Running it again does nothing. It works npm (`package-lock.json`), uv (`uv.lock`) and pinned `requirements*.txt` lockfiles. `npm run fixer -- serve` does this for every open ticket, forever; see `docs/fixer.md` for the design.
 
 Commands:
 - `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, key, repo, force, ignored, commentId }`, where `key` is the marker key and `repo` the repository to fix in. `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts); `ignored` is true after `@<bot> ignore`, until a later `@<bot> fix`. The newest command wins. For each such comment it reacts with eyes and records the comment id and the ignored flag in the state file, so a command is acted on once; `commentId` is that comment. An ignored ticket gets no attempt, fetch or comment.
@@ -184,6 +186,8 @@ Commands:
   It reports the command comment but does not react to it. It writes nothing except the clone store. It does not look at pull requests, so `openPullRequests` is `"not checked"`.
 - `npm run fixer -- run <n> --local`: everything except the push, the pull request, the ticket comment, the reaction and the state file. It ignores the attempt decision and runs the agent on every npm unit, then prints for each: the diff, the lockfile check, the test result and the pull request body it would have used. The checkout stays in place and its path is printed, for inspection. It needs Docker, Ollama and `contents: read` credentials.
 - `npm run fixer -- run <n>`: the real attempt, described below. It needs Docker, Ollama and credentials that can write.
+- `npm run fixer -- check`: runs the startup checks and prints each as `ok <name>: <detail>` or `FAILED <name>: <reason>`; the exit code is non-zero if any failed. The checks are: the config loads and has a `fixer` section; an installation token for the tickets repository can be minted (so the app key works); Ollama answers `/api/tags` and lists the configured model; `docker info` succeeds. A config that does not load stops the run, since the rest depend on it.
+- `npm run fixer -- serve`: the daemon, described below. It needs everything a real `run` needs.
 
 All commands need `PROSECO_CONFIG`. Credentials are one of:
 - `GH_READ_TOKEN`: used as is, nothing is minted. For local runs; a token of a person writes as that person, so the ticket comment will not be found again on a re-run.
@@ -196,15 +200,42 @@ All commands need `PROSECO_CONFIG`. Credentials are one of:
 
 Git runs with no system or user configuration and no credential helper. The token reaches it through the environment for a single command and is never written to a clone.
 
+### The daemon
+
+`npm run fixer -- serve` runs the startup checks (the same function as `check`), then removes every proseco container and network left by an earlier process (`Sandbox.sweep(0)`, so nothing else may use proseco containers on that Docker while it runs), then loops. Any startup failure prints the reasons and exits non-zero.
+
+Every `fixer.pollMinutes` it runs `find` exactly as the CLI does (list the open tickets, react with eyes to new command comments and record them, save the state), orders the requests (forced ones first, then by ticket number) and works them one at a time through the same code path as `run <n>`. A ticket marked ignored is skipped; for the others the attempt decision (state file and the real state of recorded pull requests) is made as in `run`, so an already-attempted ticket costs one comment lookup and no clone. A failure in one ticket is logged and the pass continues. If `find` fails (GitHub down) the daemon logs it and tries again at the next poll.
+
+One line per event on stdout, each with an ISO timestamp:
+
+```
+#12 attempting
+#12 done: `uv.lock`: ready https://github.com/<org>/<repo>/pull/7; `web/package-lock.json`: no pull request (<reason>)
+#13 skipped: <reason>
+#14 failed: <error>
+find failed: <error>
+idle: nothing to attempt among 5 open tickets
+```
+
+A skip is logged once per ticket until its reason changes, and an idle pass is logged only when the pass before it did something (the first pass counts as having done something), so a quiet daemon does not fill its log.
+
+On SIGTERM or SIGINT it lets the unit in progress finish and tear down (stop the sandbox, discard the checkout), starts no further unit or ticket and exits 0. A ticket interrupted between units records nothing and is attempted again after a restart, which updates any branch it already pushed. A second signal exits immediately; the next start sweeps whatever was left in Docker.
+
+### Python
+
+- **uv.** The agent resolves with `uv lock --upgrade-package <package>`, or edits the constraint in `pyproject.toml` and locks again; it never edits `uv.lock` by hand. The harness installs with `uv sync --frozen`. It runs `uv run pytest -x -q` when `pytest` is a locked package, and no tests otherwise.
+- **requirements.txt.** The fix is a text edit of the `==` pin, and only that file may change (the prompt says the file may belong to a script or a tool, not the application). The harness runs `python -m pip install -r <file>` from the file's directory, and `python -m pytest -x -q` when `pytest` is pinned in the same file. pip falls back to a user install because the container user cannot write the system site-packages. A file containing `--hash` is reported as unsupported for now: re-hashing needs `pip-compile`.
+- **Image.** `proseco/python:<major.minor>`, from `.python-version` or `requires-python`. `UV_LINK_MODE=copy` and `PIP_NO_INPUT=1` are set in every container, and uv's cache lands in `/tmp/home/.cache/uv` because `HOME` is a tmpfs.
+
 ### What an attempt does
 
 1. **Decide.** From the state file and the real state of the pull requests it recorded (`open`, `merged` by `merged_at`, `closed`): attempt when the ticket was never attempted, when its body changed and no recorded pull request is open, or when a person commented `@<bot> fix`. A ticket a person marked with `@<bot> ignore` is skipped before any other rule. An open pull request, or the same body already attempted, means nothing happens. The command comment is reacted to with eyes.
 2. **Fetch and plan.** The bare clone is updated and the units are planned as in the dry run. Each unit gets its own checkout and sandbox, one after another.
-3. **Units that are not attempted.** An image ticket (key is an image reference) is reported as "image tickets are not attempted yet". A major upgrade is reported as "major upgrades are not attempted yet", and a lockfile of another ecosystem as unsupported.
-4. **Agent.** For an npm lockfile unit the agent loop runs against Ollama with these tools: `read_file`, `list_dir`, `search`, `write_file`, `edit_file` (all on the host, confined to the checkout: `..`, absolute paths and symlinks that escape are refused, and `.git` cannot be written), `run` (`sh -c` in the container) and `finish`. The loop ends on `finish`, on the time budget or tool-call cap, or when the model twice answers with no tool call. When the conversation approaches `numCtx` the oldest tool results are replaced by a placeholder, keeping the last 8.
-5. **Commit guard.** Only the manifest and lockfile are kept: `package.json`, `package-lock.json` and `npm-shrinkwrap.json` in the lockfile's directory, plus the `package.json` of each workspace member the lockfile names. Every other change the agent made is discarded and listed in the pull request. Nothing under `.github/workflows/` is ever committed. Commits and tags the agent made inside the container are undone first.
+3. **Units that are not attempted.** An image ticket (key is an image reference) is reported as "image tickets are not attempted yet". A major upgrade is reported as "major upgrades are not attempted yet", and a lockfile of an unknown type as unsupported. A hash-pinned requirements file is reported as unsupported too (see the Python notes).
+4. **Agent.** For a unit of a supported ecosystem the agent loop runs, with that ecosystem's notes in its system prompt, against Ollama with these tools: `read_file`, `list_dir`, `search`, `write_file`, `edit_file` (all on the host, confined to the checkout: `..`, absolute paths and symlinks that escape are refused, and `.git` cannot be written), `run` (`sh -c` in the container) and `finish`. The loop ends on `finish`, on the time budget or tool-call cap, or when the model twice answers with no tool call. When the conversation approaches `numCtx` the oldest tool results are replaced by a placeholder, keeping the last 8.
+5. **Commit guard.** Only the ecosystem's manifest and lockfile are kept. npm: `package.json`, `package-lock.json` and `npm-shrinkwrap.json` in the lockfile's directory, plus the `package.json` of each workspace member the lockfile names. uv: `pyproject.toml` and `uv.lock` in the lockfile's directory, plus the `pyproject.toml` of each workspace member `uv.lock` names. requirements.txt: that file only. Every other change the agent made is discarded and listed in the pull request. Nothing under `.github/workflows/` is ever committed. Commits and tags the agent made inside the container are undone first.
 6. **Lockfile check.** The lockfile is parsed. Every installed version of every package in the unit must be at or above the lowest of its target versions, or the package must be gone. Otherwise there is no pull request and the ticket comment says why.
-7. **Harness test run.** `npm ci --no-audit --no-fund`, then `npm test --if-present`, in the container. Exit 0: a ready pull request. Anything else: a draft whose body has the tail of the output. A project with no `test` script is ready, and the body says so. The agent's own claim about the tests plays no part.
+7. **Harness test run.** The ecosystem's install command, then its test command, in the container, from the lockfile's directory (npm: `npm ci --no-audit --no-fund`, `npm test --if-present`; uv and requirements.txt below). Exit 0: a ready pull request. Anything else: a draft whose body names the failing command and has the tail of the output. A project with no tests the fixer can run is ready, and the body says so. The pull request body names the commands that ran. The agent's own claim about the tests plays no part.
 8. **Summary check.** One model call with no tools sees the final diff and the agent's summary and returns the summary with every sentence the diff does not support removed. That text goes in the pull request.
 9. **Publish.** One commit by `<bot>[bot]` (`Bump <package> to <target>`, or `Fix <n> vulnerable packages in <lockfile>`), force-pushed to `proseco/<lockfile slug>` (the code refuses any other branch name). The pull request is opened, or the open one for that branch is updated and flipped between draft and ready. Its body has the package table, the verified summary, the lockfile and test results, the discarded changes if any, and `Part of <org>/<tickets repo>#<n>`.
 10. **Record.** One comment per ticket, edited in place, whose first line is `<!-- proseco:attempt <body hash> -->`, listing per unit the pull request or why there is none. Then the attempt is written to the state file, and the checkouts and containers are removed. A failure in one unit is caught, reported in the comment, and the next unit still runs.
@@ -223,7 +254,7 @@ Repository code only runs in a throwaway container with no route to the internet
 - A per-attempt Docker network `proseco-<attempt>` is created with `--internal`, so it has no gateway.
 - The proxy container (`proseco/proxy:<git short sha, or dev>`, built from `src/fixer/sandbox/proxy.ts` alone) sits on that network and on the default bridge. The repository container sits on the internal network only and reaches the proxy by name on port 3128.
 - The proxy is dependency-free Node (`node src/fixer/sandbox/proxy.ts --listen 0.0.0.0:3128 --allow host1,*.suffix`). It tunnels `CONNECT <allowed host>:443`. It answers 403 with the host named in the body to any other host or port, and to plain HTTP, so nothing leaves in clear. A malformed request gets 400 and the connection closes. It logs one line per request, `allowed|refused <host>:<port> bytes=<n>`.
-- The repository container runs as the daemon's uid and gid with the checkout at `/work`, `HOME=/tmp/home` on an `exec` tmpfs, all capabilities dropped, `no-new-privileges`, 2048 pids, and the configured memory and cpus. `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms are set, `NO_PROXY` is empty, and `NODE_USE_ENV_PROXY=1` makes Node 24's `fetch` honour the proxy. Commands run with `docker exec` under `timeout`, which kills the command's whole process group when the limit passes; output beyond 1 MiB per stream is dropped with a note.
+- The repository container runs as the daemon's uid and gid with the checkout at `/work`, `HOME=/tmp/home` on an `exec` tmpfs, `UV_LINK_MODE=copy`, `PIP_NO_INPUT=1`, all capabilities dropped, `no-new-privileges`, 2048 pids, and the configured memory and cpus. `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms are set, `NO_PROXY` is empty, and `NODE_USE_ENV_PROXY=1` makes Node 24's `fetch` honour the proxy. Commands run with `docker exec` under `timeout`, which kills the command's whole process group when the limit passes; output beyond 1 MiB per stream is dropped with a note.
 - Every container and network carries the label `proseco.attempt=<id>`. `stop()` removes both containers and the network even after a failed step.
 - Checkouts live in `<cloneDir>/attempts/`, one directory per attempt, not in the OS temp directory, so a Docker daemon in another mount namespace (rootless Docker under a service manager) can see the bind mount.
 - A checkout is a local `git clone` of the bare clone (objects are hardlinked, so it is cheap) detached at the default branch head. Its `origin` is the path of the bare clone, never a URL with a token. Git reads work inside the container; the host makes every commit and push.
@@ -236,13 +267,13 @@ The unit tests need no Docker. The integration test builds the node image, insta
 npm run test:docker
 ```
 
-The agent integration test needs Docker and Ollama with the configured model pulled. It creates a local origin from a fixture that depends on `minimist@1.2.5`, runs the attempt with the real model and sandbox and a stub publisher, and checks the lockfile, the commit's files, the pull request body and that no container is left:
+The agent integration test needs Docker and Ollama with the configured model pulled. It creates a local origin from a fixture, runs the attempt with the real model and sandbox and a stub publisher, and checks the lockfile, the commit's files, the pull request body and that no container is left. There is one fixture each for npm (`minimist@1.2.5`), uv (`requests==2.31.0` in `pyproject.toml` with a generated `uv.lock` and a pytest dev group) and requirements.txt (`requests==2.31.0` and `pytest==8.3.3`):
 
 ```
 npm run test:agent
 ```
 
-It can take 10 to 20 minutes.
+It can take 10 to 30 minutes.
 
 ## Development
 
