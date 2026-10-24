@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -37,6 +37,7 @@ export class GitStore {
   readonly #options: GitStoreOptions;
   readonly #home: string;
   readonly #attempts: string;
+  readonly #origins = new Map<string, string>();
 
   constructor(options: GitStoreOptions) {
     this.#options = options;
@@ -92,12 +93,14 @@ export class GitStore {
     return content;
   }
 
-  async worktreeAdd(repo: string, sha: string): Promise<string> {
+  async checkout(repo: string, sha: string): Promise<string> {
     mkdirSync(this.#attempts, { recursive: true });
     const attempt = mkdtempSync(join(this.#attempts, "attempt-"));
     const path = join(attempt, "work");
     try {
-      await this.#git(repo, ["worktree", "add", "--detach", "--quiet", path, sha], "git worktree add");
+      await this.#plain(["clone", "--quiet", "--no-checkout", this.#path(repo), path], `git clone of ${repo}`);
+      this.#origins.set(path, resolve(this.#path(repo)));
+      await this.inCheckout(path, ["checkout", "--quiet", "--detach", sha], "git checkout");
     } catch (error) {
       rmSync(attempt, { recursive: true, force: true });
       throw error;
@@ -105,12 +108,56 @@ export class GitStore {
     return path;
   }
 
-  async worktreeRemove(repo: string, path: string): Promise<void> {
+  discard(path: string): void {
+    this.#origins.delete(path);
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+
+  async inCheckout(path: string, args: string[], what: string, okCodes: number[] = [0]): Promise<string> {
+    this.#sanitise(path);
     try {
-      await this.#git(repo, ["worktree", "remove", "--force", path], "git worktree remove");
-    } finally {
-      rmSync(dirname(path), { recursive: true, force: true });
-      await this.#git(repo, ["worktree", "prune"], "git worktree prune");
+      const { stdout } = await run("git", ["-C", path, ...args], { env: gitEnvironment(this.#home, undefined), maxBuffer: 512 * 1024 * 1024 });
+      return stdout;
+    } catch (error) {
+      const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown; message: string };
+      if (typeof failure.code === "number" && okCodes.includes(failure.code)) return String(failure.stdout ?? "");
+      const stderr = String(failure.stderr ?? "").trim();
+      throw new Error(`${what} in ${path} failed: ${stderr || failure.message}`);
     }
+  }
+
+  async push(path: string, repo: string, branch: string, token: string): Promise<void> {
+    if (!/^proseco\/[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/.test(branch) || branch.includes("..") || branch.endsWith(".lock")) {
+      throw new Error(`refusing to push "${branch}": only proseco/* branches are ever pushed`);
+    }
+    this.#sanitise(path);
+    mkdirSync(this.#home, { recursive: true });
+    try {
+      await run("git", ["-C", path, "push", "--quiet", "--force", this.#options.remoteUrl(repo), `HEAD:refs/heads/${branch}`], {
+        env: gitEnvironment(this.#home, token),
+        maxBuffer: 64 * 1024 * 1024,
+      });
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
+      throw new Error(`git push of ${branch} to ${repo} failed: ${stderr.split(token).join("***") || (error as Error).message}`);
+    }
+  }
+
+  async #plain(args: string[], what: string): Promise<void> {
+    mkdirSync(this.#home, { recursive: true });
+    try {
+      await run("git", args, { env: gitEnvironment(this.#home, undefined), maxBuffer: 64 * 1024 * 1024 });
+    } catch (error) {
+      const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
+      throw new Error(`${what} failed: ${stderr || (error as Error).message}`);
+    }
+  }
+
+  #sanitise(path: string): void {
+    const git = join(path, ".git");
+    if (!existsSync(git) || !statSync(git).isDirectory()) return;
+    const origin = this.#origins.get(path) ?? "";
+    writeFileSync(join(git, "config"), `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[remote "origin"]\n\turl = ${origin}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`);
+    rmSync(join(git, "hooks"), { recursive: true, force: true });
   }
 }

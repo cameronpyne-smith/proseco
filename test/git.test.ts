@@ -89,33 +89,75 @@ describe("git store", () => {
     assert.equal(await clones.tryShow("acme-api", first, "dir/a.txt"), "one");
   });
 
-  it("puts worktrees in a configured attempts directory", async () => {
+  it("puts checkouts in a configured attempts directory and discards them with their directory", async () => {
     const remote = origin();
     const sha = remote.commit("a.txt", "one");
     const attemptsDir = mkdtempSync(join(tmpdir(), "proseco-attempts-"));
     const cloneDir = mkdtempSync(join(tmpdir(), "proseco-clones-"));
     const clones = new GitStore({ cloneDir, attemptsDir, remoteUrl: () => remote.dir });
     await clones.fetch("acme-api");
-    const path = await clones.worktreeAdd("acme-api", sha);
+    const path = await clones.checkout("acme-api", sha);
     assert.ok(path.startsWith(attemptsDir + "/"), path);
-    await clones.worktreeRemove("acme-api", path);
+    clones.discard(path);
     assert.deepEqual(readdirSync(attemptsDir), []);
   });
 
-  it("adds a detached worktree at a sha and removes it with its directory", async () => {
+  it("checks out a detached local clone at a sha whose origin is the bare clone", async () => {
     const remote = origin();
     const first = remote.commit("a.txt", "one");
     remote.commit("a.txt", "two");
-    const { store: clones, cloneDir } = store(remote.dir);
+    const { store: clones, cloneDir } = store(remote.dir, "ghs_secret_token");
     await clones.fetch("acme-api");
-    const path = await clones.worktreeAdd("acme-api", first);
+    const path = await clones.checkout("acme-api", first);
     assert.equal(readFileSync(join(path, "a.txt"), "utf8"), "one");
     assert.equal(git(path, "rev-parse", "HEAD"), first);
     assert.equal(git(path, "status", "--porcelain"), "");
     assert.ok(path.startsWith(join(cloneDir, "attempts") + "/"), path);
-    await clones.worktreeRemove("acme-api", path);
+    assert.equal(git(path, "remote", "get-url", "origin"), join(cloneDir, "acme-api.git"));
+    assert.equal(readFileSync(join(path, ".git", "config"), "utf8").includes("ghs_secret_token"), false);
+    clones.discard(path);
     assert.equal(existsSync(path), false);
-    assert.equal(git(join(cloneDir, "acme-api.git"), "worktree", "list").split("\n").length, 1);
+  });
+
+  it("ignores configuration and hooks a container left in the checkout's .git", async () => {
+    const remote = origin();
+    const sha = remote.commit("a.txt", "one");
+    const { store: clones } = store(remote.dir);
+    await clones.fetch("acme-api");
+    const path = await clones.checkout("acme-api", sha);
+    const marker = join(path, "pwned");
+    writeFileSync(join(path, ".git", "config"), `[core]\n\tfsmonitor = touch ${marker}\n`);
+    mkdirSync(join(path, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(path, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    await clones.inCheckout(path, ["status", "--porcelain"], "git status");
+    await clones.inCheckout(path, ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-m", "x"], "git commit");
+    assert.equal(existsSync(marker), false);
+  });
+
+  it("accepts the listed exit codes from a checkout command and fails on others", async () => {
+    const remote = origin();
+    const sha = remote.commit("a.txt", "one");
+    const { store: clones } = store(remote.dir);
+    await clones.fetch("acme-api");
+    const path = await clones.checkout("acme-api", sha);
+    assert.equal(await clones.inCheckout(path, ["grep", "-n", "absent"], "git grep", [0, 1]), "");
+    await assert.rejects(clones.inCheckout(path, ["grep", "-n", "absent"], "git grep"), /git grep in .* failed/);
+  });
+
+  it("pushes HEAD to a proseco branch with force, and refuses any other branch name", async () => {
+    const remote = origin();
+    const sha = remote.commit("a.txt", "one");
+    const target = mkdtempSync(join(tmpdir(), "proseco-target-"));
+    git(target, "init", "-q", "--bare", "-b", "main");
+    const cloneDir = mkdtempSync(join(tmpdir(), "proseco-clones-"));
+    const clones = new GitStore({ cloneDir, remoteUrl: (name) => (name === "acme-api" ? remote.dir : target) });
+    await clones.fetch("acme-api");
+    const path = await clones.checkout("acme-api", sha);
+    await clones.push(path, "other", "proseco/package-lock.json", "ghs_x");
+    assert.equal(git(target, "rev-parse", "refs/heads/proseco/package-lock.json"), sha);
+    for (const branch of ["main", "proseco/../main", "proseco/", "feature/x", "proseco/a.lock", "refs/heads/proseco/a"]) {
+      await assert.rejects(clones.push(path, "other", branch, "ghs_x"), /only proseco\/\* branches/, branch);
+    }
   });
 
   it("keeps the token out of the clone's files", async () => {

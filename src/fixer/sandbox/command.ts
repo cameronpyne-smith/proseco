@@ -29,11 +29,11 @@ export async function runInSandbox(input: SandboxCommand): Promise<SandboxOutcom
   const toolchain = await declaredToolchain(ecosystem, input.lockfile, (path) => input.store.tryShow(input.repo, sha, path));
   const docker = new Docker();
   const image = await ensureImage(docker, imageFor(ecosystem.name, toolchain));
-  const worktree = await input.store.worktreeAdd(input.repo, sha);
+  const checkout = await input.store.checkout(input.repo, sha);
   let sandbox: Sandbox | undefined;
   try {
     sandbox = await Sandbox.start({
-      worktree,
+      worktree: checkout,
       image,
       allow: input.fixer.proxy.allow,
       attemptId: `manual-${Date.now().toString(36)}`,
@@ -47,7 +47,7 @@ export async function runInSandbox(input: SandboxCommand): Promise<SandboxOutcom
     try {
       await sandbox?.stop();
     } finally {
-      await input.store.worktreeRemove(input.repo, worktree);
+      input.store.discard(checkout);
     }
   }
 }
