@@ -9,6 +9,7 @@ const LITERAL = "--literal-pathspecs";
 const MAX_NEW_BINARY_BYTES = 256 * 1024;
 const BINARY_PROBE_BYTES = 8000;
 const VENDORED = new Set(["node_modules", ".venv"]);
+const PACKAGE_MANAGER_CONFIG = /^(\.npmrc|\.yarnrc|\.yarnrc\.yml|\.pnpmfile\.cjs|pip\.conf|pip\.ini|\.pypirc|uv\.toml|nuget\.config)$/i;
 
 const FAMILY_FILES: Record<ImageFamily | "dotnet", RegExp> = {
   node: /^(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/,
@@ -85,6 +86,7 @@ export function majorGuard(options: { root: string; ecosystem: Pick<Ecosystem, "
     if (entry.path.startsWith(NEVER)) return false;
     const parts = entry.path.split("/");
     if (parts.some((part) => VENDORED.has(part))) return false;
+    if (PACKAGE_MANAGER_CONFIG.test(basename(entry.path))) return false;
     if (foreign.some((pattern) => pattern.test(basename(entry.path)))) return false;
     return !(entry.untracked && isLargeBinary(join(options.root, entry.path)));
   };

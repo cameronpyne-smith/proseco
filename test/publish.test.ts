@@ -181,6 +181,12 @@ describe("the commit guard for a major upgrade", () => {
     assert.deepEqual(result.files, ["package.json", "src/a.js"]);
   });
 
+  it("refuses package-manager configuration in any directory but allows ordinary source", async () => {
+    const result = await major({ ".npmrc": "registry=https://example.invalid/", "sub/.npmrc": "ignore-scripts=false", "sub/NuGet.Config": "<configuration/>", "pip.conf": "[global]", "src/index.js": "c" });
+    assert.deepEqual(result.discarded, [".npmrc", "pip.conf", "sub/.npmrc", "sub/NuGet.Config"]);
+    assert.deepEqual(result.files, ["src/index.js"]);
+  });
+
   it("refuses a new binary over 256 KB but allows a small one, a large text file and an existing binary", async () => {
     const result = await major(
       { "assets/huge.bin": big(256 * 1024 + 1), "assets/small.bin": big(1024), "docs/large.txt": "a".repeat(300_000), "assets/old.bin": big(300_000) + "x" },

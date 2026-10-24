@@ -154,7 +154,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
     ...ranSection(input.tests),
-    ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, large new binaries), so they were discarded and are not part of this pull request:"),
+    ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, large new binaries), so they were discarded and are not part of this pull request:"),
     "",
     "### Why this is a draft",
     "",
