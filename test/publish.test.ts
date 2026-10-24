@@ -50,13 +50,13 @@ describe("status parsing", () => {
 });
 
 describe("allowed files", () => {
-  it("allows the manifest, lockfiles and .npmrc beside the lockfile and the package.json of each workspace member", () => {
+  it("allows the manifest and lockfiles beside the lockfile and the package.json of each workspace member", () => {
     const allowed = allowedFiles("web/package-lock.json", LOCK);
-    assert.deepEqual([...allowed].sort(), ["web/.npmrc", "web/npm-shrinkwrap.json", "web/package-lock.json", "web/package.json", "web/packages/app/package.json", "web/packages/lib/package.json"]);
+    assert.deepEqual([...allowed].sort(), ["web/npm-shrinkwrap.json", "web/package-lock.json", "web/package.json", "web/packages/app/package.json", "web/packages/lib/package.json"]);
   });
 
   it("uses the repository root for a lockfile at the root", () => {
-    assert.deepEqual([...allowedFiles("package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }))].sort(), [".npmrc", "npm-shrinkwrap.json", "package-lock.json", "package.json"]);
+    assert.deepEqual([...allowedFiles("package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }))].sort(), ["npm-shrinkwrap.json", "package-lock.json", "package.json"]);
   });
 
   it("never allows anything under .github/workflows, even when the lockfile's directory is there", () => {

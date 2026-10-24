@@ -43,7 +43,7 @@ export function parseStatus(output: string): string[] {
 export function allowedFiles(lockfile: string, lockfileText: string): Set<string> {
   const directory = posixDirname(lockfile);
   const inDirectory = (file: string) => (directory === "." ? file : posixJoin(directory, file));
-  const files = ["package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc"].map(inDirectory);
+  const files = ["package.json", "package-lock.json", "npm-shrinkwrap.json"].map(inDirectory);
   for (const member of workspaceMembers(lockfileText)) files.push(inDirectory(posixJoin(member, "package.json")));
   return new Set(files);
 }
