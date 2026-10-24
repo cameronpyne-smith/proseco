@@ -14,7 +14,7 @@ Proactive security operations for a GitHub organisation.
 - Keeps **one GitHub issue per repository** listing that repository's critical and high findings that have a fix.
 - Rewrites each issue on every run, closes it once nothing remains, and reopens it if findings return.
 
-**What comes next:** the **fixer**, which reads those issues, assesses each finding with a local model, and opens fix pull requests.
+**What comes next:** the **fixer**, which reads those issues, works each one with a local model, and opens fix pull requests. `fixer run <n>` does this for one npm ticket today; the polling daemon and Python come later.
 
 Proseco itself knows nothing about any particular organisation: the org, tickets repository, labels and project all come from a config file kept in the repository that runs it.
 
