@@ -1,0 +1,11 @@
+{
+  "name": "agent-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"require('minimist')\""
+  },
+  "dependencies": {
+    "minimist": "1.2.5"
+  }
+}

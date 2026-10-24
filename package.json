@@ -10,7 +10,8 @@
     "fixer": "node src/fixer/main.ts",
     "test": "node --test \"test/*.test.ts\"",
     "test:docker": "PROSECO_DOCKER_TESTS=1 node --test test/sandbox.integration.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:agent": "PROSECO_AGENT_TESTS=1 node --test --test-timeout=3000000 test/agent.integration.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
