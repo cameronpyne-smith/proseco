@@ -29,7 +29,7 @@ function fixer(): Record<string, unknown> {
   };
 }
 
-const mapping = () => ({ "acme-api": "acme-api" });
+const mapping = () => ({ own: { "ghcr.io/acme-org/acme-api": "acme-api" }, thirdParty: { "docker.elastic.co/": "acme-infra" }, ignore: ["docker.io/library/busybox"] });
 
 describe("config", () => {
   it("reads every section", () => {
@@ -43,7 +43,9 @@ describe("config", () => {
       maintainedIn: "acme-ops",
     });
     assert.equal(config.sources.dependabot, true);
-    assert.deepEqual([...config.sources.defender!.imageRepos], [["acme-api", "acme-api"]]);
+    assert.deepEqual([...config.sources.defender!.imageRepos.own], [["ghcr.io/acme-org/acme-api", "acme-api"]]);
+    assert.deepEqual([...config.sources.defender!.imageRepos.thirdParty], [["docker.elastic.co/", "acme-infra"]]);
+    assert.deepEqual(config.sources.defender!.imageRepos.ignore, ["docker.io/library/busybox"]);
     assert.deepEqual(config.fixer, {
       bot: "acme-proseco",
       app: { clientId: "Iv1.acme", installationId: 42 },
@@ -183,8 +185,8 @@ describe("config", () => {
     const dir = mkdtempSync(join(tmpdir(), "proseco-config-"));
     writeFileSync(join(dir, "proseco.json"), JSON.stringify(full()));
     writeFileSync(join(dir, "image-repos.json"), JSON.stringify(mapping()));
-    assert.equal(loadConfig(join(dir, "proseco.json")).sources.defender!.imageRepos.get("acme-api"), "acme-api");
-    writeFileSync(join(dir, "image-repos.json"), JSON.stringify({ "Acme-Api": "acme-api" }));
-    assert.throws(() => loadConfig(join(dir, "proseco.json")), /proseco\.json: image-repos\.json: "Acme-Api" is not a lowercase/);
+    assert.equal(loadConfig(join(dir, "proseco.json")).sources.defender!.imageRepos.own.get("ghcr.io/acme-org/acme-api"), "acme-api");
+    writeFileSync(join(dir, "image-repos.json"), JSON.stringify({ ...mapping(), own: { "Acme/Api": "acme-api" } }));
+    assert.throws(() => loadConfig(join(dir, "proseco.json")), /proseco\.json: image-repos\.json\.own: "Acme\/Api"/);
   });
 });

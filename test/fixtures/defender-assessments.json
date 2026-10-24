@@ -1,0 +1,210 @@
+[
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-api-1/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update example.client",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0001\",\"AdditionalIdentifiers\":[],\"Severity\":\"Low\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"4.59.1\",\"Tags\":[]},{\"CveId\":\"CVE-2026-0002\",\"AdditionalIdentifiers\":[],\"Severity\":\"High\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"4.60.4\",\"Tags\":[]}]",
+        "Language": "dotnet",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"4.56.0\"],\"CvesIds\":[\"CVE-2026-0001\",\"CVE-2026-0002\"]}}",
+        "SoftwareName": "example.client",
+        "SoftwareVendor": "example.client"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"api\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"ghcr.io/acme-org/acme-api@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"1.2.3\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-worker-2/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update example.client",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0001\",\"AdditionalIdentifiers\":[],\"Severity\":\"Low\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"4.59.1\",\"Tags\":[]},{\"CveId\":\"CVE-2026-0002\",\"AdditionalIdentifiers\":[],\"Severity\":\"High\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"4.60.4\",\"Tags\":[]}]",
+        "Language": "dotnet",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"4.56.0\"],\"CvesIds\":[\"CVE-2026-0001\",\"CVE-2026-0002\"]}}",
+        "SoftwareName": "example.client",
+        "SoftwareVendor": "example.client"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"worker\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"ghcr.io/acme-org/acme-api@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"1.2.3\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-api-3/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update zlib",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0003\",\"AdditionalIdentifiers\":[],\"Severity\":\"Critical\",\"FixStatus\":\"NoFixAvailable\",\"FixedVersion\":\"No Fix Available\",\"Tags\":[]}]",
+        "Language": "",
+        "MaxCvssScore": "5.5",
+        "PackageType": "OS",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"1.2.11\"],\"CvesIds\":[\"CVE-2026-0003\"]}}",
+        "SoftwareName": "zlib",
+        "SoftwareVendor": "zlib"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"api\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"docker.io/library/postgres:16@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"16\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-api-4/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update mystery",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0004\",\"AdditionalIdentifiers\":[],\"Severity\":\"Unknown\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"2.0.0\",\"Tags\":[]}]",
+        "Language": "dotnet",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"1.0.0\"],\"CvesIds\":[\"CVE-2026-0004\"]}}",
+        "SoftwareName": "mystery",
+        "SoftwareVendor": "mystery"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"api\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"ghcr.io/acme-org/acme-api@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"1.2.3\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-api-5/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update multi",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0005\",\"AdditionalIdentifiers\":[],\"Severity\":\"Critical\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"3.0.0\",\"Tags\":[]}]",
+        "Language": "node",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"2.1.0\",\"2.2.0\"],\"CvesIds\":[\"CVE-2026-0005\"]}}",
+        "SoftwareName": "multi",
+        "SoftwareVendor": "multi"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"api\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"docker.elastic.co/kibana/kibana@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"1.2.3\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-pool-6/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update kernel",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0006\",\"AdditionalIdentifiers\":[],\"Severity\":\"High\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"5.0\",\"Tags\":[]}]",
+        "Language": "dotnet",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"1.0.0\"],\"CvesIds\":[\"CVE-2026-0006\"]}}",
+        "SoftwareName": "kernel",
+        "SoftwareVendor": "kernel"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesNodePool\",\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-broken-7/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update broken",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{not json",
+        "Language": "dotnet",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{\"FixedVersion\":\"9.9.9\",\"DetectedSoftwareVersions\":[\"1.0.0\"],\"CvesIds\":[]}}",
+        "SoftwareName": "broken",
+        "SoftwareVendor": "broken"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"broken\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"ghcr.io/acme-org/acme-api@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"1.2.3\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  },
+  {
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/rg-example/providers/microsoft.containerservice/managedclusters/example-aks/securityentitydata/namespace-prod-pod-api-8/providers/Microsoft.Security/assessments/00000000-0000-0000-0000-000000000000",
+    "name": "00000000-0000-0000-0000-000000000000",
+    "properties": {
+      "displayName": "Update noscan",
+      "status": {
+        "code": "Unhealthy"
+      },
+      "additionalData": {
+        "CvesDetails": "[{\"CveId\":\"CVE-2026-0008\",\"AdditionalIdentifiers\":[],\"Severity\":\"High\",\"FixStatus\":\"FixAvailable\",\"FixedVersion\":\"1.0.1\",\"Tags\":[]}]",
+        "Language": "go",
+        "MaxCvssScore": "5.5",
+        "PackageType": "DevPackage",
+        "ScannersDetails": "{\"mdvm\":{}}",
+        "SoftwareName": "noscan",
+        "SoftwareVendor": "noscan"
+      },
+      "metadata": {
+        "assessmentType": "DynamicBuiltIn",
+        "recommendationCategory": "SoftwareUpdate",
+        "securityIssue": "Vulnerability",
+        "severity": "Medium"
+      },
+      "resourceAdditionalData": "{\"ResourceAdditionalDataType\":\"KubernetesContainer\",\"ContainerName\":\"api\",\"Namespace\":\"prod\",\"ControllerKind\":\"ReplicaSet\",\"ControllerName\":\"prod-api\",\"PodName\":\"prod-api\",\"ImageDetails\":{\"ResourceAdditionalDataType\":\"ContainerImage\",\"ImageUri\":\"mcr.microsoft.com/oss/v2/example/agent:v1.0@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"Tags\":[\"v1.0\"]},\"ClusterDetails\":{\"ResourceAdditionalDataType\":\"KubernetesCluster\",\"ClusterKind\":\"AKS\",\"ClusterName\":\"example-aks\"}}"
+    }
+  }
+]

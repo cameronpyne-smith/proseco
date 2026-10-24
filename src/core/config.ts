@@ -9,8 +9,14 @@ export interface TicketsConfig {
   maintainedIn: string;
 }
 
+export interface ImageRouting {
+  own: Map<string, string>;
+  thirdParty: Map<string, string>;
+  ignore: string[];
+}
+
 export interface DefenderConfig {
-  imageRepos: Map<string, string>;
+  imageRepos: ImageRouting;
 }
 
 export interface SandboxLimits {
@@ -122,21 +128,42 @@ const ALLOWED_HOST = (value: unknown, path: string) =>
   name(value, path, /^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/);
 const LOGIN = (value: unknown, path: string) => name(value, path, /^[A-Za-z0-9-]+(\[bot\])?$/);
 
-export function parseImageRepos(mapping: unknown, path = "imageRepos"): Map<string, string> {
-  if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) {
-    throw new ConfigError(`${path} must be an object of package name to repo name`);
+const IMAGE_PREFIX = /^[a-z0-9._/-]*\/[a-z0-9._/-]*$/;
+
+function imagePrefix(value: unknown, path: string): string {
+  if (typeof value !== "string" || !IMAGE_PREFIX.test(value)) {
+    throw new ConfigError(`${path}: ${JSON.stringify(value)} is not an image reference prefix: lowercase, [a-z0-9._/-], at least one "/", no tag or digest`);
   }
-  const repoByPackage = new Map<string, string>();
-  for (const [pkg, repo] of Object.entries(mapping)) {
-    if (pkg !== pkg.toLowerCase() || !/^[a-z0-9._-]+$/.test(pkg)) {
-      throw new ConfigError(`${path}: "${pkg}" is not a lowercase ghcr package name`);
-    }
+  return value;
+}
+
+function imageSection(value: unknown, path: string): Map<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ConfigError(`${path} must be an object`);
+  const section = new Map<string, string>();
+  for (const [prefix, repo] of Object.entries(value)) {
+    imagePrefix(prefix, path);
     if (typeof repo !== "string" || !/^[A-Za-z0-9._-]+$/.test(repo)) {
-      throw new ConfigError(`${path}: "${pkg}" must map to a repo name without the org`);
+      throw new ConfigError(`${path}: "${prefix}" must map to a repo name without the org`);
     }
-    repoByPackage.set(pkg, repo);
+    section.set(prefix, repo);
   }
-  return repoByPackage;
+  return section;
+}
+
+export function parseImageRepos(mapping: unknown, path = "imageRepos"): ImageRouting {
+  const root = object(mapping, path, ["own", "thirdParty", "ignore"]);
+  for (const key of ["own", "thirdParty", "ignore"]) {
+    if (root[key] === undefined) throw new ConfigError(`${path} is missing "${key}"`);
+  }
+  const own = imageSection(root["own"], `${path}.own`);
+  const thirdParty = imageSection(root["thirdParty"], `${path}.thirdParty`);
+  const ignore = list(root["ignore"], `${path}.ignore`, imagePrefix);
+  const seen = new Set<string>();
+  for (const prefix of [...own.keys(), ...thirdParty.keys(), ...ignore]) {
+    if (seen.has(prefix)) throw new ConfigError(`${path}: "${prefix}" is listed in more than one section`);
+    seen.add(prefix);
+  }
+  return { own, thirdParty, ignore };
 }
 
 export function parseConfig(raw: unknown, readJson: (relativePath: string) => unknown): Config {

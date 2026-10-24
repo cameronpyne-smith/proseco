@@ -7,7 +7,7 @@ import type { PrUnit } from "../src/fixer/plan.ts";
 import { bodyHash, emptyState, recordAttempt, type PullRequestStatus, type State } from "../src/fixer/state.ts";
 
 function finding(overrides: Partial<Finding>): Finding {
-  return { origin: "dependabot", repo: "acme-api", cve: "CVE-2026-0001", severity: "high", ecosystem: "npm", package: "minimist", installed: "1.2.5", fixedIn: "1.2.6", source: "package-lock.json", relationship: null, scope: null, ...overrides };
+  return { origin: "dependabot", repo: "acme-api", cve: "CVE-2026-0001", severity: "high", ecosystem: "npm", package: "minimist", installed: "1.2.5", fixedIn: "1.2.6", source: "package-lock.json", relationship: null, scope: null, imageKey: null, ...overrides };
 }
 
 const ENRICHMENT: Enrichment = { epss: new Map(), kev: new Set() };

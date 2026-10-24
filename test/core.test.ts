@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fixesFor, groupFindings } from "../src/core/findings.ts";
-import { cvesInBody, isProsecoTicket, parseRawTable, renderBody } from "../src/core/ticket.ts";
+import { BODY_LIMIT, bodyTooLarge, cvesInBody, isProsecoTicket, markerFor, markerKey, markerRepo, parseRawTable, renderBody, titleFor } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 
 const CONTEXT = { org: "acme-org", maintainedIn: "acme-ops" };
@@ -19,6 +19,7 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     source: "package-lock.json",
     relationship: "transitive",
     scope: "development",
+    imageKey: null,
     ...overrides,
   };
 }
@@ -309,5 +310,70 @@ describe("reading a ticket back", () => {
     assert.equal(isProsecoTicket({ body, author: "proseco-bot[bot]" }, ["proseco-bot[bot]"]), true);
     assert.equal(isProsecoTicket({ body, author: "someone" }, ["proseco-bot[bot]"]), false);
     assert.equal(isProsecoTicket({ body: `Copied:\n${body}`, author: "proseco-bot[bot]" }, ["proseco-bot[bot]"]), false);
+  });
+});
+
+describe("image findings", () => {
+  const KIBANA = "docker.elastic.co/kibana/kibana";
+  const image = (overrides: Partial<Finding> = {}) =>
+    finding({ origin: "defender", repo: "acme-infra", imageKey: KIBANA, ecosystem: "os", package: "openssl", installed: "3.0.1", fixedIn: "3.0.2", source: KIBANA, relationship: null, scope: null, ...overrides });
+
+  it("keys an own-image or Dependabot finding by repo, a third-party finding by image, and the rest as unmapped", () => {
+    const groups = groupFindings([
+      finding({ repo: "A", cve: "CVE-1" }),
+      image({ cve: "CVE-2" }),
+      image({ cve: "CVE-3", repo: null, imageKey: null }),
+      finding({ origin: "defender", repo: "acme-api", imageKey: null, cve: "CVE-4", source: "ghcr.io/acme-org/acme-api" }),
+    ]);
+    assert.deepEqual([...groups.keys()].sort(), [KIBANA, "A", "acme-api", "unmapped"].sort());
+  });
+
+  it("collapses the same image and package seen on several containers into one finding", () => {
+    const groups = groupFindings([image(), image(), image(), image({ installed: "3.0.5" })]);
+    assert.equal(groups.get(KIBANA)!.length, 2);
+  });
+
+  it("round-trips an image key and its repo through marker, render and parse", () => {
+    const body = render(KIBANA, [image()], enrichment());
+    assert.equal(body.split("\n")[0], `<!-- proseco:${KIBANA} repo:acme-infra -->`);
+    assert.equal(markerKey(body), KIBANA);
+    assert.equal(markerRepo(body), "acme-infra");
+    assert.equal(titleFor(KIBANA), `Vulnerabilities: ${KIBANA}`);
+    assert.deepEqual(parseRawTable(body).map((row) => [row.cve, row.source, row.package]), [["CVE-2026-0001", KIBANA, "openssl"]]);
+    assert.match(body, /fixed in `acme-infra` by bumping the image tag or chart version where it is declared/);
+    assert.match(body, /upgrading the cluster/);
+    assert.ok(body.indexOf("fixed in `acme-infra`") < body.indexOf("| package |"));
+  });
+
+  it("states the fix location only on image tickets, and writes no repo on a repo ticket", () => {
+    const body = render("acme-docs", [finding()], enrichment());
+    assert.equal(body.split("\n")[0], "<!-- proseco:acme-docs -->");
+    assert.doesNotMatch(body, /bumping the image tag/);
+    assert.equal(markerRepo(body), "acme-docs");
+  });
+});
+
+describe("markers", () => {
+  it("renders repo only when the key is not itself the repo", () => {
+    assert.equal(markerFor("acme-api"), "<!-- proseco:acme-api -->");
+    assert.equal(markerFor("acme-api", "acme-api"), "<!-- proseco:acme-api -->");
+    assert.equal(markerFor("docker.io/library/postgres", "acme-infra"), "<!-- proseco:docker.io/library/postgres repo:acme-infra -->");
+  });
+
+  it("reads old markers and the unmapped marker", () => {
+    assert.equal(markerRepo("<!-- proseco:Acme.Repo1 -->\n\nbody"), "Acme.Repo1");
+    assert.equal(markerKey("<!-- proseco:Acme.Repo1 -->\n\nbody"), "Acme.Repo1");
+    assert.equal(markerRepo("<!-- proseco:unmapped -->"), null);
+    assert.equal(markerKey("<!-- proseco:unmapped -->"), "unmapped");
+    assert.equal(markerRepo("no marker"), null);
+    assert.equal(markerKey("no marker"), null);
+  });
+});
+
+describe("body size", () => {
+  it("flags a body over GitHub's limit", () => {
+    assert.equal(BODY_LIMIT, 65536);
+    assert.equal(bodyTooLarge("x".repeat(65536)), false);
+    assert.equal(bodyTooLarge("x".repeat(65537)), true);
   });
 });

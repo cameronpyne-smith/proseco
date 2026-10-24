@@ -21,7 +21,7 @@ export interface Fix {
 }
 
 export function keyOf(finding: Finding): string {
-  return finding.repo ?? UNMAPPED_KEY;
+  return finding.imageKey ?? finding.repo ?? UNMAPPED_KEY;
 }
 
 export function qualifies(finding: Finding): boolean {

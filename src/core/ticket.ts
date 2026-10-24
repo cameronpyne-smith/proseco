@@ -28,13 +28,27 @@ const EPSS_COLUMN = new Map([
   [FIX_HEADER, 7],
 ]);
 
-export function markerFor(key: string): string {
-  return `<!-- proseco:${key} -->`;
+export const BODY_LIMIT = 65536;
+
+const MARKER = /^<!-- proseco:([^\s<>]+)(?: repo:([^\s<>]+))? -->/;
+
+export function markerFor(key: string, repo?: string): string {
+  return repo && repo !== key ? `<!-- proseco:${key} repo:${repo} -->` : `<!-- proseco:${key} -->`;
 }
 
 export function markerKey(body: string): string | null {
-  const match = /^<!-- proseco:([^\s<>]+) -->/.exec(body);
-  return match?.[1] ?? null;
+  return MARKER.exec(body)?.[1] ?? null;
+}
+
+export function markerRepo(body: string): string | null {
+  const match = MARKER.exec(body);
+  if (!match) return null;
+  if (match[2]) return match[2];
+  return match[1] === UNMAPPED_KEY ? null : match[1]!;
+}
+
+export function bodyTooLarge(body: string): boolean {
+  return body.length > BODY_LIMIT;
 }
 
 export function isProsecoTicket(ticket: Pick<ExistingTicket, "body" | "author">, creators: string[]): boolean {
@@ -133,13 +147,21 @@ export function renderBody(key: string, findings: Finding[], enrichment: Enrichm
       enrichment.kev.has(finding.cve) ? "yes" : "no",
     ]),
   );
+  const repo = findings[0]?.repo ?? undefined;
+  const imageTicket = repo !== undefined && repo !== key;
   return [
-    markerFor(key),
+    markerFor(key, repo),
     "",
     `Critical and high findings with a fix available. This ticket is maintained by proseco in ${context.maintainedIn}; the tables are rewritten on every run.`,
     "",
     "One row per package to upgrade. Severity, EPSS and KEV are the worst across the row's findings. Highest fixed-in is the largest fixed-in version among them, or every one of them when they cannot be compared. Major upgrade is yes when the first non-zero part of the version changes, and ? when a version cannot be read. Relationship and scope are as Dependabot reports them. The raw findings below are the source data for every row.",
     "",
+    ...(imageTicket
+      ? [
+          `These findings are fixed in \`${repo}\` by bumping the image tag or chart version where it is declared. Images shipped by the managed Kubernetes service are updated by upgrading the cluster.`,
+          "",
+        ]
+      : []),
     FIX_HEADER,
     FIX_DIVIDER,
     ...fixRows,

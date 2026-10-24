@@ -38,6 +38,7 @@ export function parseDependabotAlerts(alerts: DependabotAlert[]): Finding[] {
       source: alert.dependency.manifest_path,
       relationship: alert.dependency.relationship ?? null,
       scope: alert.dependency.scope ?? null,
+      imageKey: null,
     });
   }
   return findings;

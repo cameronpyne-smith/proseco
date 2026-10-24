@@ -20,7 +20,7 @@ function sourcesFor(config: Config, readToken: string): Source[] {
   const sources: Source[] = [];
   if (config.sources.dependabot) sources.push(new DependabotSource(readToken, config.org));
   if (config.sources.defender) {
-    sources.push(new DefenderSource(requireEnv("AZURE_SUBSCRIPTION_ID"), config.org, config.sources.defender.imageRepos));
+    sources.push(new DefenderSource(requireEnv("AZURE_SUBSCRIPTION_ID"), config.sources.defender.imageRepos));
   }
   return sources;
 }
@@ -70,6 +70,7 @@ async function apply(config: Config, tickets: TicketRepo, actions: Action[], exi
   };
   const failures: string[] = [];
   for (const action of actions) {
+    if (action.type === "oversize") continue;
     try {
       await applyAction(action);
     } catch (error) {
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
   for (const source of sourcesFor(config, readToken)) {
     const found = await source.fetch();
     console.log(`${source.name} findings: ${found.length}`);
+    for (const line of source.diagnostics?.() ?? []) console.log(line);
     findings.push(...found);
   }
   const qualifying = [...groupFindings(findings).values()].flat();
@@ -97,6 +99,11 @@ async function main(): Promise<void> {
   const existing = await new TicketRepo(readToken, config.org, config.tickets.repo).list(ticketFilters(config.tickets.find));
   const actions = planActions(findings, existing, enrichment, { org: config.org, maintainedIn: config.tickets.maintainedIn });
   console.log(formatPlan(actions));
+  for (const action of actions) {
+    if (action.type !== "oversize") continue;
+    console.error(`::error::${action.message}`);
+    process.exitCode = 1;
+  }
 
   if (dryRun) {
     console.log("dry run: nothing written");

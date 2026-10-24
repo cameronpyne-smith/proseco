@@ -14,6 +14,7 @@ export interface Finding {
   source: string;
   relationship: string | null;
   scope: string | null;
+  imageKey: string | null;
 }
 
 export interface Enrichment {

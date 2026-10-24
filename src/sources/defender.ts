@@ -2,77 +2,128 @@ import { execFileSync } from "node:child_process";
 import { expectOk } from "../core/github.ts";
 import type { Finding } from "../core/types.ts";
 import { toSeverity } from "../core/types.ts";
+import type { ImageRouting } from "../core/config.ts";
 import type { Source } from "./source.ts";
-
-const RUNNING_IMAGES_ASSESSMENT = "c609cf0f-71ab-41e9-a3c6-9a1f7fe1b8d5";
 
 export interface DefenderRow {
   id: string;
   properties: {
-    id?: string;
-    status?: { code?: string; severity?: string };
+    status?: { code?: string };
     additionalData?: {
-      cve?: { title?: string }[];
-      patchable?: boolean;
-      imageDetails?: { registry?: string; repository?: string };
-      softwareDetails?: { packageName?: string; version?: string; fixedVersion?: string };
+      CvesDetails?: string;
+      ScannersDetails?: string;
+      Language?: string;
+      PackageType?: string;
+      SoftwareName?: string;
     };
+    resourceAdditionalData?: string;
   };
 }
 
-export interface ImageFinding extends Omit<Finding, "repo"> {
-  registry: string | null;
-  repository: string;
+export type ImageFinding = Omit<Finding, "repo" | "imageKey">;
+
+interface CveDetail {
+  CveId?: string;
+  Severity?: string;
+  FixStatus?: string;
+  FixedVersion?: string;
 }
 
-export function parseDefenderRows(rows: DefenderRow[]): ImageFinding[] {
-  const findings: ImageFinding[] = [];
-  for (const row of rows) {
-    const { status, additionalData } = row.properties;
-    if (status?.code !== "Unhealthy") continue;
-    const severity = toSeverity(status.severity);
-    const repository = additionalData?.imageDetails?.repository;
-    const cve = additionalData?.cve?.[0]?.title ?? row.properties.id;
-    if (!severity || !repository || !cve) continue;
-    const software = additionalData?.softwareDetails;
-    findings.push({
-      origin: "defender",
-      registry: additionalData?.imageDetails?.registry ?? null,
-      repository,
-      cve,
-      severity,
-      ecosystem: null,
-      package: software?.packageName ?? "",
-      installed: software?.version ?? "",
-      fixedIn: additionalData?.patchable === false ? null : software?.fixedVersion || null,
-      source: imageName(additionalData?.imageDetails?.registry ?? null, repository),
-      relationship: null,
-      scope: null,
-    });
+interface ResourceDetails {
+  ResourceAdditionalDataType?: string;
+  ImageDetails?: { ImageUri?: string };
+}
+
+interface ScannerDetails {
+  mdvm?: { DetectedSoftwareVersions?: unknown };
+}
+
+function parseJson<T>(text: string | undefined): T | null {
+  if (text === undefined) return null;
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null ? (value as T) : null;
+  } catch {
+    return null;
   }
-  return findings;
 }
 
-export function imageName(registry: string | null, repository: string): string {
-  return registry ? `${registry}/${repository}` : repository;
+export function bareImage(imageUri: string): string {
+  return imageUri.split("@")[0]!.replace(/:[^/]*$/, "");
 }
 
-export function ghcrPackageName(finding: Pick<ImageFinding, "registry" | "repository">, org: string): string | null {
-  if (finding.registry?.toLowerCase() !== "ghcr.io") return null;
-  const prefix = `${org.toLowerCase()}/`;
-  const repository = finding.repository;
-  return repository.toLowerCase().startsWith(prefix) ? repository.slice(prefix.length) : null;
+export function parseDefenderRows(rows: DefenderRow[]): { findings: ImageFinding[]; skipped: number } {
+  const findings: ImageFinding[] = [];
+  let skipped = 0;
+  for (const row of rows) {
+    if (row.properties.status?.code !== "Unhealthy") continue;
+    const data = row.properties.additionalData;
+    const resource = parseJson<ResourceDetails>(row.properties.resourceAdditionalData);
+    const imageUri = resource?.ImageDetails?.ImageUri;
+    const cves = parseJson<CveDetail[]>(data?.CvesDetails);
+    const scanners = data?.ScannersDetails === undefined ? {} : parseJson<ScannerDetails>(data.ScannersDetails);
+    if (resource?.ResourceAdditionalDataType !== "KubernetesContainer" || !imageUri || !Array.isArray(cves) || !scanners) {
+      skipped++;
+      continue;
+    }
+    const detected = scanners.mdvm?.DetectedSoftwareVersions;
+    const versions = Array.isArray(detected) ? detected.filter((version): version is string => typeof version === "string") : [];
+    for (const installed of versions.length > 0 ? versions : [""]) {
+      for (const detail of cves) {
+        const severity = toSeverity(detail.Severity);
+        if (!severity || !detail.CveId) continue;
+        findings.push({
+          origin: "defender",
+          cve: detail.CveId,
+          severity,
+          ecosystem: data?.PackageType === "OS" ? "os" : data?.Language || null,
+          package: data?.SoftwareName ?? "",
+          installed,
+          fixedIn: detail.FixStatus === "FixAvailable" ? detail.FixedVersion || null : null,
+          source: bareImage(imageUri),
+          relationship: null,
+          scope: null,
+        });
+      }
+    }
+  }
+  return { findings, skipped };
 }
 
-export function assignRepos(
-  imageFindings: ImageFinding[],
-  org: string,
-  repoByPackage: Map<string, string>,
-): Finding[] {
-  return imageFindings.map(({ registry, repository, ...finding }) => {
-    const pkg = ghcrPackageName({ registry, repository }, org);
-    return { ...finding, repo: pkg ? (repoByPackage.get(pkg.toLowerCase()) ?? null) : null };
-  });
+function longestMatch(image: string, section: Iterable<string>): string | null {
+  let best: string | null = null;
+  for (const prefix of section) {
+    const matches = image === prefix || image.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
+    if (matches && (best === null || prefix.length > best.length)) best = prefix;
+  }
+  return best;
+}
+
+export function assignRepos(imageFindings: ImageFinding[], routing: ImageRouting): { findings: Finding[]; ignored: number } {
+  const findings: Finding[] = [];
+  let ignored = 0;
+  for (const finding of imageFindings) {
+    const image = finding.source.toLowerCase();
+    const matches = [
+      { section: "own", prefix: longestMatch(image, routing.own.keys()) },
+      { section: "thirdParty", prefix: longestMatch(image, routing.thirdParty.keys()) },
+      { section: "ignore", prefix: longestMatch(image, routing.ignore) },
+    ].filter((match): match is { section: string; prefix: string } => match.prefix !== null);
+    const best = matches.sort((a, b) => b.prefix.length - a.prefix.length)[0];
+    if (best?.section === "ignore") ignored++;
+    else if (best?.section === "own") findings.push({ ...finding, repo: routing.own.get(best.prefix)!, imageKey: null });
+    else if (best?.section === "thirdParty") findings.push({ ...finding, repo: routing.thirdParty.get(best.prefix)!, imageKey: finding.source });
+    else findings.push({ ...finding, repo: null, imageKey: null });
+  }
+  return { findings, ignored };
+}
+
+export function defenderDiagnostics(counts: { rows: number; parsed: number; skipped: number; ignored: number }): string[] {
+  const lines = [`defender rows skipped: ${counts.skipped}`, `defender findings ignored: ${counts.ignored}`];
+  if (counts.rows > 0 && counts.parsed === 0) {
+    lines.push(`::warning::defender returned ${counts.rows} rows but none parsed into findings; the recommendation format may have changed`);
+  }
+  return lines;
 }
 
 async function fetchDefenderRows(subscriptionId: string): Promise<DefenderRow[]> {
@@ -83,8 +134,10 @@ async function fetchDefenderRows(subscriptionId: string): Promise<DefenderRow[]>
   ).trim();
   const query = [
     "securityresources",
-    'where type == "microsoft.security/assessments/subassessments"',
-    `where id has "${RUNNING_IMAGES_ASSESSMENT}"`,
+    'where type == "microsoft.security/assessments"',
+    'where properties.metadata.securityIssue == "Vulnerability"',
+    'where properties.metadata.recommendationCategory == "SoftwareUpdate"',
+    'where properties.status.code == "Unhealthy"',
     "project id, properties",
   ].join(" | ");
   const rows: DefenderRow[] = [];
@@ -112,16 +165,23 @@ async function fetchDefenderRows(subscriptionId: string): Promise<DefenderRow[]>
 export class DefenderSource implements Source {
   readonly name = "defender";
   readonly #subscriptionId: string;
-  readonly #org: string;
-  readonly #repoByPackage: Map<string, string>;
+  readonly #routing: ImageRouting;
+  #diagnostics: string[] = [];
 
-  constructor(subscriptionId: string, org: string, repoByPackage: Map<string, string>) {
+  constructor(subscriptionId: string, routing: ImageRouting) {
     this.#subscriptionId = subscriptionId;
-    this.#org = org;
-    this.#repoByPackage = repoByPackage;
+    this.#routing = routing;
   }
 
   async fetch(): Promise<Finding[]> {
-    return assignRepos(parseDefenderRows(await fetchDefenderRows(this.#subscriptionId)), this.#org, this.#repoByPackage);
+    const rows = await fetchDefenderRows(this.#subscriptionId);
+    const parsed = parseDefenderRows(rows);
+    const routed = assignRepos(parsed.findings, this.#routing);
+    this.#diagnostics = defenderDiagnostics({ rows: rows.length, parsed: parsed.findings.length, skipped: parsed.skipped, ignored: routed.ignored });
+    return routed.findings;
+  }
+
+  diagnostics(): string[] {
+    return this.#diagnostics;
   }
 }

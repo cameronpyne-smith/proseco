@@ -21,6 +21,7 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     source: "package-lock.json",
     relationship: "transitive",
     scope: "development",
+    imageKey: null,
     ...overrides,
   };
 }
@@ -294,5 +295,26 @@ describe("planning", () => {
   it("ignores an issue that merely quotes the marker format in its text", () => {
     const spec = "Identified by a hidden marker (`<!-- proseco:<repo> -->`) per repo.\n\n<!-- proseco:acme-docs -->";
     assert.deepEqual(plan([], [ticket({ body: spec })], enrichment()), []);
+  });
+});
+
+describe("oversize bodies", () => {
+  const huge = (cve: string) =>
+    Array.from({ length: 600 }, (_, index) =>
+      finding({ cve: `${cve}-${index}`, package: `a-very-long-package-name-${index}-${"x".repeat(40)}`, installed: `1.0.${index}`, fixedIn: `1.1.${index}` }),
+    );
+
+  it("fails the oversize ticket with its key and length and still plans the others", () => {
+    const actions = plan([...huge("CVE-2026-9").map((f) => ({ ...f, repo: "big" })), finding({ repo: "small" })], [], enrichment());
+    const big = actions.find((action) => action.key === "big")!;
+    assert.equal(big.type, "oversize");
+    assert.match((big as { message: string }).message, /^big: .* \d{5,} characters/);
+    assert.equal(actions.find((action) => action.key === "small")!.type, "create");
+  });
+
+  it("does not update an existing ticket whose new body is oversize", () => {
+    const old = render("big", [finding({ repo: "big" })], enrichment());
+    const actions = plan(huge("CVE-2026-9").map((f) => ({ ...f, repo: "big" })), [ticket({ body: old })], enrichment());
+    assert.deepEqual(actions.map((action) => action.type), ["oversize"]);
   });
 });

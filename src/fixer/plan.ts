@@ -45,6 +45,7 @@ function findingOf(row: TicketRow): Finding {
     source: row.source,
     relationship: null,
     scope: null,
+    imageKey: null,
   };
 }
 

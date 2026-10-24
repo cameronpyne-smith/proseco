@@ -31,6 +31,7 @@ const FINDING: Finding = {
   source: "package-lock.json",
   relationship: null,
   scope: null,
+  imageKey: null,
 };
 const ENRICHMENT: Enrichment = { epss: new Map(), kev: new Set() };
 
