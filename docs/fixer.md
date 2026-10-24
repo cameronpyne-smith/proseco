@@ -17,8 +17,8 @@ This document is the design. The README describes what is built.
 | Network | The container sits on an internal Docker network. Its only route out is a proxy container, also ours, that allows package registries only. No credential ever enters a container. |
 | Credentials | The proseco app, with contents and pull-requests write. Its private key reaches the daemon through systemd `LoadCredential`. The daemon mints short-lived installation tokens and passes them to git per command. |
 | Clones | The daemon keeps its own bare clones. One local clone per attempt, hardlinked from the bare clone and detached at the default branch head, is bind-mounted into the container. Git reads work inside it; the host makes every commit and push. |
-| PR split | One PR per lockfile for the non-major rows. Each major upgrade gets its own draft PR. |
-| PR gate | Deterministic lockfile check, or no PR. Tests green in the container: a ready PR. Tests red after the agent finished: a draft PR that says what fails. An agent that did not call finish (budget, stalled, error): no PR, and the reason goes in the ticket comment. |
+| PR split | One PR per lockfile for the non-major rows. Each major upgrade gets its own PR, always a draft. |
+| PR gate | Deterministic lockfile check, or no PR. For a lockfile unit, tests green in the container: a ready PR; tests red after the agent finished: a draft PR that says what fails. A major unit is a draft PR whatever the tests did. An agent that did not call finish (budget, stalled, error): no PR, and the reason goes in the ticket comment. |
 | Image tickets | Tickets keyed by an image reference are fixed by bumping the image tag or chart version where it is declared, in a later milestone. Until then the fixer reports them as unsupported. |
 | Ignore | A person comments `@<bot> ignore` to make the fixer leave a ticket alone, whatever happens to its body; `@<bot> fix` clears it and forces an attempt. |
 | Re-runs | One attempt per ticket body. Rerun when the body hash changes and no open proseco PR exists for the ticket, or when a person comments `@<bot> fix`. A PR closed without merging is not retried on its own. |
@@ -57,8 +57,9 @@ src/fixer/
   unit.ts         one unit: clone, sandbox, agent, guard, check, harness, verify, commit, publish
   state.ts        attempts by ticket: body hash, head SHA, PRs, outcome
   plan.ts         rows → PR units
-  facts.ts        a unit's rows, advisories and parent chains, for the prompt
+  facts.ts        a unit's rows, advisories, parent chains and, for a major, release notes, for the prompt
   advisories.ts   advisory lookup
+  releases.ts     release notes between the installed and target versions, from the registry and GitHub
   dryrun.ts       the dry-run report
   requests.ts     fix requests and the comment command
   check.ts        the deterministic lockfile check
@@ -86,7 +87,7 @@ src/core/github.ts  GitHub API clients: tickets, and RepoApi for pull requests
 src/core/versions.ts  version comparison (semver and PEP 440)
 ```
 
-Config, under `fixer`, gains: `bot` (the app slug, matched in the command comment), `app` (client id, installation id), `cloneDir`, `stateFile`, `ollama` (url, model, numCtx, numPredict, think, timeoutMinutes), `pollMinutes` (default 1), `budget` (minutes, toolCalls, commandMinutes), `proxy.allow` (registry hosts), and `ecosystems` (which are enabled). Unknown keys are still rejected.
+Config, under `fixer`, gains: `bot` (the app slug, matched in the command comment), `app` (client id, installation id), `cloneDir`, `stateFile`, `ollama` (url, model, numCtx, numPredict, think, timeoutMinutes), `pollMinutes` (default 1), `budget` (minutes, majorMinutes, toolCalls, commandMinutes), `proxy.allow` (registry hosts), and `ecosystems` (which are enabled). Unknown keys are still rejected.
 
 ## Deployment
 
