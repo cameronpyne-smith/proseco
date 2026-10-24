@@ -69,7 +69,7 @@ deploy/         systemd unit, install script and example config for the fixer se
     "proxy": { "allow": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"] },
     "sandbox": { "memory": "8g", "cpus": 4 },
     "ollama": { "url": "http://127.0.0.1:11434", "model": "qwen3.8:27b", "numCtx": 65536, "numPredict": 12288, "think": true, "timeoutMinutes": 20 },
-    "budget": { "minutes": 30, "toolCalls": 200, "commandMinutes": 10 }
+    "budget": { "minutes": 30, "majorMinutes": 60, "toolCalls": 200, "commandMinutes": 10 }
   }
 }
 ```

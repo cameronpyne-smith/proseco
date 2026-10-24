@@ -60,7 +60,6 @@ function none(reason: string): UnitResult {
 
 async function work(unit: PrUnit, headSha: string, imageTicket: boolean, deps: AttemptDeps): Promise<UnitResult> {
   if (imageTicket) return none("image tickets are not attempted yet");
-  if (unit.kind === "major") return none("major upgrades are not attempted yet");
   if (unit.ecosystem === null) return none("unsupported ecosystem: unknown lockfile type");
   try {
     return await deps.workUnit(unit, headSha);

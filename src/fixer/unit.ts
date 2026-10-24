@@ -14,10 +14,11 @@ import { runLoop } from "./agent/loop.ts";
 import type { OllamaClient } from "./agent/ollama.ts";
 import { systemPrompt, userPrompt } from "./agent/prompts.ts";
 import { executeTool, TOOL_DEFINITIONS } from "./agent/tools.ts";
-import { verifySummary } from "./agent/verify.ts";
-import { commitMessage, renderPrBody, summariseDiscarded, type TestOutcome } from "./pr.ts";
+import { verifySummary, type DiffFile } from "./agent/verify.ts";
+import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
-import { allowedFiles, commitAllowed, discardOthers, type CommitResult } from "./publish.ts";
+import { allowedFiles, commitAllowed, discardOthers, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
+import type { ReleaseNotes } from "./releases.ts";
 import { Docker, type ExecResult } from "./sandbox/docker.ts";
 import { ensureImage, imageFor } from "./sandbox/images.ts";
 import { Sandbox, type StartOptions } from "./sandbox/sandbox.ts";
@@ -56,6 +57,7 @@ export interface UnitContext {
   fixer: FixerConfig;
   llm: OllamaClient;
   advisory(cve: string, pkg: string): Promise<Advisory | null>;
+  releases?(ecosystem: string, pkg: string, installed: string, target: string): Promise<ReleaseNotes>;
   publisher: Publisher;
   keepCheckout: boolean;
   ecosystemFor?(lockfile: string): Ecosystem | null;
@@ -99,13 +101,15 @@ async function harness(sandbox: SandboxHandle, ecosystem: Ecosystem, lockfile: s
   return { kind: "passed", commands: [plan.install, plan.test], tail: combined(test) };
 }
 
-async function diffOf(ctx: UnitContext, checkout: string, base: string, commit: CommitResult, lockfile: string): Promise<string> {
-  const files = [...commit.files].sort((a, b) => Number(a === lockfile) - Number(b === lockfile) || (a < b ? -1 : 1));
-  const parts: string[] = [];
+async function diffFilesOf(ctx: UnitContext, checkout: string, base: string, commit: CommitResult, lockfile: string, manifests: Set<string> | null): Promise<DiffFile[]> {
+  const rank = (file: string) => (manifests && !manifests.has(file) ? 2 : file === lockfile ? 1 : 0);
+  const files = [...commit.files].sort((a, b) => (manifests ? rank(a) - rank(b) : Number(a === lockfile) - Number(b === lockfile)) || (a < b ? -1 : 1));
+  const parts: DiffFile[] = [];
   for (const file of files) {
-    parts.push(await ctx.store.inCheckout(checkout, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "HEAD", "--", file], "git diff"));
+    const text = await ctx.store.inCheckout(checkout, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "HEAD", "--", file], "git diff");
+    parts.push({ path: file, text, manifest: manifests ? manifests.has(file) : file === lockfile });
   }
-  return parts.join("\n");
+  return parts;
 }
 
 export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string): Promise<UnitResult> {
@@ -117,7 +121,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
   const unsupported = ecosystem.unsupported(lockfileText);
   if (unsupported) return none(unsupported);
   const toolchain = await declaredToolchain(ecosystem, unit.source, readFile);
-  const facts = await buildFacts(unit, ecosystem, lockfileText, toolchain, ctx.advisory);
+  const major = unit.kind === "major";
+  const facts = await buildFacts(unit, ecosystem, lockfileText, toolchain, ctx.advisory, ctx.releases);
   const image = await ensureImage(ctx.docker, imageFor(ecosystem.imageFamily, toolchain));
   const checkout = await ctx.store.checkout(ctx.repo, headSha);
   let sandbox: SandboxHandle | undefined;
@@ -146,9 +151,9 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
           name,
           args,
         ),
-      system: systemPrompt(ecosystem.notes),
+      system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),
-      timeBudgetMs: ctx.fixer.budget.minutes * MS_PER_MINUTE,
+      timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,
       maxToolCalls: ctx.fixer.budget.toolCalls,
     });
     const extra = { stats: loop.stats, trace: loop.trace, ...(ctx.keepCheckout ? { checkout } : {}) };
@@ -156,7 +161,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     if (loop.outcome !== "finished" || !loop.finish) {
       return none(`the agent gave up (${loop.outcome}${loop.error ? `: ${loop.error}` : ""})`, extra);
     }
-    const allowed = allowedFiles(ecosystem, unit.source, lockfileText);
+    const manifests = allowedFiles(ecosystem, unit.source, lockfileText);
+    const allowed: Allowed = major ? majorGuard({ root: checkout, ecosystem }) : manifests;
     const discarded = new Set(await discardOthers(ctx.store, checkout, headSha, allowed));
 
     let checks: PackageCheck[];
@@ -173,23 +179,18 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     ctx.log(`harness: ${tests.kind}`);
     for (const path of await discardOthers(ctx.store, checkout, headSha, allowed)) discarded.add(path);
 
-    const title = commitMessage(unit.source, unit.fixes);
+    const prFixes: PrFix[] = unit.fixes.map((item) => ({ package: item.package, installed: item.installed, target: item.target, rows: item.rows.map((row) => ({ cve: row.cve, severity: row.severity })) }));
+    const title = major ? majorTitle(prFixes[0]!) : commitMessage(unit.source, prFixes);
     const commit = await commitAllowed(ctx.store, checkout, { bot: ctx.bot, message: title, allowed });
-    if (!commit) return none("the agent made no change to the manifest or lockfile that could be committed", extra);
-    const diff = await diffOf(ctx, checkout, headSha, commit, unit.source);
-    const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, diff);
-    const draft = tests.kind === "failed";
-    const body = renderPrBody({
-      org: ctx.org,
-      ticketsRepo: ctx.ticketsRepo,
-      ticket: ctx.ticket,
-      lockfile: unit.source,
-      fixes: unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target, rows: fix.rows.map((row) => ({ cve: row.cve, severity: row.severity })) })),
-      summary,
-      checks,
-      tests,
-      discarded: summariseDiscarded([...discarded]),
-    });
+    if (!commit) return none(major ? "the agent made no change that could be committed" : "the agent made no change to the manifest or lockfile that could be committed", extra);
+    const diffFiles = await diffFilesOf(ctx, checkout, headSha, commit, unit.source, major ? manifests : null);
+    const diff = diffFiles.map((file) => file.text).join("\n");
+    const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, major ? diffFiles : diff);
+    const draft = major || tests.kind === "failed";
+    const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, discarded: summariseDiscarded([...discarded]) };
+    const body = major
+      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releaseTags: facts.fixes[0]?.releases?.releases.map((release) => release.tag) ?? [] })
+      : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
     if (!published) return none("not published (local run)", extra);
     return { outcome: { kind: "pr", url: published.url, draft: published.draft }, ...extra };

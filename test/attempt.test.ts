@@ -98,17 +98,32 @@ describe("attempt", () => {
     assert.match(run.comments[0]!, /lockfile check failed/);
   });
 
-  it("reports major upgrades and other ecosystems without working them", async () => {
+  it("works lockfile units first and then major upgrades, and reports other ecosystems without working them", async () => {
     const mixed = ticket([
-      finding({}),
       finding({ cve: "CVE-2026-0003", package: "express", installed: "3.0.0", fixedIn: "4.0.0", source: "package-lock.json" }),
+      finding({}),
       finding({ cve: "CVE-2026-0004", ecosystem: "pip", package: "flask", installed: "1.0.0", fixedIn: "1.0.1", source: "Gemfile.lock" }),
     ]);
     const run = harness();
-    await runAttempt({ ticket: mixed, force: false, state: emptyState(), local: false }, run.deps);
-    assert.deepEqual(run.worked, ["package-lock.json"]);
-    assert.match(run.comments[0]!, /express.*major.*: no pull request: major upgrades are not attempted yet/);
+    const result = await runAttempt({ ticket: mixed, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(result.reports.map((report) => report.unit.kind), ["lockfile", "lockfile", "major"]);
+    assert.deepEqual(run.worked, ["package-lock.json", "package-lock.json"]);
+    assert.match(run.comments[0]!, /express.*major.*: ready for review/);
     assert.match(run.comments[0]!, /`Gemfile\.lock`: no pull request: unsupported ecosystem: unknown lockfile type/);
+  });
+
+  it("leaves the lockfile unit's pull request untouched when the major unit fails", async () => {
+    const mixed = ticket([finding({}), finding({ cve: "CVE-2026-0003", package: "express", installed: "3.0.0", fixedIn: "4.0.0", source: "package-lock.json" })]);
+    const run = harness({
+      work: async (unit) => {
+        if (unit.kind === "major") throw new Error("the agent ran out of road");
+        return { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/4", draft: false } };
+      },
+    });
+    const result = await runAttempt({ ticket: mixed, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(result.state.tickets["12"]!.attempt!.prUrls, ["https://github.com/acme-org/acme-api/pull/4"]);
+    assert.equal(result.state.tickets["12"]!.attempt!.outcome, "pr-opened");
+    assert.match(run.comments[0]!, /express.*major.*: no pull request: unexpected failure: the agent ran out of road/);
   });
 
   it("works uv and requirements units like npm ones", async () => {

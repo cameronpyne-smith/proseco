@@ -7,6 +7,7 @@ import { runAttempt, type AttemptResult } from "./attempt.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters, type FixRequest } from "./requests.ts";
 import { upsertComment } from "./comment.ts";
 import { GitStore } from "./git.ts";
+import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
 import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus } from "./state.ts";
 import { workUnit, type PublishRequest, type Publisher } from "./unit.ts";
@@ -88,6 +89,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const readToken = await tokens({ repositories: [repo], permissions: { contents: "read", pull_requests: "read" } });
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: (name) => `https://github.com/${config.org}/${name}.git`, token: readToken });
   const advisories = new Advisories(readToken);
+  const releases = new Releases(readToken);
   const readApi = new RepoApi(readToken, config.org, repo);
   let state = loadState(fixer.stateFile);
   const command = input.request ? null : commandComment(await (await tickets()).comments(number), fixer.bot, lastCommentId(state, number));
@@ -132,6 +134,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
             fixer,
             llm,
             advisory: (cve, pkg) => advisories.lookup(cve, pkg),
+            releases: (ecosystem, pkg, installed, target) => releases.lookup(ecosystem, pkg, installed, target),
             publisher,
             keepCheckout: local,
             log: (message) => console.error(`[${unit.branch}] ${message}`),
