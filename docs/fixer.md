@@ -91,9 +91,11 @@ Config, under `fixer`, gains: `bot` (the app slug, matched in the command commen
 ## Deployment
 
 - A `proseco` system user with rootless Docker, linger enabled so its Docker daemon runs without a login.
-- A systemd unit modelled on reviewdo's, with `User=proseco` instead of `DynamicUser`, a state directory for clones and state, and the private key via `LoadCredential`.
+- `deploy/proseco-fixer.service`, modelled on reviewdo's, with `User=proseco` instead of `DynamicUser`, `StateDirectory=proseco` for clones and state, and the private key via `LoadCredential`. The user's Docker is reached through a drop-in that sets `DOCKER_HOST`, written by the install script because the uid is only known on the host.
+- The app lives at a pinned commit in `/opt/proseco/app` and runs on its own Node 24 in `/opt/proseco/node`, from the official tarball. Config and key are under `/etc/proseco`, state under `/var/lib/proseco`.
 - Outbound from the daemon: `api.github.com`, `github.com`, Ollama on localhost, the rootless Docker socket. Nothing listens.
-- The deployment lives in the private repository that holds the config, like the ticketer's workflow. Only Dockerfiles, the unit template and an install script live here.
+- `deploy/install.sh <sha>` does all of it, idempotently, and also upgrades; `--dry-run` prints what it would change. It never creates the private key and finishes by running `fixer check` as the service user. The README's "Deploying the fixer" has the steps, the hardening lines that differ from reviewdo's and why, and removal.
+- The deployment's own config lives in the private repository that holds it, like the ticketer's workflow. Only Dockerfiles, the unit, the install script and example config live here.
 
 ## Milestones
 

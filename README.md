@@ -26,6 +26,7 @@ src/sources/    dependabot, defender      (each a Source)
 src/enrich/     EPSS (FIRST) and KEV (CISA)
 src/ticketer/   raises and maintains the tickets; run by action.yml
 src/fixer/      reads the tickets; a CLI for the fix workflow
+deploy/         systemd unit, install script and example config for the fixer service
 ```
 
 **The ticket body is a contract.** `src/core/ticket.ts` both writes it (`renderBody`) and reads it back (`parseRawTable`), so the ticketer and the fixer cannot drift apart.
@@ -274,6 +275,65 @@ npm run test:agent
 ```
 
 It can take 10 to 30 minutes.
+
+## Deploying the fixer
+
+`deploy/` installs the fixer as a systemd service on Ubuntu 24.04: a dedicated `proseco` user with rootless Docker, the app at a pinned commit, a Node 24 of its own, config under `/etc/proseco` and state under `/var/lib/proseco`.
+
+Prerequisites: root, `curl`, `git`, `sudo`, `uidmap` (`newuidmap`), `dockerd-rootless-setuptool.sh` (from the Docker packages; the root Docker daemon is not used or touched), outbound HTTPS to `nodejs.org`, `github.com` and `api.github.com`, and Ollama on the host with the configured model pulled. The GitHub App's private key must be to hand.
+
+```
+sudo deploy/install.sh <40 character commit sha>
+deploy/install.sh <sha> --dry-run
+```
+
+The commit must be the full sha: a branch, tag or abbreviation is refused. `--dry-run` prints every command that would change something, each with a leading `+`, and needs no root. Every step checks before acting and reports `already` or `done`, so the script can be run again.
+
+| Step | Result |
+| --- | --- |
+| Node | `/opt/proseco/node`: the official `nodejs.org` tarball for the host's architecture, checked against `SHASUMS256.txt` from the same release directory. The version is `NODE_VERSION` at the top of the script. |
+| App | `/opt/proseco/app`: a clone of this repository, detached at the commit, owned by root and world-readable. There is no `npm ci`: the project has no runtime dependencies. |
+| User | `proseco`, a system user with home `/var/lib/proseco-home` and no login shell, and a 65536 range in `/etc/subuid` and `/etc/subgid` that starts above every existing range. |
+| Linger | `loginctl enable-linger proseco`, so the user's systemd instance and its rootless `docker.service` start at boot. |
+| Docker | `dockerd-rootless-setuptool.sh install` as `proseco` in its own user session, then `systemctl --user enable --now docker`. |
+| Config | `/etc/proseco/config.json` and `/etc/proseco/image-repos.json` from `deploy/config.example.json` and `deploy/image-repos.example.json`, only when absent. They are root-owned, mode 0644. The script never creates or touches `/etc/proseco/private-key.pem`. |
+| Unit | `/etc/systemd/system/proseco-fixer.service`, and a drop-in `proseco-fixer.service.d/docker.conf` that sets `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`, because the uid is only known on the host. Then `systemctl daemon-reload`. |
+| Check | When the key is present, `fixer check` runs as `proseco` with the unit's environment and a temporary `CREDENTIALS_DIRECTORY` holding a copy of the key, which is removed afterwards. Its output is printed. |
+
+It ends by printing what is left to do: copy the key (`sudo install -m 0600 -o root -g root <key> /etc/proseco/private-key.pem`), edit the two config files, then `sudo systemctl enable --now proseco-fixer` and `journalctl -fu proseco-fixer`. The example config is a complete fixer-only config with every `fixer` key at its default and anonymised values. `sources.dependabot` is there only because the parser requires a source.
+
+State: `/var/lib/proseco` (`StateDirectory=proseco`) holds `clones/`, with the attempt checkouts under `clones/attempts/`, and `state.json`.
+
+The unit follows the reviewdo unit, with these hardening lines left out or loosened:
+- `DynamicUser` is replaced by `User=proseco`, because rootless Docker needs a user with a home and a subuid range.
+- `PrivateUsers` is not set: the daemon's files must be owned by the real `proseco` uid for the rootless daemon's bind mounts.
+- `MemoryDenyWriteExecute` is not set: Node's JIT needs writable executable memory.
+- `ProtectHome` is `read-only` rather than `yes`, with no `ReadWritePaths`: the CLI reads rootless Docker's config from the service user's home, and the daemon writes only under `/var/lib/proseco`.
+- `RestrictAddressFamilies` adds `AF_UNIX`, which the Docker socket needs.
+- `UMask` is `0022` rather than `0077`: files the daemon writes into attempt directories must be readable through the container's uid mapping.
+
+`TimeoutStopSec=15m` with `KillMode=mixed` lets a unit in progress finish its teardown after SIGTERM; the daemon handles the signal and exits 0.
+
+The fixer builds its sandbox images the first time they are needed. The proxy image is expected to be tagged `dev` and rebuilt from cache each time, because git should refuse to read the root-owned checkout as `proseco`.
+
+Logs: `journalctl -fu proseco-fixer`. The daemon prints one line per event.
+
+Upgrade: run `sudo deploy/install.sh <new sha>` again. The script restarts the service only when the checkout moved and the service is active, and says so. A changed unit file is installed and reloaded but takes effect at the next restart.
+
+Removal, by hand:
+
+```
+sudo systemctl disable --now proseco-fixer
+sudo rm /etc/systemd/system/proseco-fixer.service
+sudo rm -r /etc/systemd/system/proseco-fixer.service.d
+sudo systemctl daemon-reload
+sudo -u proseco env XDG_RUNTIME_DIR=/run/user/$(id -u proseco) systemctl --user disable --now docker
+sudo loginctl disable-linger proseco
+sudo userdel proseco
+sudo rm -r /opt/proseco /etc/proseco /var/lib/proseco /var/lib/proseco-home
+```
+
+Remove the `proseco` lines from `/etc/subuid` and `/etc/subgid` if `userdel` left them.
 
 ## Development
 
