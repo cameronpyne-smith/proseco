@@ -38,12 +38,13 @@ export interface OllamaConfig {
 
 export interface BudgetConfig {
   minutes: number;
+  majorMinutes: number;
   toolCalls: number;
   commandMinutes: number;
 }
 
 export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 };
-export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, toolCalls: 200, commandMinutes: 10 };
+export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 };
 
 export const DEFAULT_POLL_MINUTES = 1;
 
@@ -194,7 +195,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "timeoutMinutes"]);
-    const budget = raw["budget"] === undefined ? {} : object(raw["budget"], "fixer.budget", ["minutes", "toolCalls", "commandMinutes"]);
+    const budget = raw["budget"] === undefined ? {} : object(raw["budget"], "fixer.budget", ["minutes", "majorMinutes", "toolCalls", "commandMinutes"]);
     const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
     if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
     fixer = {
@@ -218,6 +219,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
       },
       budget: {
         minutes: option(budget, "minutes", "fixer.budget", DEFAULT_BUDGET.minutes, positiveNumber),
+        majorMinutes: option(budget, "majorMinutes", "fixer.budget", DEFAULT_BUDGET.majorMinutes, positiveNumber),
         toolCalls: option(budget, "toolCalls", "fixer.budget", DEFAULT_BUDGET.toolCalls, positiveInteger),
         commandMinutes: option(budget, "commandMinutes", "fixer.budget", DEFAULT_BUDGET.commandMinutes, positiveNumber),
       },

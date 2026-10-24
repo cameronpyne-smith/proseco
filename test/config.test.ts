@@ -55,7 +55,7 @@ describe("config", () => {
       proxy: { allow: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"] },
       sandbox: { memory: "8g", cpus: 4 },
       ollama: { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 },
-      budget: { minutes: 30, toolCalls: 200, commandMinutes: 10 },
+      budget: { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 },
     });
   });
 
@@ -77,11 +77,11 @@ describe("config", () => {
       return raw;
     };
     const config = parseConfig(
-      set({ ollama: { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, timeoutMinutes: 5 }, budget: { minutes: 10, toolCalls: 20, commandMinutes: 2 } }),
+      set({ ollama: { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, timeoutMinutes: 5 }, budget: { minutes: 10, majorMinutes: 45, toolCalls: 20, commandMinutes: 2 } }),
       mapping,
     );
     assert.deepEqual(config.fixer!.ollama, { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, timeoutMinutes: 5 });
-    assert.deepEqual(config.fixer!.budget, { minutes: 10, toolCalls: 20, commandMinutes: 2 });
+    assert.deepEqual(config.fixer!.budget, { minutes: 10, majorMinutes: 45, toolCalls: 20, commandMinutes: 2 });
     const bad = (patch: Record<string, unknown>, message: RegExp) => assert.throws(() => parseConfig(set(patch), mapping), message);
     bad({ ollama: { url: "gpu" } }, /fixer.ollama.url must be an http or https URL/);
     bad({ ollama: { url: "ftp://gpu" } }, /fixer.ollama.url must be an http or https URL/);
@@ -92,6 +92,7 @@ describe("config", () => {
     bad({ ollama: { timeoutMinutes: -1 } }, /fixer.ollama.timeoutMinutes must be a positive number/);
     bad({ ollama: { temperature: 0 } }, /fixer.ollama has unknown keys: temperature/);
     bad({ budget: { minutes: 0 } }, /fixer.budget.minutes must be a positive number/);
+    bad({ budget: { majorMinutes: 0 } }, /fixer.budget.majorMinutes must be a positive number/);
     bad({ budget: { toolCalls: 0 } }, /fixer.budget.toolCalls must be a positive integer/);
     bad({ budget: { commandMinutes: 0 } }, /fixer.budget.commandMinutes must be a positive number/);
     bad({ budget: { time: 1 } }, /fixer.budget has unknown keys: time/);
