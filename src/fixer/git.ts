@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -10,6 +9,7 @@ export interface GitStoreOptions {
   cloneDir: string;
   remoteUrl(repo: string): string;
   token?: string | undefined;
+  attemptsDir?: string;
 }
 
 export function gitEnvironment(home: string, token: string | undefined): Record<string, string> {
@@ -36,10 +36,12 @@ export function gitEnvironment(home: string, token: string | undefined): Record<
 export class GitStore {
   readonly #options: GitStoreOptions;
   readonly #home: string;
+  readonly #attempts: string;
 
   constructor(options: GitStoreOptions) {
     this.#options = options;
     this.#home = join(options.cloneDir, ".home");
+    this.#attempts = resolve(options.attemptsDir ?? join(options.cloneDir, "attempts"));
   }
 
   #path(repo: string): string {
@@ -91,7 +93,8 @@ export class GitStore {
   }
 
   async worktreeAdd(repo: string, sha: string): Promise<string> {
-    const attempt = mkdtempSync(join(tmpdir(), "proseco-attempt-"));
+    mkdirSync(this.#attempts, { recursive: true });
+    const attempt = mkdtempSync(join(this.#attempts, "attempt-"));
     const path = join(attempt, "work");
     try {
       await this.#git(repo, ["worktree", "add", "--detach", "--quiet", path, sha], "git worktree add");

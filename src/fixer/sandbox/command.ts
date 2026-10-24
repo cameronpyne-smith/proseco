@@ -59,3 +59,7 @@ export function formatOutcome(outcome: SandboxOutcome): string {
   if (result.stderr) lines.push("--- stderr ---", result.stderr.replace(/\n$/, ""));
   return lines.join("\n");
 }
+
+export function exitCodeOf(outcome: SandboxOutcome): number {
+  return outcome.result.timedOut ? 124 : outcome.result.exitCode;
+}

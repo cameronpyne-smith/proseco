@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -89,6 +89,19 @@ describe("git store", () => {
     assert.equal(await clones.tryShow("acme-api", first, "dir/a.txt"), "one");
   });
 
+  it("puts worktrees in a configured attempts directory", async () => {
+    const remote = origin();
+    const sha = remote.commit("a.txt", "one");
+    const attemptsDir = mkdtempSync(join(tmpdir(), "proseco-attempts-"));
+    const cloneDir = mkdtempSync(join(tmpdir(), "proseco-clones-"));
+    const clones = new GitStore({ cloneDir, attemptsDir, remoteUrl: () => remote.dir });
+    await clones.fetch("acme-api");
+    const path = await clones.worktreeAdd("acme-api", sha);
+    assert.ok(path.startsWith(attemptsDir + "/"), path);
+    await clones.worktreeRemove("acme-api", path);
+    assert.deepEqual(readdirSync(attemptsDir), []);
+  });
+
   it("adds a detached worktree at a sha and removes it with its directory", async () => {
     const remote = origin();
     const first = remote.commit("a.txt", "one");
@@ -99,6 +112,7 @@ describe("git store", () => {
     assert.equal(readFileSync(join(path, "a.txt"), "utf8"), "one");
     assert.equal(git(path, "rev-parse", "HEAD"), first);
     assert.equal(git(path, "status", "--porcelain"), "");
+    assert.ok(path.startsWith(join(cloneDir, "attempts") + "/"), path);
     await clones.worktreeRemove("acme-api", path);
     assert.equal(existsSync(path), false);
     assert.equal(git(join(cloneDir, "acme-api.git"), "worktree", "list").split("\n").length, 1);

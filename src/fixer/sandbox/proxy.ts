@@ -70,7 +70,9 @@ export function createProxy(options: ProxyOptions): Server {
     const count = (chunk: Buffer) => {
       bytes += chunk.length;
     };
+    let tunnelled = false;
     upstream.on("connect", () => {
+      tunnelled = true;
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) upstream.write(head);
       client.on("data", count);
@@ -79,13 +81,14 @@ export function createProxy(options: ProxyOptions): Server {
       upstream.pipe(client);
     });
     upstream.on("error", () => {
+      if (!tunnelled) log(`unreachable ${label} bytes=0`);
       if (client.writable && bytes === 0) reply(client, 502, "Bad Gateway", `cannot reach ${destination.host}\n`);
       client.destroy();
     });
     client.on("error", () => upstream.destroy());
     client.on("close", () => upstream.destroy());
     upstream.on("close", () => {
-      log(`allowed ${label} bytes=${bytes}`);
+      if (tunnelled) log(`allowed ${label} bytes=${bytes}`);
       client.destroy();
     });
   });

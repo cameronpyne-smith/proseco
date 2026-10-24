@@ -6,7 +6,7 @@ import { isProsecoTicket, markerKey, parseRawTable } from "../core/ticket.ts";
 import { Advisories } from "./advisories.ts";
 import { dryRunReport } from "./dryrun.ts";
 import { GitStore } from "./git.ts";
-import { formatOutcome, runInSandbox } from "./sandbox/command.ts";
+import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters } from "./requests.ts";
 import { lastAttempt, lastCommentId, loadState, saveState } from "./state.ts";
@@ -63,7 +63,9 @@ async function sandboxCommand(config: Config & { fixer: FixerConfig }, tokens: T
   if (!repo || !lockfile || command.length === 0) throw new Error(USAGE);
   const token = await tokens({ repositories: [repo], permissions: { contents: "read" } });
   const store = new GitStore({ cloneDir: config.fixer.cloneDir, remoteUrl: (name) => `https://github.com/${config.org}/${name}.git`, token });
-  console.log(formatOutcome(await runInSandbox({ store, repo, lockfile, command, fixer: config.fixer })));
+  const outcome = await runInSandbox({ store, repo, lockfile, command, fixer: config.fixer });
+  console.log(formatOutcome(outcome));
+  process.exitCode = exitCodeOf(outcome);
 }
 
 async function main(args: string[]): Promise<void> {

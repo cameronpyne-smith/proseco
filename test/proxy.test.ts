@@ -82,6 +82,19 @@ describe("proxy", () => {
     assert.ok(lines.includes("refused example.com:443 bytes=0"), lines.join("\n"));
   });
 
+  it("logs unreachable, not allowed, when an allowed host cannot be connected to", async () => {
+    const unused = createServer();
+    const port = await listen(unused);
+    await new Promise((resolve) => unused.close(resolve));
+    const unreachable = createProxy({ allow: ["127.0.0.1"], ports: [port], log: (line) => lines.push(line) });
+    const proxyAt = await listen(unreachable);
+    const response = await exchange(proxyAt, `CONNECT 127.0.0.1:${port} HTTP/1.1\r\nHost: x\r\n\r\n`);
+    unreachable.close();
+    assert.match(response, /^HTTP\/1\.1 502 /);
+    assert.ok(lines.includes(`unreachable 127.0.0.1:${port} bytes=0`), lines.join("\n"));
+    assert.ok(!lines.some((line) => line.startsWith(`allowed 127.0.0.1:${port} `)), lines.join("\n"));
+  });
+
   it("refuses an allowed host on a port that is not allowed", async () => {
     const response = await exchange(proxyPort, `CONNECT 127.0.0.1:${echoPort + 1} HTTP/1.1\r\nHost: x\r\n\r\n`);
     assert.match(response, /^HTTP\/1\.1 403 /);
