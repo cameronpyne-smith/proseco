@@ -71,6 +71,18 @@ describe("dry run report", () => {
     assert.equal(report.units[0]!.toolchain, "22");
   });
 
+  it("falls back to the repository root for a toolchain file not beside the lockfile", async () => {
+    const files = { "web/package-lock.json": NPM_LOCK, ".nvmrc": "20\n" };
+    assert.equal((await dryRunReport(input([row({ source: "web/package-lock.json" })], files))).units[0]!.toolchain, "20");
+  });
+
+  it("prefers the file beside the lockfile over the root one, per file", async () => {
+    const files = { "web/package-lock.json": NPM_LOCK, "web/.nvmrc": "22\n", ".nvmrc": "20\n" };
+    assert.equal((await dryRunReport(input([row({ source: "web/package-lock.json" })], files))).units[0]!.toolchain, "22");
+    const mixed = { "web/package-lock.json": NPM_LOCK, "package.json": '{"engines":{"node":">=18"}}' };
+    assert.equal((await dryRunReport(input([row({ source: "web/package-lock.json" })], mixed))).units[0]!.toolchain, ">=18");
+  });
+
   it("says when the lockfile is missing at head or has no supported ecosystem", async () => {
     const report = await dryRunReport(input([row(), row({ source: "yarn.lock" })], {}));
     assert.deepEqual(report.units.map((unit) => [unit.source, unit.lockfile]), [

@@ -53,7 +53,8 @@ export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
     if (ecosystem) {
       const files: Record<string, string> = {};
       for (const file of ecosystem.toolchainFiles) {
-        const text = await input.readFile(sibling(unit.source, file));
+        const beside = sibling(unit.source, file);
+        const text = (await input.readFile(beside)) ?? (beside === file ? null : await input.readFile(file));
         if (text !== null) files[file] = text;
       }
       toolchain = ecosystem.toolchainVersion(files);

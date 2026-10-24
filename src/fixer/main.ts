@@ -1,4 +1,3 @@
-import { appendFileSync } from "node:fs";
 import { tokenProvider, type TokenProvider } from "../core/app.ts";
 import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
 import { TicketRepo } from "../core/github.ts";
@@ -76,8 +75,6 @@ async function main(args: string[]): Promise<void> {
       const requests = found.requests;
       const json = JSON.stringify(requests);
       console.log(json);
-      const output = process.env["GITHUB_OUTPUT"];
-      if (output) appendFileSync(output, `requests=${json}\n`);
       return;
     }
     case "read": {

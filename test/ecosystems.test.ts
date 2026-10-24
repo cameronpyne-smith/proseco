@@ -185,3 +185,27 @@ describe("the TOML subset of uv.lock", () => {
     assert.throws(() => parseToml("a = 1\na = 2"), /line 2.*duplicate key a/);
   });
 });
+
+describe("real lockfiles", () => {
+  it("reads a generated package-lock.json", () => {
+    const npm = ecosystem("package-lock.json");
+    const lock = fixture("real-package-lock.json");
+    const installed = npm.installedVersions(lock);
+    assert.equal(installed.size, 185);
+    assert.deepEqual(installed.get("express"), ["4.18.2"]);
+    assert.deepEqual(installed.get("qs"), ["6.11.0"]);
+    assert.deepEqual(npm.parentChain(lock, "qs", "6.11.0"), ["express", "qs"]);
+    assert.deepEqual(npm.parentChain(lock, "vitest", "1.6.0"), ["vitest"]);
+  });
+
+  it("reads a generated uv.lock", () => {
+    const uv = ecosystem("uv.lock");
+    const lock = fixture("real-uv.lock");
+    const installed = uv.installedVersions(lock);
+    assert.equal(installed.size, 12);
+    assert.deepEqual(installed.get("urllib3"), ["2.8.0"]);
+    assert.deepEqual(installed.get("pillow"), ["10.2.0"]);
+    assert.deepEqual(uv.parentChain(lock, "urllib3", "2.8.0"), ["requests", "urllib3"]);
+    assert.deepEqual(uv.parentChain(lock, "pytest", "9.1.1"), ["pytest"]);
+  });
+});

@@ -140,12 +140,12 @@ It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only need
 ## The fixer
 
 Built so far, with no model and no container:
-- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, repo, force, commentId }`, where `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts). For each such comment it reacts with eyes and records the comment id in the state file, so a command is acted on once; `commentId` is that comment. In Actions it also writes `requests=<json>` to `$GITHUB_OUTPUT`, for a job matrix.
+- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, repo, force, commentId }`, where `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts). For each such comment it reacts with eyes and records the comment id in the state file, so a command is acted on once; `commentId` is that comment.
 - `npm run fixer -- read <n>`: prints a ticket's raw findings, parsed, as JSON.
 - `npm run fixer -- run <n> --dry-run`: prints, as JSON, what an attempt on the ticket would do. It reads the ticket, fetches the repository into the bare clone store, reads each lockfile at the default branch head, and reports:
   - the PR units: one per lockfile for the non-major rows, one per major upgrade, each with its branch (`proseco/<lockfile slug>` or `proseco/<package>-<target>`);
   - each row's GitHub advisory (summary, severity, vulnerable range, patched version, affected functions, references);
-  - each package's chain from a direct dependency to it, the ecosystem, and the declared toolchain version;
+  - each package's chain from a direct dependency to it, the ecosystem, and the declared toolchain version (each file is looked for beside the lockfile, then at the repository root);
   - whether the state file says the ticket would be attempted, and why.
 
   It reports the command comment but does not react to it. It writes nothing except the clone store. It does not look at pull requests yet, so `openPullRequests` is `"not checked"`. `run` without `--dry-run` exits with "not built yet".
