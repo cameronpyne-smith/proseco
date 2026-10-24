@@ -11,7 +11,7 @@ Proactive security operations for a GitHub organisation.
 
 **What it does today:**
 - Reads open vulnerability findings from Dependabot and Microsoft Defender for Cloud (container images).
-- Keeps **one GitHub issue per repository** listing that repository's critical and high findings that have a fix.
+- Keeps **one GitHub issue per repository**, and one per third-party image, listing the critical and high findings that have a fix.
 - Rewrites each issue on every run, closes it once nothing remains, and reopens it if findings return.
 
 **What comes next:** the **fixer**, which reads those issues, works each one with a local model, and opens fix pull requests. `fixer run <n>` does this for one npm ticket today; the polling daemon and Python come later.
@@ -32,7 +32,8 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 
 ## Ticket format
 
-- **Line 1:** `<!-- proseco:<repo> -->`, or `<!-- proseco:unmapped -->` for images that map to no repository.
+- **Line 1:** `<!-- proseco:<key> -->`, where the key is a repository name, `unmapped` for images that map to no repository, or an image reference such as `docker.elastic.co/kibana/kibana` for a third-party image. An image ticket carries the repository its fix belongs in: `<!-- proseco:<image> repo:<repo> -->`. The `repo:` part is written only when the key is not itself the repository, and older tickets without it still parse.
+  - A ticket's body may not exceed GitHub's 65,536 characters. A ticket whose body would is not written, the run logs an error naming the key and the length, the other tickets are still handled, and the run exits non-zero. The raw table is never truncated.
   - Tickets are found by any of `tickets.find.labels` or `tickets.find.creators`.
   - Only a ticket with the marker on line 1 **and** an author in `tickets.find.creators` is treated as proseco's.
 - **Fix table:** one row per package version per lockfile. It is a view for people.
@@ -80,7 +81,7 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 | `tickets.find.labels`, `tickets.find.creators` | How existing tickets are found. List every app that has ever created tickets, so a ticket whose label was removed is still found after the app is replaced. |
 | `tickets.maintainedIn` | The repository running proseco, named in each ticket body. |
 | `sources.dependabot` | Present to read the org's open Dependabot alerts. |
-| `sources.defender.imageRepos` | Present to read Defender container findings. Points to a JSON object, relative to the config file, mapping each lowercase ghcr package name under the org to a repository name. Images not in the mapping go to the `unmapped` ticket. |
+| `sources.defender.imageRepos` | Present to read Defender container findings. Points to a JSON routing file, relative to the config file, described below. |
 | `fixer.bot` | The app's slug, i.e. its login without `[bot]`. A person comments `@<bot> fix` on a ticket to force the fixer to redo it. Every open proseco ticket is worked without a command. |
 | `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `bot`, `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
 | `fixer.cloneDir` | Directory holding the fixer's bare clones, one `<repo>.git` each. |
@@ -91,6 +92,26 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 | `fixer.budget` | Optional `{ minutes, toolCalls, commandMinutes }`. One unit's agent may run for `minutes` and make `toolCalls` tool calls (`finish` does not count); one container command may run for `commandMinutes`. Defaults: `30`, `200`, `10`. |
 
 Unknown keys are rejected, so a misspelt key fails the run instead of being ignored.
+
+### The image routing file
+
+```json
+{
+  "own": { "ghcr.io/acme-org/acme-api": "acme-api" },
+  "thirdParty": { "docker.elastic.co/": "acme-infra", "docker.io/library/postgres": "acme-infra" },
+  "ignore": ["docker.io/library/busybox"]
+}
+```
+
+| Section | Meaning |
+| --- | --- |
+| `own` | Images built from the org's repositories. A finding joins that repository's ticket like a Dependabot finding. |
+| `thirdParty` | Images the org only runs. One ticket per image, keyed by the image reference, naming the repository where the image tag or chart version is declared. |
+| `ignore` | Images to leave out. They are dropped before ticketing and counted in the log. |
+
+- Every key and every `ignore` entry is an image reference prefix: lowercase, `[a-z0-9._/-]`, at least one `/`, no `@` or `:`. Values are repository names without the org. All three sections are required; `ignore` may be empty. A prefix may appear once across the sections. Unknown keys and malformed entries fail the run.
+- Matching is case-insensitive, and the longest matching prefix across all three sections wins. A match is only on a `/` boundary: `docker.io/library/node` matches itself and `docker.io/library/node/anything`, never `docker.io/library/nodejs`. An entry ending in `/` is a plain prefix.
+- An image that matches nothing goes to the `unmapped` ticket.
 
 ## Running the ticketer
 
@@ -137,7 +158,9 @@ steps:
 **Notes:**
 - **Pin the action by full commit SHA.** This is a security control; a moved tag must not change it.
 - **The GitHub App must be installed on every repository whose alerts it reads.** Dependabot alerts are only returned for repositories in the installation.
-- **Defender** needs a Reader-level role that covers security assessments (e.g. Security Reader) on the subscription. `azure/login` must run before the action. Skip both when the config has no `defender` source.
+- **Defender** is read from its individual container vulnerability recommendations (one `Update <package>` assessment per vulnerable package per running container, with the CVEs inside), not the retired grouped format. Runtime scanning is registry-agnostic, so images from any registry appear. It needs Defender for Containers with agentless scanning and Kubernetes API access enabled, and first results appear within about a day of enabling. The identity needs a Reader-level role that covers security assessments (e.g. Security Reader) on the subscription. `azure/login` must run before the action. Skip both when the config has no `defender` source.
+- **The log** shows `defender findings: N`, `defender rows skipped: N` (rows with malformed data or no image) and `defender findings ignored: N`. If rows came back but none parsed, it warns that the recommendation format may have changed.
+- The same image and package running in several containers is one finding, because findings are deduplicated by image.
 
 **Locally:**
 ```
@@ -150,7 +173,7 @@ It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only need
 `npm run fixer -- run <n>` takes one npm ticket all the way: an agent in the sandbox, a deterministic lockfile check, a pushed branch, a pull request opened or updated, a ticket comment and a state record. Running it again does nothing. The daemon loop (`serve`) and Python come later; see `docs/fixer.md`.
 
 Commands:
-- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, repo, force, commentId }`, where `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts). For each such comment it reacts with eyes and records the comment id in the state file, so a command is acted on once; `commentId` is that comment.
+- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, key, repo, force, ignored, commentId }`, where `key` is the marker key and `repo` the repository to fix in. `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts); `ignored` is true after `@<bot> ignore`, until a later `@<bot> fix`. The newest command wins. For each such comment it reacts with eyes and records the comment id and the ignored flag in the state file, so a command is acted on once; `commentId` is that comment. An ignored ticket gets no attempt, fetch or comment.
 - `npm run fixer -- read <n>`: prints a ticket's raw findings, parsed, as JSON.
 - `npm run fixer -- run <n> --dry-run`: prints, as JSON, what an attempt on the ticket would do. It reads the ticket, fetches the repository into the bare clone store, reads each lockfile at the default branch head, and reports:
   - the PR units: one per lockfile for the non-major rows, one per major upgrade, each with its branch (`proseco/<lockfile slug>` or `proseco/<package>-<target>`);
@@ -175,9 +198,9 @@ Git runs with no system or user configuration and no credential helper. The toke
 
 ### What an attempt does
 
-1. **Decide.** From the state file and the real state of the pull requests it recorded (`open`, `merged` by `merged_at`, `closed`): attempt when the ticket was never attempted, when its body changed and no recorded pull request is open, or when a person commented `@<bot> fix`. An open pull request, or the same body already attempted, means nothing happens. The command comment is reacted to with eyes.
+1. **Decide.** From the state file and the real state of the pull requests it recorded (`open`, `merged` by `merged_at`, `closed`): attempt when the ticket was never attempted, when its body changed and no recorded pull request is open, or when a person commented `@<bot> fix`. A ticket a person marked with `@<bot> ignore` is skipped before any other rule. An open pull request, or the same body already attempted, means nothing happens. The command comment is reacted to with eyes.
 2. **Fetch and plan.** The bare clone is updated and the units are planned as in the dry run. Each unit gets its own checkout and sandbox, one after another.
-3. **Units that are not attempted.** A major upgrade is reported as "major upgrades are not attempted yet", and a lockfile of another ecosystem as unsupported.
+3. **Units that are not attempted.** An image ticket (key is an image reference) is reported as "image tickets are not attempted yet". A major upgrade is reported as "major upgrades are not attempted yet", and a lockfile of another ecosystem as unsupported.
 4. **Agent.** For an npm lockfile unit the agent loop runs against Ollama with these tools: `read_file`, `list_dir`, `search`, `write_file`, `edit_file` (all on the host, confined to the checkout: `..`, absolute paths and symlinks that escape are refused, and `.git` cannot be written), `run` (`sh -c` in the container) and `finish`. The loop ends on `finish`, on the time budget or tool-call cap, or when the model twice answers with no tool call. When the conversation approaches `numCtx` the oldest tool results are replaced by a placeholder, keeping the last 8.
 5. **Commit guard.** Only the manifest and lockfile are kept: `package.json`, `package-lock.json` and `npm-shrinkwrap.json` in the lockfile's directory, plus the `package.json` of each workspace member the lockfile names. Every other change the agent made is discarded and listed in the pull request. Nothing under `.github/workflows/` is ever committed. Commits and tags the agent made inside the container are undone first.
 6. **Lockfile check.** The lockfile is parsed. Every installed version of every package in the unit must be at or above the lowest of its target versions, or the package must be gone. Otherwise there is no pull request and the ticket comment says why.

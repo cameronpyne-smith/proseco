@@ -19,6 +19,8 @@ This document is the design. The README describes what is built.
 | Clones | The daemon keeps its own bare clones. One local clone per attempt, hardlinked from the bare clone and detached at the default branch head, is bind-mounted into the container. Git reads work inside it; the host makes every commit and push. |
 | PR split | One PR per lockfile for the non-major rows. Each major upgrade gets its own draft PR. |
 | PR gate | Deterministic lockfile check, or no PR. Tests green in the container: a ready PR. Tests red after the agent finished: a draft PR that says what fails. An agent that did not call finish (budget, stalled, error): no PR, and the reason goes in the ticket comment. |
+| Image tickets | Tickets keyed by an image reference are fixed by bumping the image tag or chart version where it is declared, in a later milestone. Until then the fixer reports them as unsupported. |
+| Ignore | A person comments `@<bot> ignore` to make the fixer leave a ticket alone, whatever happens to its body; `@<bot> fix` clears it and forces an attempt. |
 | Re-runs | One attempt per ticket body. Rerun when the body hash changes and no open proseco PR exists for the ticket, or when a person comments `@<bot> fix`. A PR closed without merging is not retried on its own. |
 | Budgets | Per PR attempt, from config: 30 minutes and 200 tool calls by default. Each container command has its own timeout. One ticket at a time. |
 | Ecosystems | npm (`package-lock.json`), uv (`uv.lock`) and pinned `requirements.txt` first. NuGet and container base-image bumps later. |
