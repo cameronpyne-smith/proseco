@@ -13,11 +13,21 @@ export interface DefenderConfig {
   imageRepos: Map<string, string>;
 }
 
+export interface SandboxLimits {
+  memory: string;
+  cpus: number;
+}
+
+export const DEFAULT_PROXY_ALLOW = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"];
+export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = { memory: "8g", cpus: 4 };
+
 export interface FixerConfig {
   bot: string;
   app: { clientId: string; installationId: number };
   cloneDir: string;
   stateFile: string;
+  proxy: { allow: string[] };
+  sandbox: SandboxLimits;
 }
 
 export interface Config {
@@ -55,12 +65,19 @@ function positiveInteger(value: unknown, path: string): number {
   return value;
 }
 
+function positiveNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new ConfigError(`${path} must be a positive number`);
+  return value;
+}
+
 function list(value: unknown, path: string, item: (value: unknown, path: string) => string): string[] {
   if (!Array.isArray(value)) throw new ConfigError(`${path} must be an array`);
   return value.map((entry, index) => item(entry, `${path}[${index}]`));
 }
 
 const LABEL = (value: unknown, path: string) => text(value, path);
+const ALLOWED_HOST = (value: unknown, path: string) =>
+  name(value, path, /^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/);
 const LOGIN = (value: unknown, path: string) => name(value, path, /^[A-Za-z0-9-]+(\[bot\])?$/);
 
 export function parseImageRepos(mapping: unknown, path = "imageRepos"): Map<string, string> {
@@ -100,13 +117,22 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile"]);
+    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "proxy", "sandbox"]);
     const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
+    const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
+    const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
+    const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
+    if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
     fixer = {
       bot: name(raw["bot"], "fixer.bot", /^[A-Za-z0-9-]+$/),
       app: { clientId: text(app["clientId"], "fixer.app.clientId"), installationId: positiveInteger(app["installationId"], "fixer.app.installationId") },
       cloneDir: text(raw["cloneDir"], "fixer.cloneDir"),
       stateFile: text(raw["stateFile"], "fixer.stateFile"),
+      proxy: { allow: [...allow] },
+      sandbox: {
+        memory: sandbox["memory"] === undefined ? DEFAULT_SANDBOX_LIMITS.memory : name(sandbox["memory"], "fixer.sandbox.memory", /^[1-9][0-9]*[bkmg]$/),
+        cpus: sandbox["cpus"] === undefined ? DEFAULT_SANDBOX_LIMITS.cpus : positiveNumber(sandbox["cpus"], "fixer.sandbox.cpus"),
+      },
     };
   }
   return {

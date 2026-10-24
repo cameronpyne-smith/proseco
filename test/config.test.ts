@@ -49,7 +49,35 @@ describe("config", () => {
       app: { clientId: "Iv1.acme", installationId: 42 },
       cloneDir: "/var/lib/proseco/clones",
       stateFile: "/var/lib/proseco/state.json",
+      proxy: { allow: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"] },
+      sandbox: { memory: "8g", cpus: 4 },
     });
+  });
+
+  it("replaces the default proxy allowlist with a configured one and overrides the sandbox limits", () => {
+    const raw = full();
+    Object.assign(raw["fixer"] as Record<string, unknown>, {
+      proxy: { allow: ["registry.example.test", "*.mirror.example.test"] },
+      sandbox: { memory: "2g", cpus: 1.5 },
+    });
+    const config = parseConfig(raw, mapping);
+    assert.deepEqual(config.fixer!.proxy, { allow: ["registry.example.test", "*.mirror.example.test"] });
+    assert.deepEqual(config.fixer!.sandbox, { memory: "2g", cpus: 1.5 });
+  });
+
+  it("validates the proxy and sandbox keys", () => {
+    const bad = (patch: Record<string, unknown>, message: RegExp) => {
+      const raw = full();
+      Object.assign(raw["fixer"] as Record<string, unknown>, patch);
+      assert.throws(() => parseConfig(raw, mapping), message);
+    };
+    bad({ proxy: { allow: [] } }, /fixer.proxy.allow must list at least one host/);
+    bad({ proxy: { allow: ["https://pypi.org"] } }, /fixer.proxy.allow\[0\] must be a name/);
+    bad({ proxy: { allow: ["*"] } }, /fixer.proxy.allow\[0\] must be a name/);
+    bad({ proxy: { hosts: [] } }, /fixer.proxy has unknown keys: hosts/);
+    bad({ sandbox: { memory: "lots" } }, /fixer.sandbox.memory must be a name/);
+    bad({ sandbox: { cpus: 0 } }, /fixer.sandbox.cpus must be a positive number/);
+    bad({ sandbox: { pids: 1 } }, /fixer.sandbox has unknown keys: pids/);
   });
 
   it("treats the project, Defender and the fixer as optional", () => {
