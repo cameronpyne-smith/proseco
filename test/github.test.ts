@@ -1,0 +1,94 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { RepoApi, TicketRepo } from "../src/core/github.ts";
+
+interface Call {
+  method: string;
+  url: string;
+  body: unknown;
+  authorization: string | undefined;
+}
+
+function recorder(...replies: (unknown | Response)[]): { fetch: typeof fetch; calls: Call[] } {
+  const calls: Call[] = [];
+  const queue = [...replies];
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      method: init?.method ?? "GET",
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      authorization: (init?.headers as Record<string, string> | undefined)?.["authorization"],
+    });
+    const reply = queue.shift();
+    return reply instanceof Response ? reply : new Response(JSON.stringify(reply ?? {}), { status: 200 });
+  }) as typeof fetch;
+  return { fetch: impl, calls };
+}
+
+const PULL = { number: 7, html_url: "https://github.com/acme-org/acme-api/pull/7", node_id: "PR_node", draft: false, state: "open", merged_at: null };
+
+describe("repo api", () => {
+  it("reads the default branch", async () => {
+    const { fetch, calls } = recorder({ default_branch: "trunk" });
+    assert.equal(await new RepoApi("tok", "acme-org", "acme-api", fetch).defaultBranch(), "trunk");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api");
+    assert.equal(calls[0]!.authorization, "Bearer tok");
+  });
+
+  it("finds an open pull request by head and returns null when there is none", async () => {
+    const { fetch, calls } = recorder([PULL], []);
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual(await api.findOpenPull("proseco/package-lock.json"), { number: 7, url: PULL.html_url, nodeId: "PR_node", draft: false });
+    assert.equal(await api.findOpenPull("proseco/other"), null);
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls?head=acme-org%3Aproseco%2Fpackage-lock.json&state=open");
+  });
+
+  it("creates a pull request with its draft flag", async () => {
+    const { fetch, calls } = recorder({ ...PULL, draft: true });
+    const created = await new RepoApi("tok", "acme-org", "acme-api", fetch).createPull({ title: "T", body: "B", head: "proseco/x", base: "main", draft: true });
+    assert.equal(created.draft, true);
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls");
+    assert.deepEqual(calls[0]!.body, { title: "T", body: "B", head: "proseco/x", base: "main", draft: true });
+  });
+
+  it("updates the title and body by PATCH", async () => {
+    const { fetch, calls } = recorder({});
+    await new RepoApi("tok", "acme-org", "acme-api", fetch).updatePull(7, { title: "T2", body: "B2" });
+    assert.equal(calls[0]!.method, "PATCH");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7");
+    assert.deepEqual(calls[0]!.body, { title: "T2", body: "B2" });
+  });
+
+  it("toggles draft through the graphql mutations", async () => {
+    const { fetch, calls } = recorder({ data: {} }, { data: {} });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    await api.setDraft("PR_node", true);
+    await api.setDraft("PR_node", false);
+    assert.equal(calls[0]!.url, "https://api.github.com/graphql");
+    assert.match((calls[0]!.body as { query: string }).query, /convertPullRequestToDraft/);
+    assert.match((calls[1]!.body as { query: string }).query, /markPullRequestReadyForReview/);
+    assert.deepEqual((calls[1]!.body as { variables: unknown }).variables, { id: "PR_node" });
+  });
+
+  it("reads a pull request's state: open, merged by merged_at, or closed", async () => {
+    const { fetch } = recorder(PULL, { ...PULL, state: "closed", merged_at: "2026-01-01T00:00:00Z" }, { ...PULL, state: "closed" });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual([await api.pullState(7), await api.pullState(7), await api.pullState(7)], ["open", "merged", "closed"]);
+  });
+
+  it("names the failed call and status", async () => {
+    const { fetch } = recorder(new Response("nope", { status: 422, statusText: "Unprocessable" }));
+    await assert.rejects(new RepoApi("tok", "acme-org", "acme-api", fetch).createPull({ title: "T", body: "B", head: "h", base: "main", draft: false }), /open a pull request for h failed: 422/);
+  });
+});
+
+describe("ticket repo comments", () => {
+  it("edits a comment by id", async () => {
+    const { fetch, calls } = recorder({});
+    await new TicketRepo("tok", "acme-org", "acme-tickets", fetch).editComment(99, "new body");
+    assert.equal(calls[0]!.method, "PATCH");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-tickets/issues/comments/99");
+    assert.deepEqual(calls[0]!.body, { body: "new body" });
+  });
+});

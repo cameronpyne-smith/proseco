@@ -160,6 +160,13 @@ export class TicketRepo extends GitHubApi {
     );
   }
 
+  async editComment(commentId: number, body: string): Promise<void> {
+    await expectOk(
+      await this.request(`${this.#path}/comments/${commentId}`, { method: "PATCH", body: JSON.stringify({ body }) }),
+      `edit comment ${commentId}`,
+    );
+  }
+
   async findProjectId(title: string): Promise<string> {
     const data = await this.graphql<{
       organization: { projectsV2: { nodes: { id: string; title: string }[] } };
@@ -181,5 +188,89 @@ export class TicketRepo extends GitHubApi {
       }`,
       { project: projectId, content: issueNodeId },
     );
+  }
+}
+
+export interface PullRequest {
+  number: number;
+  url: string;
+  nodeId: string;
+  draft: boolean;
+}
+
+export interface NewPullRequest {
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+  draft: boolean;
+}
+
+interface Pull {
+  number: number;
+  html_url: string;
+  node_id: string;
+  draft?: boolean;
+  state: string;
+  merged_at?: string | null;
+}
+
+function toPullRequest(pull: Pull): PullRequest {
+  return { number: pull.number, url: pull.html_url, nodeId: pull.node_id, draft: pull.draft === true };
+}
+
+export class RepoApi extends GitHubApi {
+  readonly #org: string;
+  readonly #repo: string;
+
+  constructor(token: string, org: string, repo: string, fetchImpl: typeof fetch = fetch) {
+    super(token, fetchImpl);
+    this.#org = org;
+    this.#repo = repo;
+  }
+
+  get #path(): string {
+    return `/repos/${this.#org}/${this.#repo}`;
+  }
+
+  async defaultBranch(): Promise<string> {
+    const response = await expectOk(await this.request(this.#path), `read ${this.#repo}`);
+    return ((await response.json()) as { default_branch: string }).default_branch;
+  }
+
+  async findOpenPull(branch: string): Promise<PullRequest | null> {
+    const query = new URLSearchParams({ head: `${this.#org}:${branch}`, state: "open" });
+    const response = await expectOk(await this.request(`${this.#path}/pulls?${query}`), `find the open pull request for ${branch}`);
+    const [pull] = (await response.json()) as Pull[];
+    return pull ? toPullRequest(pull) : null;
+  }
+
+  async createPull(pull: NewPullRequest): Promise<PullRequest> {
+    const response = await expectOk(
+      await this.request(`${this.#path}/pulls`, { method: "POST", body: JSON.stringify(pull) }),
+      `open a pull request for ${pull.head}`,
+    );
+    return toPullRequest((await response.json()) as Pull);
+  }
+
+  async updatePull(number: number, patch: { title: string; body: string }): Promise<void> {
+    await expectOk(
+      await this.request(`${this.#path}/pulls/${number}`, { method: "PATCH", body: JSON.stringify(patch) }),
+      `update pull request #${number}`,
+    );
+  }
+
+  async setDraft(nodeId: string, draft: boolean): Promise<void> {
+    const mutation = draft
+      ? "mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id } } }"
+      : "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }";
+    await this.graphql(mutation, { id: nodeId });
+  }
+
+  async pullState(number: number): Promise<"open" | "merged" | "closed"> {
+    const response = await expectOk(await this.request(`${this.#path}/pulls/${number}`), `read pull request #${number}`);
+    const pull = (await response.json()) as Pull;
+    if (pull.merged_at) return "merged";
+    return pull.state === "open" ? "open" : "closed";
   }
 }
