@@ -108,6 +108,10 @@ export class Docker {
     }
   }
 
+  async info(): Promise<string> {
+    return (await this.#docker(["info", "--format", "{{.ServerVersion}}"], "info")).trim();
+  }
+
   async networkCreate(name: string, internal: boolean, attempt: string): Promise<void> {
     await this.#docker(networkCreateArgs(name, internal, attempt), `network create ${name}`);
   }

@@ -4,11 +4,11 @@ import { RepoApi, type TicketRepo } from "../core/github.ts";
 import { Advisories } from "./advisories.ts";
 import { OllamaClient } from "./agent/ollama.ts";
 import { runAttempt, type AttemptResult } from "./attempt.ts";
-import { commandComment } from "./requests.ts";
+import { applyCommands, commandComment, fixRequests, requestFilters, type FixRequest } from "./requests.ts";
 import { upsertComment } from "./comment.ts";
 import { GitStore } from "./git.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type PullRequestStatus } from "./state.ts";
+import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus } from "./state.ts";
 import { workUnit, type PublishRequest, type Publisher } from "./unit.ts";
 
 const MS_PER_MINUTE = 60_000;
@@ -16,12 +16,22 @@ const MS_PER_MINUTE = 60_000;
 export interface RunTicket {
   config: Config & { fixer: FixerConfig };
   tokens: TokenProvider;
-  tickets: TicketRepo;
+  tickets(): Promise<TicketRepo>;
   number: number;
   key: string;
   repo: string;
   body: string;
   local: boolean;
+  request?: { force: boolean };
+  started?(decision: Decision): void;
+  shouldStop?(): boolean;
+}
+
+export async function findTickets(config: Config & { fixer: FixerConfig }, tickets: TicketRepo): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
+  const open = await tickets.list(requestFilters(config.tickets.find));
+  const found = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.fixer.bot, loadState(config.fixer.stateFile), true);
+  saveState(config.fixer.stateFile, found.state);
+  return { requests: found.requests, bodies: new Map(open.map((ticket) => [ticket.number, ticket.body])) };
 }
 
 function pullNumber(url: string): number {
@@ -80,11 +90,11 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const advisories = new Advisories(readToken);
   const readApi = new RepoApi(readToken, config.org, repo);
   let state = loadState(fixer.stateFile);
-  const command = commandComment(await tickets.comments(number), fixer.bot, lastCommentId(state, number));
+  const command = input.request ? null : commandComment(await (await tickets()).comments(number), fixer.bot, lastCommentId(state, number));
   if (command) {
     const next = recordIgnored(recordComment(state, number, command.id), number, command.command === "ignore");
     if (!local) {
-      await tickets.react(command.id, "eyes");
+      await (await tickets()).react(command.id, "eyes");
       saveState(fixer.stateFile, next);
     }
     state = next;
@@ -101,7 +111,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const publisher = local ? new LocalPublisher() : new LivePublisher(config, tokens, store, number);
   const checkouts: string[] = [];
   const result = await runAttempt(
-    { ticket: { number, key, repo, body: input.body }, force: command?.command === "fix", state, local },
+    { ticket: { number, key, repo, body: input.body }, force: input.request ? input.request.force : command?.command === "fix", state, local },
     {
       org: config.org,
       fetch: async () => {
@@ -132,8 +142,10 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
         if (outcome.checkout) checkouts.push(outcome.checkout);
         return outcome;
       },
-      postComment: async (body) => void (await upsertComment(tickets, number, fixer.bot, body)),
+      postComment: async (body) => void (await upsertComment(await tickets(), number, fixer.bot, body)),
       saveState: (next) => saveState(fixer.stateFile, next),
+      ...(input.started ? { started: input.started } : {}),
+      ...(input.shouldStop ? { shouldStop: input.shouldStop } : {}),
       now: () => new Date(),
     },
   );

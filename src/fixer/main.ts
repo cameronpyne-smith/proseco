@@ -3,15 +3,18 @@ import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
 import { TicketRepo } from "../core/github.ts";
 import { isProsecoTicket, markerKey, markerRepo, parseRawTable } from "../core/ticket.ts";
 import { Advisories } from "./advisories.ts";
+import { runDaemon } from "./daemon.ts";
 import { dryRunReport } from "./dryrun.ts";
 import { GitStore } from "./git.ts";
+import { Docker } from "./sandbox/docker.ts";
 import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
-import { applyCommands, commandComment, fixRequests, requestFilters } from "./requests.ts";
-import { runTicket, summarise } from "./run.ts";
-import { isIgnored, lastAttempt, lastCommentId, loadState, saveState } from "./state.ts";
+import { commandComment } from "./requests.ts";
+import { findTickets, runTicket, summarise } from "./run.ts";
+import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
+import { isIgnored, lastAttempt, lastCommentId, loadState } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -37,7 +40,7 @@ async function fixableTicket(config: Config, tickets: TicketRepo, number: number
 
 async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, local: boolean): Promise<void> {
   const { key, repo, body } = await fixableTicket(config, tickets, number);
-  const result = await runTicket({ config, tokens, tickets, number, key, repo, body, local });
+  const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local });
   console.log(JSON.stringify(summarise(result, number), null, 2));
   if (local) for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
 }
@@ -81,7 +84,111 @@ async function sandboxCommand(config: Config & { fixer: FixerConfig }, tokens: T
   process.exitCode = exitCodeOf(outcome);
 }
 
+interface Prepared {
+  results: CheckResult[];
+  config: (Config & { fixer: FixerConfig }) | null;
+  tokens: TokenProvider | null;
+}
+
+async function prepare(): Promise<Prepared> {
+  let config: (Config & { fixer: FixerConfig }) | null = null;
+  let tokens: TokenProvider | null = null;
+  const loaded = () => config!;
+  const checks: StartupCheck[] = [
+    {
+      name: "config",
+      required: true,
+      run: async () => {
+        const path = requireEnv("PROSECO_CONFIG");
+        const read = loadConfig(path);
+        if (!read.fixer) throw new Error("the config has no fixer section");
+        config = { ...read, fixer: read.fixer };
+        tokens = tokenProvider(process.env, read.fixer.app);
+        return `${path}: org ${read.org}, tickets repository ${read.tickets.repo}, bot ${read.fixer.bot}`;
+      },
+    },
+    {
+      name: "github",
+      run: async () => {
+        await tokens!({ repositories: [loaded().tickets.repo], permissions: { issues: "read" } });
+        return `minted an installation token for ${loaded().org}/${loaded().tickets.repo}`;
+      },
+    },
+    { name: "ollama", run: () => checkOllama(loaded().fixer.ollama.url, loaded().fixer.ollama.model) },
+    { name: "docker", run: async () => `server ${await new Docker().info()} answers` },
+  ];
+  return { results: await runChecks(checks), config, tokens };
+}
+
+async function checkCommand(): Promise<void> {
+  const { results } = await prepare();
+  console.log(formatChecks(results));
+  if (!allPassed(results)) process.exitCode = 1;
+}
+
+function stamped(line: string): void {
+  console.log(`${new Date().toISOString()} ${line}`);
+}
+
+async function serve(): Promise<void> {
+  const { results, config, tokens } = await prepare();
+  if (!allPassed(results) || !config || !tokens) {
+    console.error(formatChecks(results));
+    process.exitCode = 1;
+    return;
+  }
+  stamped(`startup checks passed:\n${formatChecks(results)}`);
+  const swept = await Sandbox.sweep(0);
+  stamped(`removed ${swept.containers} containers and ${swept.networks} networks left by an earlier process`);
+  const fixer = config.fixer;
+  const stop = new AbortController();
+  const ticketRepo = async () => new TicketRepo(await tokens({ repositories: [config.tickets.repo], permissions: { issues: "write" } }), config.org, config.tickets.repo);
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      if (stop.signal.aborted) process.exit(1);
+      stamped(`${signal}: finishing the current unit, then exiting; signal again to exit now`);
+      stop.abort();
+    });
+  }
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      stop.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+    });
+  let bodies = new Map<number, string>();
+  stamped(`polling every ${fixer.pollMinutes} minute${fixer.pollMinutes === 1 ? "" : "s"}`);
+  await runDaemon({
+    pollMs: fixer.pollMinutes * 60_000,
+    find: async () => {
+      const found = await findTickets(config, await ticketRepo());
+      bodies = found.bodies;
+      return found.requests;
+    },
+    attempt: async (request, started) => {
+      const result = await runTicket({
+        config,
+        tokens,
+        tickets: ticketRepo,
+        number: request.number,
+        key: request.key,
+        repo: request.repo,
+        body: bodies.get(request.number) ?? "",
+        local: false,
+        request: { force: request.force },
+        started: () => started(),
+        shouldStop: () => stop.signal.aborted,
+      });
+      return { skipped: result.skipped, reason: result.decision.reason, units: result.reports.map((report) => ({ label: report.label, outcome: report.outcome })) };
+    },
+    sleep,
+    stopping: () => stop.signal.aborted,
+    log: stamped,
+  });
+}
+
 async function main(args: string[]): Promise<void> {
+  if (args[0] === "check" && args.length === 1) return checkCommand();
+  if (args[0] === "serve" && args.length === 1) return serve();
   const config = loadConfig(requireEnv("PROSECO_CONFIG"));
   if (!config.fixer) throw new Error("the config has no fixer section");
   const fixer = config.fixer;
@@ -104,13 +211,8 @@ async function main(args: string[]): Promise<void> {
 
   switch (command) {
     case "find": {
-      const open = await tickets.list(requestFilters(config.tickets.find));
-      const state = loadState(fixer.stateFile);
-      const found = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, fixer.bot, state, true);
-      saveState(fixer.stateFile, found.state);
-      const requests = found.requests;
-      const json = JSON.stringify(requests);
-      console.log(json);
+      const found = await findTickets({ ...config, fixer }, tickets);
+      console.log(JSON.stringify(found.requests));
       return;
     }
     case "read": {

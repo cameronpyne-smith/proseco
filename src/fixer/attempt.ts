@@ -25,7 +25,15 @@ export interface AttemptDeps {
   workUnit(unit: PrUnit, headSha: string): Promise<UnitResult>;
   postComment(body: string): Promise<void>;
   saveState?(state: State): void;
+  started?(decision: Decision): void;
+  shouldStop?(): boolean;
   now(): Date;
+}
+
+export class ShutdownRequested extends Error {
+  constructor() {
+    super("shutdown requested before the next unit");
+  }
 }
 
 export interface UnitReportDetail extends UnitReport {
@@ -70,10 +78,12 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
   const decision = decide(last, { bodyHash: hash, force: input.force, prs, ignored: isIgnored(state, ticket.number) });
   if (!decision.attempt && !input.local) return { skipped: true, decision, headSha: null, reports: [], state };
 
+  deps.started?.(decision);
   const units = planUnits(parseRawTable(ticket.body), deps.org);
   const headSha = await deps.fetch();
   const reports: UnitReportDetail[] = [];
   for (const unit of units) {
+    if (deps.shouldStop?.()) throw new ShutdownRequested();
     const result = await work(unit, headSha, ticket.key !== ticket.repo, deps);
     reports.push({ label: labelOf(unit), outcome: result.outcome, unit, result });
   }

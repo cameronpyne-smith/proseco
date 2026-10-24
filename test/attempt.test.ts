@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
-import { runAttempt, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
+import { runAttempt, ShutdownRequested, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
 import { bodyHash, emptyState, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
 
@@ -119,6 +119,33 @@ describe("attempt", () => {
     const run = harness();
     await runAttempt({ ticket: python, force: false, state: emptyState(), local: false }, run.deps);
     assert.deepEqual(run.worked, ["tools/requirements.txt", "uv.lock"]);
+  });
+
+  it("announces a decision to attempt once, and never for a skipped ticket", async () => {
+    const announced: string[] = [];
+    const run = harness();
+    run.deps.started = (decision) => void announced.push(decision.reason);
+    const first = await runAttempt(base(), run.deps);
+    assert.deepEqual(announced, ["never attempted"]);
+    await runAttempt(base(first.state), run.deps);
+    assert.deepEqual(announced, ["never attempted"]);
+  });
+
+  it("stops before the next unit when asked to, recording nothing so the ticket is attempted again", async () => {
+    const run = harness();
+    let stop = false;
+    run.deps.shouldStop = () => stop;
+    const work = run.deps.workUnit;
+    run.deps.workUnit = async (unit, headSha) => {
+      stop = true;
+      return work(unit, headSha);
+    };
+    let saved = 0;
+    run.deps.saveState = () => void saved++;
+    await assert.rejects(runAttempt(base(), run.deps), ShutdownRequested);
+    assert.deepEqual(run.worked, ["package-lock.json"]);
+    assert.deepEqual(run.comments, []);
+    assert.equal(saved, 0);
   });
 
   it("does nothing when an open pull request from the last attempt exists, without fetching", async () => {
