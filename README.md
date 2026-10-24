@@ -253,9 +253,9 @@ The model reads repository files only through the file tools on the checkout and
 Repository code only runs in a throwaway container with no route to the internet except a proxy of our own.
 
 - A per-attempt Docker network `proseco-<attempt>` is created with `--internal`, so it has no gateway.
-- The proxy container (`proseco/proxy:<git short sha, or dev>`, built from `src/fixer/sandbox/proxy.ts` alone) sits on that network and on the default bridge. The repository container sits on the internal network only and reaches the proxy by name on port 3128.
+- The proxy container (`proseco/proxy:<first 12 hex characters of the sha256 of proxy.ts>`, built from `src/fixer/sandbox/proxy.ts` alone) sits on that network and on the default bridge. The repository container sits on the internal network only and reaches the proxy by name on port 3128.
 - The proxy is dependency-free Node (`node src/fixer/sandbox/proxy.ts --listen 0.0.0.0:3128 --allow host1,*.suffix`). It tunnels `CONNECT <allowed host>:443`. It answers 403 with the host named in the body to any other host or port, and to plain HTTP, so nothing leaves in clear. A malformed request gets 400 and the connection closes. It logs one line per request, `allowed|refused <host>:<port> bytes=<n>`.
-- The repository container runs as the daemon's uid and gid with the checkout at `/work`, `HOME=/tmp/home` on an `exec` tmpfs, `UV_LINK_MODE=copy`, `PIP_NO_INPUT=1`, all capabilities dropped, `no-new-privileges`, 2048 pids, and the configured memory and cpus. `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms are set, `NO_PROXY` is empty, and `NODE_USE_ENV_PROXY=1` makes Node 24's `fetch` honour the proxy. Commands run with `docker exec` under `timeout`, which kills the command's whole process group when the limit passes; output beyond 1 MiB per stream is dropped with a note.
+- The repository container runs as the daemon's uid and gid, except under rootless Docker (detected from `docker info`), where it runs as root: that is the unprivileged service user on the host, and a `--user` of the host uid would map to a subordinate uid and leave files in the checkout that the host's `git add` cannot touch. It has the checkout at `/work`, `HOME=/tmp/home` on an `exec` tmpfs, `UV_LINK_MODE=copy`, `PIP_NO_INPUT=1`, all capabilities dropped, `no-new-privileges`, 2048 pids, and the configured memory and cpus. `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase forms are set, `NO_PROXY` is empty, and `NODE_USE_ENV_PROXY=1` makes Node 24's `fetch` honour the proxy. Commands run with `docker exec` under `timeout`, which kills the command's whole process group when the limit passes; output beyond 1 MiB per stream is dropped with a note.
 - Every container and network carries the label `proseco.attempt=<id>`. `stop()` removes both containers and the network even after a failed step.
 - Checkouts live in `<cloneDir>/attempts/`, one directory per attempt, not in the OS temp directory, so a Docker daemon in another mount namespace (rootless Docker under a service manager) can see the bind mount.
 - A checkout is a local `git clone` of the bare clone (objects are hardlinked, so it is cheap) detached at the default branch head. Its `origin` is the path of the bare clone, never a URL with a token. Git reads work inside the container; the host makes every commit and push.
@@ -297,7 +297,7 @@ The commit must be the full sha: a branch, tag or abbreviation is refused. `--dr
 | Linger | `loginctl enable-linger proseco`, so the user's systemd instance and its rootless `docker.service` start at boot. |
 | Docker | `dockerd-rootless-setuptool.sh install` as `proseco` in its own user session, then `systemctl --user enable --now docker`. |
 | Config | `/etc/proseco/config.json` and `/etc/proseco/image-repos.json` from `deploy/config.example.json` and `deploy/image-repos.example.json`, only when absent. They are root-owned, mode 0644. The script never creates or touches `/etc/proseco/private-key.pem`. |
-| Unit | `/etc/systemd/system/proseco-fixer.service`, and a drop-in `proseco-fixer.service.d/docker.conf` that sets `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`, because the uid is only known on the host. Then `systemctl daemon-reload`. |
+| Unit | `/etc/systemd/system/proseco-fixer.service`, and a drop-in `proseco-fixer.service.d/docker.conf` that sets `DOCKER_HOST=unix:///run/user/<uid>/docker.sock` and `ReadWritePaths=/run/user/<uid>`, because the uid is only known on the host. Then `systemctl daemon-reload`. |
 | Check | When the key is present, `fixer check` runs as `proseco` with the unit's environment and a temporary `CREDENTIALS_DIRECTORY` holding a copy of the key, which is removed afterwards. Its output is printed. |
 
 It ends by printing what is left to do: copy the key (`sudo install -m 0600 -o root -g root <key> /etc/proseco/private-key.pem`), edit the two config files, then `sudo systemctl enable --now proseco-fixer` and `journalctl -fu proseco-fixer`. The example config is a complete fixer-only config with every `fixer` key at its default and anonymised values. `sources.dependabot` is there only because the parser requires a source.
@@ -308,13 +308,13 @@ The unit follows the reviewdo unit, with these hardening lines left out or loose
 - `DynamicUser` is replaced by `User=proseco`, because rootless Docker needs a user with a home and a subuid range.
 - `PrivateUsers` is not set: the daemon's files must be owned by the real `proseco` uid for the rootless daemon's bind mounts.
 - `MemoryDenyWriteExecute` is not set: Node's JIT needs writable executable memory.
-- `ProtectHome` is `read-only` rather than `yes`, with no `ReadWritePaths`: the CLI reads rootless Docker's config from the service user's home, and the daemon writes only under `/var/lib/proseco`.
+- `ProtectHome` is not set: `ProtectSystem=strict` already makes `/home` and `/root` read-only and the service home is under `/var/lib`, while `ProtectHome=read-only` would also mount `/run/user` read-only, and `connect()` on a Unix socket there fails with `EROFS`, so the daemon could not reach the Docker socket. The drop-in adds `ReadWritePaths=/run/user/<uid>` for the same reason.
 - `RestrictAddressFamilies` adds `AF_UNIX`, which the Docker socket needs.
 - `UMask` is `0022` rather than `0077`: files the daemon writes into attempt directories must be readable through the container's uid mapping.
 
 `TimeoutStopSec=15m` with `KillMode=mixed` lets a unit in progress finish its teardown after SIGTERM; the daemon handles the signal and exits 0.
 
-The fixer builds its sandbox images the first time they are needed. The proxy image is expected to be tagged `dev` and rebuilt from cache each time, because git should refuse to read the root-owned checkout as `proseco`.
+The fixer builds its sandbox images the first time they are needed. The proxy image is tagged with the first 12 hex characters of the sha256 of `proxy.ts`, so it is rebuilt exactly when the proxy changes.
 
 Logs: `journalctl -fu proseco-fixer`. The daemon prints one line per event.
 

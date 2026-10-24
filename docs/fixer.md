@@ -91,7 +91,7 @@ Config, under `fixer`, gains: `bot` (the app slug, matched in the command commen
 ## Deployment
 
 - A `proseco` system user with rootless Docker, linger enabled so its Docker daemon runs without a login.
-- `deploy/proseco-fixer.service`, modelled on reviewdo's, with `User=proseco` instead of `DynamicUser`, `StateDirectory=proseco` for clones and state, and the private key via `LoadCredential`. The user's Docker is reached through a drop-in that sets `DOCKER_HOST`, written by the install script because the uid is only known on the host.
+- `deploy/proseco-fixer.service`, modelled on reviewdo's, with `User=proseco` instead of `DynamicUser`, `StateDirectory=proseco` for clones and state, and the private key via `LoadCredential`. The user's Docker is reached through a drop-in that sets `DOCKER_HOST` and `ReadWritePaths` for the socket directory, written by the install script because the uid is only known on the host.
 - The app lives at a pinned commit in `/opt/proseco/app` and runs on its own Node 24 in `/opt/proseco/node`, from the official tarball. Config and key are under `/etc/proseco`, state under `/var/lib/proseco`.
 - Outbound from the daemon: `api.github.com`, `github.com`, Ollama on localhost, the rootless Docker socket. Nothing listens.
 - `deploy/install.sh <sha>` does all of it, idempotently, and also upgrades; `--dry-run` prints what it would change. It never creates the private key and finishes by running `fixer check` as the service user. The README's "Deploying the fixer" has the steps, the hardening lines that differ from reviewdo's and why, and removal.

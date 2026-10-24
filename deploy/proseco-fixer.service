@@ -25,7 +25,6 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-ProtectHome=read-only
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

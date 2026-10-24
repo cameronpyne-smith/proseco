@@ -264,7 +264,7 @@ install_unit_file() {
     report unit done "installed $UNIT_PATH"
   fi
   local dropin
-  dropin=$(printf '[Service]\nEnvironment=DOCKER_HOST=unix://%s/docker.sock' "$RUNTIME_DIR")
+  dropin=$(printf '[Service]\nEnvironment=DOCKER_HOST=unix://%s/docker.sock\nReadWritePaths=%s' "$RUNTIME_DIR" "$RUNTIME_DIR")
   if [[ -f "$DROPIN_PATH" ]] && [[ "$(cat "$DROPIN_PATH")" == "$dropin" ]]; then
     report drop-in already "$DROPIN_PATH"
   else
