@@ -32,6 +32,14 @@ export interface ExistingTicket {
   labels: string[];
 }
 
+export interface TicketComment {
+  id: number;
+  author: string;
+  authorType: string;
+  body: string;
+  createdAt: string;
+}
+
 export function toSeverity(value: string | undefined): Severity | null {
   const normalised = value?.toLowerCase();
   return SEVERITIES.find((severity) => severity === normalised) ?? null;

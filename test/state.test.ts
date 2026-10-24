@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, loadState, recordAttempt, saveState, type Attempt } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, lastAttempt, lastCommentId, loadState, recordAttempt, recordComment, saveState, type Attempt } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -64,13 +64,13 @@ describe("state decisions", () => {
   it("does not retry a PR closed without merging, even when the body changed", () => {
     const decision = decide(attempt(), { bodyHash: changed, force: false, prs: [{ url: PR, state: "closed" }] });
     assert.equal(decision.attempt, false);
-    assert.match(decision.reason, /closed without merging.*fix label/);
+    assert.match(decision.reason, /closed without merging.*fix command/);
   });
 
-  it("lets the fix label override every skip, including an open PR", () => {
+  it("lets a comment command override every skip, including an open PR", () => {
     for (const prs of [[{ url: PR, state: "open" as const }], [{ url: PR, state: "closed" as const }], []]) {
       const decision = decide(attempt(), { bodyHash: now, force: true, prs });
-      assert.deepEqual(decision, { attempt: true, reason: "the fix label forces a new attempt" });
+      assert.deepEqual(decision, { attempt: true, reason: "a comment command forces a new attempt" });
     }
   });
 });
@@ -80,7 +80,19 @@ describe("state file", () => {
     const before = emptyState();
     const after = recordAttempt(before, 12, attempt());
     assert.deepEqual(before, emptyState());
-    assert.deepEqual(after.tickets["12"], attempt());
+    assert.deepEqual(lastAttempt(after, 12), attempt());
+    assert.equal(lastAttempt(after, 99), undefined);
+  });
+
+  it("records the last seen comment beside the attempt without losing either", () => {
+    const withAttempt = recordAttempt(emptyState(), 12, attempt());
+    const both = recordComment(withAttempt, 12, 555);
+    assert.equal(lastCommentId(both, 12), 555);
+    assert.deepEqual(lastAttempt(both, 12), attempt());
+    assert.equal(lastCommentId(both, 13), null);
+    const reversed = recordAttempt(recordComment(emptyState(), 12, 555), 12, attempt());
+    assert.deepEqual(reversed, both);
+    assert.equal(lastCommentId(withAttempt, 12), null);
   });
 
   it("starts empty when the file does not exist", () => {
@@ -111,7 +123,7 @@ describe("state file", () => {
     const file = join(dir, "state.json");
     writeFileSync(file, JSON.stringify({ version: 2, tickets: {} }));
     assert.throws(() => loadState(file), /state\.json.*version/);
-    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "1": { bodyHash: 3 } } }));
+    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "1": { attempt: { bodyHash: 3 }, lastCommentId: null } } }));
     assert.throws(() => loadState(file), /state\.json.*ticket 1/);
     writeFileSync(file, "not json");
     assert.throws(() => loadState(file), /state\.json/);

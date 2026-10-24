@@ -22,7 +22,7 @@ function full(): Record<string, unknown> {
 
 function fixer(): Record<string, unknown> {
   return {
-    labels: { fix: "proseco-fix" },
+    bot: "acme-proseco",
     app: { clientId: "Iv1.acme", installationId: 42 },
     cloneDir: "/var/lib/proseco/clones",
     stateFile: "/var/lib/proseco/state.json",
@@ -45,7 +45,7 @@ describe("config", () => {
     assert.equal(config.sources.dependabot, true);
     assert.deepEqual([...config.sources.defender!.imageRepos], [["acme-api", "acme-api"]]);
     assert.deepEqual(config.fixer, {
-      labels: { fix: "proseco-fix" },
+      bot: "acme-proseco",
       app: { clientId: "Iv1.acme", installationId: 42 },
       cloneDir: "/var/lib/proseco/clones",
       stateFile: "/var/lib/proseco/state.json",
@@ -87,10 +87,16 @@ describe("config", () => {
     assert.throws(() => parseConfig(raw, mapping), /org must be a name/);
   });
 
-  it("rejects the retired assess label", () => {
+  it("rejects the retired fixer labels", () => {
     const raw = full();
-    (raw["fixer"] as Record<string, unknown>)["labels"] = { assess: "proseco-assess", fix: "proseco-fix" };
-    assert.throws(() => parseConfig(raw, mapping), /fixer.labels has unknown keys: assess/);
+    (raw["fixer"] as Record<string, unknown>)["labels"] = { fix: "proseco-fix" };
+    assert.throws(() => parseConfig(raw, mapping), /fixer has unknown keys: labels/);
+  });
+
+  it("requires the bot to be a login without the [bot] suffix", () => {
+    const raw = full();
+    (raw["fixer"] as Record<string, unknown>)["bot"] = "acme-proseco[bot]";
+    assert.throws(() => parseConfig(raw, mapping), /fixer.bot must be a name/);
   });
 
   it("rejects unknown keys under the fixer and its app", () => {
@@ -102,7 +108,7 @@ describe("config", () => {
     assert.throws(() => parseConfig(appExtra, mapping), /fixer.app has unknown keys: secret/);
   });
 
-  for (const key of ["labels", "app", "cloneDir", "stateFile"]) {
+  for (const key of ["bot", "app", "cloneDir", "stateFile"]) {
     it(`requires fixer.${key} when the fixer is present`, () => {
       const raw = full();
       delete (raw["fixer"] as Record<string, unknown>)[key];

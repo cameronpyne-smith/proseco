@@ -14,7 +14,7 @@ export interface DefenderConfig {
 }
 
 export interface FixerConfig {
-  labels: { fix: string };
+  bot: string;
   app: { clientId: string; installationId: number };
   cloneDir: string;
   stateFile: string;
@@ -100,11 +100,10 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["labels", "app", "cloneDir", "stateFile"]);
-    const labels = object(raw["labels"], "fixer.labels", ["fix"]);
+    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile"]);
     const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
     fixer = {
-      labels: { fix: text(labels["fix"], "fixer.labels.fix") },
+      bot: name(raw["bot"], "fixer.bot", /^[A-Za-z0-9-]+$/),
       app: { clientId: text(app["clientId"], "fixer.app.clientId"), installationId: positiveInteger(app["installationId"], "fixer.app.installationId") },
       cloneDir: text(raw["cloneDir"], "fixer.cloneDir"),
       stateFile: text(raw["stateFile"], "fixer.stateFile"),

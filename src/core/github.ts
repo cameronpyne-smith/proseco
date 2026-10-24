@@ -1,4 +1,4 @@
-import type { ExistingTicket } from "./types.ts";
+import type { ExistingTicket, TicketComment } from "./types.ts";
 
 export async function expectOk(response: Response, what: string): Promise<Response> {
   if (!response.ok) {
@@ -95,8 +95,8 @@ export class TicketRepo extends GitHubApi {
   readonly #path: string;
   readonly #org: string;
 
-  constructor(token: string, org: string, repo: string) {
-    super(token);
+  constructor(token: string, org: string, repo: string, fetchImpl: typeof fetch = fetch) {
+    super(token, fetchImpl);
     this.#org = org;
     this.#path = `/repos/${org}/${repo}/issues`;
   }
@@ -114,6 +114,27 @@ export class TicketRepo extends GitHubApi {
   async get(number: number): Promise<ExistingTicket> {
     const response = await expectOk(await this.request(`${this.#path}/${number}`), `read ticket #${number}`);
     return toTicket((await response.json()) as Issue);
+  }
+
+  async comments(number: number): Promise<TicketComment[]> {
+    const items = await this.paginate<{ id: number; body: string | null; created_at: string; user: { login: string; type: string } | null }>(
+      `${this.#path}/${number}/comments?per_page=100`,
+      `list comments on #${number}`,
+    );
+    return items.map((item) => ({
+      id: item.id,
+      author: item.user?.login ?? "",
+      authorType: item.user?.type ?? "",
+      body: item.body ?? "",
+      createdAt: item.created_at,
+    }));
+  }
+
+  async react(commentId: number, content: "eyes"): Promise<void> {
+    await expectOk(
+      await this.request(`${this.#path}/comments/${commentId}/reactions`, { method: "POST", body: JSON.stringify({ content }) }),
+      `react to comment ${commentId}`,
+    );
   }
 
   async create(title: string, body: string, labels: string[]): Promise<{ number: number; nodeId: string }> {

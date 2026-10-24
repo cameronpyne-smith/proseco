@@ -59,7 +59,7 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
     "defender": { "imageRepos": "image-repos.json" }
   },
   "fixer": {
-    "labels": { "fix": "proseco-fix" },
+    "bot": "acme-proseco",
     "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678 },
     "cloneDir": "/var/lib/proseco/clones",
     "stateFile": "/var/lib/proseco/state.json"
@@ -77,8 +77,8 @@ src/fixer/      reads the tickets; a CLI for the fix workflow
 | `tickets.maintainedIn` | The repository running proseco, named in each ticket body. |
 | `sources.dependabot` | Present to read the org's open Dependabot alerts. |
 | `sources.defender.imageRepos` | Present to read Defender container findings. Points to a JSON object, relative to the config file, mapping each lowercase ghcr package name under the org to a repository name. Images not in the mapping go to the `unmapped` ticket. |
-| `fixer.labels.fix` | The label a person adds to a ticket to force the fixer to redo it. Every open proseco ticket is worked without a label. |
-| `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
+| `fixer.bot` | The app's slug, i.e. its login without `[bot]`. A person comments `@<bot> fix` on a ticket to force the fixer to redo it. Every open proseco ticket is worked without a command. |
+| `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `bot`, `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
 | `fixer.cloneDir` | Directory holding the fixer's bare clones, one `<repo>.git` each. |
 | `fixer.stateFile` | JSON file recording each ticket's last attempt. |
 
@@ -140,7 +140,7 @@ It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only need
 ## The fixer
 
 Built so far, with no model and no container:
-- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, repo, force }`, where `force` is true when the ticket carries `fixer.labels.fix`. In Actions it also writes `requests=<json>` to `$GITHUB_OUTPUT`, for a job matrix.
+- `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, repo, force, commentId }`, where `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts). For each such comment it reacts with eyes and records the comment id in the state file, so a command is acted on once; `commentId` is that comment. In Actions it also writes `requests=<json>` to `$GITHUB_OUTPUT`, for a job matrix.
 - `npm run fixer -- read <n>`: prints a ticket's raw findings, parsed, as JSON.
 - `npm run fixer -- run <n> --dry-run`: prints, as JSON, what an attempt on the ticket would do. It reads the ticket, fetches the repository into the bare clone store, reads each lockfile at the default branch head, and reports:
   - the PR units: one per lockfile for the non-major rows, one per major upgrade, each with its branch (`proseco/<lockfile slug>` or `proseco/<package>-<target>`);
@@ -148,11 +148,11 @@ Built so far, with no model and no container:
   - each package's chain from a direct dependency to it, the ecosystem, and the declared toolchain version;
   - whether the state file says the ticket would be attempted, and why.
 
-  It writes nothing except the clone store. It does not look at pull requests yet, so `openPullRequests` is `"not checked"`. `run` without `--dry-run` exits with "not built yet".
+  It reports the command comment but does not react to it. It writes nothing except the clone store. It does not look at pull requests yet, so `openPullRequests` is `"not checked"`. `run` without `--dry-run` exits with "not built yet".
 
 All commands need `PROSECO_CONFIG`. Credentials are one of:
 - `GH_READ_TOKEN`: used as is, nothing is minted. For local runs.
-- The app's private key, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The fixer then mints installation tokens scoped to the repositories and permissions each step needs (`issues: read` on the tickets repository, `contents: read` on the repository being fixed). The key is never logged or written.
+- The app's private key, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The fixer then mints installation tokens scoped to the repositories and permissions each step needs (`issues: write` on the tickets repository for `find`, which reacts to comments, `issues: read` for the others, `contents: read` on the repository being fixed). The key is never logged or written.
 
 Git runs with no system or user configuration and no credential helper. The token reaches it through the environment for a single command and is never written to a clone.
 
