@@ -39,7 +39,7 @@ export async function upsertComment(api: CommentWriter, ticket: number, bot: str
     await api.comment(ticket, body);
     return "created";
   }
-  if (existing.body === body) return "unchanged";
+  if (existing.body.trimEnd() === body.trimEnd()) return "unchanged";
   await api.editComment(existing.id, body);
   return "edited";
 }
