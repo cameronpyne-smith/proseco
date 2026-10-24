@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { imageFor, UV_VERSION } from "../src/fixer/sandbox/images.ts";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { imageFor, proxyImageTag, UV_VERSION } from "../src/fixer/sandbox/images.ts";
 
 describe("imageFor node", () => {
   const cases: [string | null, string][] = [
@@ -45,4 +48,12 @@ describe("imageFor python", () => {
       assert.match(image.dockerfile, /images\/python\/Dockerfile$/);
     });
   }
+});
+
+describe("proxyImageTag", () => {
+  it("is the first 12 hex characters of the sha256 of proxy.ts", async () => {
+    const expected = createHash("sha256").update(readFileSync(join(import.meta.dirname, "..", "src", "fixer", "sandbox", "proxy.ts"))).digest("hex").slice(0, 12);
+    assert.match(expected, /^[0-9a-f]{12}$/);
+    assert.equal(await proxyImageTag(), expected);
+  });
 });

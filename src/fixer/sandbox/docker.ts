@@ -108,6 +108,13 @@ export class Docker {
     }
   }
 
+  #rootless: Promise<boolean> | null = null;
+
+  rootless(): Promise<boolean> {
+    this.#rootless ??= this.#docker(["info", "--format", "{{.SecurityOptions}}"], "info").then((options) => options.includes("name=rootless"));
+    return this.#rootless;
+  }
+
   async info(): Promise<string> {
     return (await this.#docker(["info", "--format", "{{.ServerVersion}}"], "info")).trim();
   }

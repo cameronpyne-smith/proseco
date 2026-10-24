@@ -58,13 +58,14 @@ export class Sandbox {
       });
       await docker.networkConnect("bridge", sandbox.#proxy);
       await sandbox.#waitForProxy();
+      const user = (await docker.rootless()) ? "0:0" : `${options.uid}:${options.gid}`;
       const proxyUrl = `http://${sandbox.#proxy}:${PROXY_PORT}`;
       await docker.run({
         name: sandbox.#box,
         image: options.image,
         network,
         attempt: options.attemptId,
-        user: `${options.uid}:${options.gid}`,
+        user,
         workdir: "/work",
         env: {
           HTTP_PROXY: proxyUrl,

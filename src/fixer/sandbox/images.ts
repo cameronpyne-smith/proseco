@@ -1,10 +1,8 @@
-import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type { ImageFamily } from "../ecosystems/ecosystem.ts";
 import type { Docker } from "./docker.ts";
-
-const run = promisify(execFile);
 
 export const UV_VERSION = "0.9.5";
 export const NODE_DEFAULT_MAJOR = "24";
@@ -50,24 +48,14 @@ export async function ensureImage(docker: Docker, image: ImageSpec): Promise<str
   return reference;
 }
 
-async function git(args: string[]): Promise<string | null> {
-  try {
-    return (await run("git", ["-C", SANDBOX_DIR, ...args])).stdout.trim();
-  } catch {
-    return null;
-  }
-}
-
 export async function proxyImageTag(): Promise<string> {
-  const sha = await git(["rev-parse", "--short", "HEAD"]);
-  const dirty = await git(["status", "--porcelain", "--", "proxy.ts"]);
-  return sha && dirty === "" ? sha : "dev";
+  return createHash("sha256").update(await readFile(join(SANDBOX_DIR, "proxy.ts"))).digest("hex").slice(0, 12);
 }
 
 export async function ensureProxyImage(docker: Docker): Promise<string> {
   const tag = await proxyImageTag();
   const reference = `proseco/proxy:${tag}`;
-  if (tag === "dev" || !(await docker.imageExists(reference))) {
+  if (!(await docker.imageExists(reference))) {
     await docker.build({ tag: reference, dockerfile: join(IMAGES_DIR, "proxy", "Dockerfile"), context: SANDBOX_DIR, buildArgs: {} });
   }
   return reference;
