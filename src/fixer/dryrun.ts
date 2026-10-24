@@ -6,7 +6,7 @@ import { planUnits, type PrUnit } from "./plan.ts";
 import { bodyHash, decide, type Attempt, type Decision } from "./state.ts";
 
 export interface DryRunInput {
-  ticket: { number: number; repo: string; body: string; force: boolean; commandCommentId: number | null };
+  ticket: { number: number; repo: string; body: string; force: boolean; ignored: boolean; commandCommentId: number | null };
   rows: TicketRow[];
   org: string;
   headSha: string;
@@ -16,7 +16,7 @@ export interface DryRunInput {
 }
 
 export interface DryRunReport {
-  ticket: { number: number; repo: string; bodyHash: string; force: boolean; commandCommentId: number | null };
+  ticket: { number: number; repo: string; bodyHash: string; force: boolean; ignored: boolean; commandCommentId: number | null };
   headSha: string;
   openPullRequests: "not checked";
   decision: Decision;
@@ -86,10 +86,10 @@ export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
     });
   }
   return {
-    ticket: { number: input.ticket.number, repo: input.ticket.repo, bodyHash: hash, force: input.ticket.force, commandCommentId: input.ticket.commandCommentId },
+    ticket: { number: input.ticket.number, repo: input.ticket.repo, bodyHash: hash, force: input.ticket.force, ignored: input.ticket.ignored, commandCommentId: input.ticket.commandCommentId },
     headSha: input.headSha,
     openPullRequests: "not checked",
-    decision: decide(input.last, { bodyHash: hash, force: input.ticket.force, prs: [] }),
+    decision: decide(input.last, { bodyHash: hash, force: input.ticket.force, prs: [], ignored: input.ticket.ignored }),
     units,
   };
 }

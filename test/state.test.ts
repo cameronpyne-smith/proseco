@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, lastAttempt, lastCommentId, loadState, recordAttempt, recordComment, saveState, type Attempt } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, isIgnored, lastAttempt, lastCommentId, loadState, recordAttempt, recordComment, recordIgnored, saveState, type Attempt } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -72,6 +72,34 @@ describe("state decisions", () => {
       const decision = decide(attempt(), { bodyHash: now, force: true, prs });
       assert.deepEqual(decision, { attempt: true, reason: "a comment command forces a new attempt" });
     }
+  });
+});
+
+describe("ignored tickets", () => {
+  it("skips an ignored ticket before any other rule", () => {
+    const query = { bodyHash: "h", force: false, prs: [], ignored: true };
+    assert.deepEqual(decide(undefined, query), { attempt: false, reason: "ignored by a comment command" });
+    assert.deepEqual(decide(attempt(), { ...query, prs: [{ url: PR, state: "open" }] }), { attempt: false, reason: "ignored by a comment command" });
+  });
+
+  it("records and clears the flag beside the attempt and comment", () => {
+    const state = recordIgnored(recordComment(recordAttempt(emptyState(), 12, attempt()), 12, 5), 12, true);
+    assert.equal(isIgnored(state, 12), true);
+    assert.equal(isIgnored(state, 13), false);
+    assert.equal(lastCommentId(state, 12), 5);
+    assert.deepEqual(lastAttempt(state, 12), attempt());
+    assert.equal(isIgnored(recordIgnored(state, 12, false), 12), false);
+  });
+
+  it("round-trips through the file, and reads a file written before the flag existed as not ignored", () => {
+    const dir = mkdtempSync(join(tmpdir(), "proseco-state-"));
+    const file = join(dir, "state.json");
+    saveState(file, recordIgnored(emptyState(), 3, true));
+    assert.equal(isIgnored(loadState(file), 3), true);
+    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "3": { attempt: null, lastCommentId: 4 } } }));
+    assert.equal(isIgnored(loadState(file), 3), false);
+    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "3": { attempt: null, lastCommentId: 4, ignored: "yes" } } }));
+    assert.throws(() => loadState(file), /malformed ignored/);
   });
 });
 

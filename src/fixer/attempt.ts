@@ -1,7 +1,7 @@
 import { parseRawTable } from "../core/ticket.ts";
 import { renderComment, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
-import { bodyHash, decide, lastAttempt, recordAttempt, type Decision, type PullRequestStatus, type State } from "./state.ts";
+import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, type Decision, type PullRequestStatus, type State } from "./state.ts";
 import type { LoopStats, TraceEntry } from "./agent/loop.ts";
 
 export interface UnitResult {
@@ -12,7 +12,7 @@ export interface UnitResult {
 }
 
 export interface AttemptInput {
-  ticket: { number: number; repo: string; body: string };
+  ticket: { number: number; key: string; repo: string; body: string };
   force: boolean;
   state: State;
   local: boolean;
@@ -50,7 +50,8 @@ function none(reason: string): UnitResult {
   return { outcome: { kind: "none", reason } };
 }
 
-async function work(unit: PrUnit, headSha: string, deps: AttemptDeps): Promise<UnitResult> {
+async function work(unit: PrUnit, headSha: string, imageTicket: boolean, deps: AttemptDeps): Promise<UnitResult> {
+  if (imageTicket) return none("image tickets are not attempted yet");
   if (unit.kind === "major") return none("major upgrades are not attempted yet");
   if (unit.ecosystem !== "npm") return none(`unsupported ecosystem: ${unit.ecosystem ?? "unknown lockfile type"}`);
   try {
@@ -66,14 +67,14 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
   const last = lastAttempt(state, ticket.number);
   const prs: PullRequestStatus[] = [];
   if (!input.local && last) for (const url of last.prUrls) prs.push(await deps.prStatus(url));
-  const decision = decide(last, { bodyHash: hash, force: input.force, prs });
+  const decision = decide(last, { bodyHash: hash, force: input.force, prs, ignored: isIgnored(state, ticket.number) });
   if (!decision.attempt && !input.local) return { skipped: true, decision, headSha: null, reports: [], state };
 
   const units = planUnits(parseRawTable(ticket.body), deps.org);
   const headSha = await deps.fetch();
   const reports: UnitReportDetail[] = [];
   for (const unit of units) {
-    const result = await work(unit, headSha, deps);
+    const result = await work(unit, headSha, ticket.key !== ticket.repo, deps);
     reports.push({ label: labelOf(unit), outcome: result.outcome, unit, result });
   }
   if (input.local) return { skipped: false, decision, headSha, reports, state };

@@ -4,7 +4,7 @@ import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 import { runAttempt, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
-import { bodyHash, emptyState, recordAttempt, type PullRequestStatus, type State } from "../src/fixer/state.ts";
+import { bodyHash, emptyState, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
 
 function finding(overrides: Partial<Finding>): Finding {
   return { origin: "dependabot", repo: "acme-api", cve: "CVE-2026-0001", severity: "high", ecosystem: "npm", package: "minimist", installed: "1.2.5", fixedIn: "1.2.6", source: "package-lock.json", relationship: null, scope: null, imageKey: null, ...overrides };
@@ -13,7 +13,7 @@ function finding(overrides: Partial<Finding>): Finding {
 const ENRICHMENT: Enrichment = { epss: new Map(), kev: new Set() };
 
 function ticket(findings: Finding[]) {
-  return { number: 12, repo: "acme-api", body: renderBody("acme-api", findings, ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" }) };
+  return { number: 12, key: "acme-api", repo: "acme-api", body: renderBody("acme-api", findings, ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" }) };
 }
 
 const TWO_LOCKFILES = ticket([
@@ -178,5 +178,50 @@ describe("attempt", () => {
     run.deps.saveState = () => void order.push("state");
     await runAttempt(base(), run.deps);
     assert.deepEqual(order, ["comment", "state"]);
+  });
+
+  it("reports an image ticket as unsupported without working any unit", async () => {
+    const image = {
+      number: 13,
+      key: "docker.elastic.co/kibana/kibana",
+      repo: "acme-infra",
+      body: renderBody("docker.elastic.co/kibana/kibana", [finding({ repo: "acme-infra", imageKey: "docker.elastic.co/kibana/kibana", ecosystem: "os", source: "docker.elastic.co/kibana/kibana" })], ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" }),
+    };
+    const run = harness();
+    const result = await runAttempt({ ticket: image, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(run.worked, []);
+    assert.match(run.comments[0]!, /no pull request: image tickets are not attempted yet/);
+    assert.equal(result.state.tickets["13"]!.attempt!.outcome, "gave-up");
+  });
+
+  it("does nothing for an ignored ticket: no fetch, no unit, no comment, no state change", async () => {
+    const ignored = recordIgnored(emptyState(), 12, true);
+    const run = harness();
+    const result = await runAttempt(base(ignored), run.deps);
+    assert.equal(result.skipped, true);
+    assert.deepEqual(result.decision, { attempt: false, reason: "ignored by a comment command" });
+    assert.equal(run.fetched, 0);
+    assert.deepEqual(run.worked, []);
+    assert.deepEqual(run.comments, []);
+    assert.equal(result.state, ignored);
+  });
+
+  it("skips an ignored ticket after a pull request is open, and when its body changes", async () => {
+    const attempted = (await runAttempt(base(), harness().deps)).state;
+    const ignored = recordIgnored(attempted, 12, true);
+    const run = harness();
+    assert.equal((await runAttempt(base(ignored), run.deps)).skipped, true);
+    const changed = { ...TWO_LOCKFILES, body: `${TWO_LOCKFILES.body}\nchanged` };
+    assert.equal((await runAttempt({ ...base(ignored), ticket: changed }, run.deps)).skipped, true);
+    assert.deepEqual(run.worked, []);
+    assert.equal(run.fetched, 0);
+  });
+
+  it("attempts an ignored ticket again once fix cleared the flag and forced it", async () => {
+    const cleared = recordIgnored(recordIgnored(emptyState(), 12, true), 12, false);
+    const run = harness();
+    const result = await runAttempt(base(cleared, { force: true }), run.deps);
+    assert.equal(result.skipped, false);
+    assert.equal(run.worked.length, 2);
   });
 });

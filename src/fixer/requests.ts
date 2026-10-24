@@ -1,14 +1,15 @@
 import type { TicketsConfig } from "../core/config.ts";
-import { UNMAPPED_KEY } from "../core/findings.ts";
 import type { TicketFilter } from "../core/github.ts";
-import { isProsecoTicket, markerKey } from "../core/ticket.ts";
+import { isProsecoTicket, markerKey, markerRepo } from "../core/ticket.ts";
 import type { ExistingTicket, TicketComment } from "../core/types.ts";
-import { lastCommentId, recordComment, type State } from "./state.ts";
+import { isIgnored, lastCommentId, recordComment, recordIgnored, type State } from "./state.ts";
 
 export interface FixRequest {
   number: number;
+  key: string;
   repo: string;
   force: boolean;
+  ignored: boolean;
   commentId: number | null;
 }
 
@@ -28,9 +29,9 @@ export function fixRequests(tickets: ExistingTicket[], creators: string[]): FixR
   const requests: FixRequest[] = [];
   for (const ticket of tickets) {
     if (ticket.state !== "open" || !isProsecoTicket(ticket, creators)) continue;
-    const repo = markerKey(ticket.body)!;
-    if (repo === UNMAPPED_KEY) continue;
-    requests.push({ number: ticket.number, repo, force: false, commentId: null });
+    const repo = markerRepo(ticket.body);
+    if (!repo) continue;
+    requests.push({ number: ticket.number, key: markerKey(ticket.body)!, repo, force: false, ignored: false, commentId: null });
   }
   return requests.sort((a, b) => a.number - b.number);
 }
@@ -39,10 +40,19 @@ function isBot(comment: TicketComment): boolean {
   return comment.authorType === "Bot" || comment.author.endsWith("[bot]");
 }
 
-export function commandComment(comments: TicketComment[], bot: string, afterId: number | null): TicketComment | null {
-  const command = new RegExp(`(^|\\s)@${bot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+fix\\b`, "i");
-  const found = comments.filter((comment) => comment.id > (afterId ?? 0) && !isBot(comment) && command.test(comment.body));
-  return found.reduce<TicketComment | null>((newest, comment) => (newest && newest.id > comment.id ? newest : comment), null);
+export type Command = "fix" | "ignore";
+
+export type CommandComment = TicketComment & { command: Command };
+
+export function commandComment(comments: TicketComment[], bot: string, afterId: number | null): CommandComment | null {
+  const pattern = new RegExp(`(^|\\s)@${bot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+(fix|ignore)\\b`, "i");
+  let newest: CommandComment | null = null;
+  for (const comment of comments) {
+    if (comment.id <= (afterId ?? 0) || isBot(comment) || (newest && newest.id > comment.id)) continue;
+    const match = pattern.exec(comment.body);
+    if (match) newest = { ...comment, command: match[2]!.toLowerCase() as Command };
+  }
+  return newest;
 }
 
 export async function applyCommands(
@@ -57,14 +67,15 @@ export async function applyCommands(
   for (const request of requests) {
     const command = commandComment(await api.comments(request.number), bot, lastCommentId(next, request.number));
     if (!command) {
-      result.push(request);
+      result.push({ ...request, ignored: isIgnored(next, request.number) });
       continue;
     }
+    const ignored = command.command === "ignore";
     if (acknowledge) {
       await api.react(command.id, "eyes");
-      next = recordComment(next, request.number, command.id);
+      next = recordIgnored(recordComment(next, request.number, command.id), request.number, ignored);
     }
-    result.push({ ...request, force: true, commentId: command.id });
+    result.push({ ...request, force: !ignored, ignored, commentId: command.id });
   }
   return { requests: result, state: next };
 }

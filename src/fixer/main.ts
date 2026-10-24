@@ -1,8 +1,7 @@
 import { tokenProvider, type TokenProvider } from "../core/app.ts";
 import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
 import { TicketRepo } from "../core/github.ts";
-import { UNMAPPED_KEY } from "../core/findings.ts";
-import { isProsecoTicket, markerKey, parseRawTable } from "../core/ticket.ts";
+import { isProsecoTicket, markerKey, markerRepo, parseRawTable } from "../core/ticket.ts";
 import { Advisories } from "./advisories.ts";
 import { dryRunReport } from "./dryrun.ts";
 import { GitStore } from "./git.ts";
@@ -10,7 +9,7 @@ import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters } from "./requests.ts";
 import { runTicket, summarise } from "./run.ts";
-import { lastAttempt, lastCommentId, loadState, saveState } from "./state.ts";
+import { isIgnored, lastAttempt, lastCommentId, loadState, saveState } from "./state.ts";
 
 const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep";
 
@@ -26,25 +25,26 @@ function ticketNumber(argument: string | undefined): number {
   return number;
 }
 
-async function fixableTicket(config: Config, tickets: TicketRepo, number: number): Promise<{ repo: string; body: string }> {
+async function fixableTicket(config: Config, tickets: TicketRepo, number: number): Promise<{ key: string; repo: string; body: string }> {
   const ticket = await tickets.get(number);
   if (!isProsecoTicket(ticket, config.tickets.find.creators)) {
     throw new Error(`#${number} is not a proseco ticket: it needs the marker on its first line and an author in tickets.find.creators`);
   }
-  const repo = markerKey(ticket.body)!;
-  if (repo === UNMAPPED_KEY) throw new Error(`#${number} is the unmapped images ticket, which has no repository to fix`);
-  return { repo, body: ticket.body };
+  const repo = markerRepo(ticket.body);
+  if (!repo) throw new Error(`#${number} is the unmapped images ticket, which has no repository to fix`);
+  return { key: markerKey(ticket.body)!, repo, body: ticket.body };
 }
 
 async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, local: boolean): Promise<void> {
-  const { repo, body } = await fixableTicket(config, tickets, number);
-  const result = await runTicket({ config, tokens, tickets, number, repo, body, local });
+  const { key, repo, body } = await fixableTicket(config, tickets, number);
+  const result = await runTicket({ config, tokens, tickets, number, key, repo, body, local });
   console.log(JSON.stringify(summarise(result, number), null, 2));
   if (local) for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
 }
 
 async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number): Promise<void> {
-  const { repo, body } = await fixableTicket(config, tickets, number);
+  const { key, repo, body } = await fixableTicket(config, tickets, number);
+  if (key !== repo) throw new Error(`#${number} is an image ticket, and image tickets are not attempted yet`);
   const repoToken = await tokens({ repositories: [repo], permissions: { contents: "read" } });
   const store = new GitStore({ cloneDir: config.fixer.cloneDir, remoteUrl: (name) => `https://github.com/${config.org}/${name}.git`, token: repoToken });
   await store.fetch(repo);
@@ -53,7 +53,7 @@ async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProv
   const state = loadState(config.fixer.stateFile);
   const command = commandComment(await tickets.comments(number), config.fixer.bot, lastCommentId(state, number));
   const report = await dryRunReport({
-    ticket: { number, repo, body, force: command !== null, commandCommentId: command?.id ?? null },
+    ticket: { number, repo, body, force: command?.command === "fix", ignored: command ? command.command === "ignore" : isIgnored(state, number), commandCommentId: command?.id ?? null },
     rows: parseRawTable(body),
     org: config.org,
     headSha,
@@ -119,7 +119,7 @@ async function main(args: string[]): Promise<void> {
       if (!isProsecoTicket(ticket, config.tickets.find.creators)) {
         throw new Error(`#${number} is not a proseco ticket: it needs the marker on its first line and an author in tickets.find.creators`);
       }
-      console.log(JSON.stringify({ number, repo: markerKey(ticket.body), state: ticket.state, rows: parseRawTable(ticket.body) }, null, 2));
+      console.log(JSON.stringify({ number, key: markerKey(ticket.body), repo: markerRepo(ticket.body), state: ticket.state, rows: parseRawTable(ticket.body) }, null, 2));
       return;
     }
     default:

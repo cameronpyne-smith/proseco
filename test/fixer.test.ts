@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { TicketRepo } from "../src/core/github.ts";
 import type { ExistingTicket, TicketComment } from "../src/core/types.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters, type CommentApi } from "../src/fixer/requests.ts";
-import { emptyState, recordComment } from "../src/fixer/state.ts";
+import { emptyState, isIgnored, recordComment } from "../src/fixer/state.ts";
 
 const CREATORS = ["proseco-bot[bot]"];
 
@@ -36,8 +36,16 @@ describe("finding fix requests", () => {
 
   it("requests every open proseco ticket in ticket order, unforced until a comment says otherwise", () => {
     assert.deepEqual(fixRequests([ticket(9), ticket(3)], CREATORS), [
-      { number: 3, repo: "Acme.Repo3", force: false, commentId: null },
-      { number: 9, repo: "Acme.Repo9", force: false, commentId: null },
+      { number: 3, key: "Acme.Repo3", repo: "Acme.Repo3", force: false, ignored: false, commentId: null },
+      { number: 9, key: "Acme.Repo9", repo: "Acme.Repo9", force: false, ignored: false, commentId: null },
+    ]);
+  });
+
+  it("returns the image key and the fixed-in repo of an image ticket, and the repo of an old-marker ticket", () => {
+    const image = ticket(4, { body: "<!-- proseco:docker.elastic.co/kibana/kibana repo:acme-infra -->\n\nbody" });
+    assert.deepEqual(fixRequests([image, ticket(5)], CREATORS), [
+      { number: 4, key: "docker.elastic.co/kibana/kibana", repo: "acme-infra", force: false, ignored: false, commentId: null },
+      { number: 5, key: "Acme.Repo5", repo: "Acme.Repo5", force: false, ignored: false, commentId: null },
     ]);
   });
 
@@ -65,6 +73,19 @@ describe("comment command", () => {
     for (const body of ["@acme-proseco look at this", "@acme-proseco fixes nothing", "@other-bot fix", "x@acme-proseco fix", "@acme-proseco-bot fix", "acme-proseco fix"]) {
       assert.equal(commandComment([comment(5, body)], "acme-proseco", null), null, body);
     }
+  });
+
+  it("recognises ignore as well as fix and says which", () => {
+    assert.equal(commandComment([comment(5, "@acme-proseco ignore")], "acme-proseco", null)?.command, "ignore");
+    assert.equal(commandComment([comment(5, "thanks @Acme-Proseco IGNORE.")], "acme-proseco", null)?.command, "ignore");
+    assert.equal(commandComment([comment(5, "@acme-proseco fix")], "acme-proseco", null)?.command, "fix");
+    assert.equal(commandComment([comment(5, "@acme-proseco ignored")], "acme-proseco", null), null);
+  });
+
+  it("lets the newest command win", () => {
+    const comments = [comment(5, "@acme-proseco ignore"), comment(8, "@acme-proseco fix"), comment(6, "@acme-proseco ignore")];
+    assert.equal(commandComment(comments, "acme-proseco", null)?.command, "fix");
+    assert.equal(commandComment([...comments, comment(9, "@acme-proseco ignore")], "acme-proseco", null)?.command, "ignore");
   });
 
   it("ignores bot authors", () => {
@@ -123,6 +144,38 @@ describe("acknowledging commands", () => {
     const result = await applyCommands(requests, source, "acme-proseco", recordComment(emptyState(), 1, 10), true);
     assert.equal(result.requests[0]!.commentId, 12);
     assert.deepEqual(reactions, [[12, "eyes"]]);
+  });
+
+  it("ignore reacts, records the comment and the flag, and does not force", async () => {
+    const { source, reactions } = api({ 1: [comment(10, "@acme-proseco ignore")] });
+    const result = await applyCommands(requests, source, "acme-proseco", emptyState(), true);
+    assert.deepEqual(result.requests.map((request) => [request.number, request.force, request.ignored, request.commentId]), [
+      [1, false, true, 10],
+      [2, false, false, null],
+    ]);
+    assert.deepEqual(reactions, [[10, "eyes"]]);
+    assert.equal(isIgnored(result.state, 1), true);
+    assert.equal(result.state.tickets["1"]?.lastCommentId, 10);
+  });
+
+  it("keeps a ticket ignored on later polls until fix clears it", async () => {
+    const first = api({ 1: [comment(10, "@acme-proseco ignore")] });
+    const ignored = await applyCommands(requests, first.source, "acme-proseco", emptyState(), true);
+    const later = await applyCommands(requests, first.source, "acme-proseco", ignored.state, true);
+    assert.equal(later.requests[0]!.ignored, true);
+    assert.equal(first.reactions.length, 1);
+    const fixed = api({ 1: [comment(10, "@acme-proseco ignore"), comment(12, "@acme-proseco fix")] });
+    const cleared = await applyCommands(requests, fixed.source, "acme-proseco", ignored.state, true);
+    assert.deepEqual([cleared.requests[0]!.force, cleared.requests[0]!.ignored], [true, false]);
+    assert.equal(isIgnored(cleared.state, 1), false);
+  });
+
+  it("reports ignore without recording when not acknowledging", async () => {
+    const { source } = api({ 1: [comment(10, "@acme-proseco ignore")] });
+    const state = emptyState();
+    const result = await applyCommands(requests, source, "acme-proseco", state, false);
+    assert.equal(result.requests[0]!.ignored, true);
+    assert.deepEqual(result.state, state);
   });
 
   it("reports the command without reacting or recording when not acknowledging", async () => {

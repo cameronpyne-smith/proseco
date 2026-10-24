@@ -34,7 +34,7 @@ const ADVISORY: Advisory = {
 
 function input(rows: TicketRow[], files: Record<string, string>, overrides = {}) {
   return {
-    ticket: { number: 5, repo: "acme-api", body: "body", force: false, commandCommentId: null },
+    ticket: { number: 5, repo: "acme-api", body: "body", force: false, ignored: false, commandCommentId: null },
     rows,
     org: "acme-org",
     headSha: "f".repeat(40),

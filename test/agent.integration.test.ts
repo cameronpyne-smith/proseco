@@ -90,7 +90,7 @@ describe("agent end to end", { skip: !enabled && "set PROSECO_AGENT_TESTS=1 to r
     };
     const body = renderBody("acme-api", [FINDING], ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" });
     outcome = await runAttempt(
-      { ticket: { number: 12, repo: "acme-api", body }, force: false, state: emptyState(), local: false },
+      { ticket: { number: 12, key: "acme-api", repo: "acme-api", body }, force: false, state: emptyState(), local: false },
       {
         org: "acme-org",
         fetch: async () => {

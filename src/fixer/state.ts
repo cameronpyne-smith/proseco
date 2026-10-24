@@ -13,6 +13,7 @@ export interface Attempt {
 export interface TicketState {
   attempt: Attempt | null;
   lastCommentId: number | null;
+  ignored?: boolean;
 }
 
 export interface State {
@@ -29,6 +30,7 @@ export interface AttemptQuery {
   bodyHash: string;
   force: boolean;
   prs: PullRequestStatus[];
+  ignored?: boolean;
 }
 
 export interface Decision {
@@ -60,6 +62,14 @@ export function recordComment(state: State, ticket: number, commentId: number): 
   return withEntry(state, ticket, { ...entry(state, ticket), lastCommentId: commentId });
 }
 
+export function recordIgnored(state: State, ticket: number, ignored: boolean): State {
+  return withEntry(state, ticket, { ...entry(state, ticket), ignored });
+}
+
+export function isIgnored(state: State, ticket: number): boolean {
+  return entry(state, ticket).ignored === true;
+}
+
 export function lastCommentId(state: State, ticket: number): number | null {
   return entry(state, ticket).lastCommentId;
 }
@@ -69,6 +79,7 @@ export function lastAttempt(state: State, ticket: number): Attempt | undefined {
 }
 
 export function decide(last: Attempt | undefined, query: AttemptQuery): Decision {
+  if (query.ignored) return { attempt: false, reason: "ignored by a comment command" };
   if (query.force) return { attempt: true, reason: "a comment command forces a new attempt" };
   if (query.prs.some((pr) => pr.state === "open")) return { attempt: false, reason: "an open pull request exists for the ticket" };
   if (!last) return { attempt: true, reason: "never attempted" };
@@ -89,6 +100,7 @@ function validate(value: unknown, file: string): State {
     const item = raw as Partial<TicketState> | null;
     if (typeof item !== "object" || item === null) return fail(`ticket ${number} is malformed`);
     if (item.lastCommentId !== null && !Number.isInteger(item.lastCommentId)) fail(`ticket ${number} has a malformed lastCommentId`);
+    if (item.ignored !== undefined && typeof item.ignored !== "boolean") fail(`ticket ${number} has a malformed ignored flag`);
     const attempt = item.attempt;
     if (attempt === null) continue;
     const valid =

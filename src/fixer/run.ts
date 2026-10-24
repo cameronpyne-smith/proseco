@@ -8,7 +8,7 @@ import { commandComment } from "./requests.ts";
 import { upsertComment } from "./comment.ts";
 import { GitStore } from "./git.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, saveState, type PullRequestStatus } from "./state.ts";
+import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type PullRequestStatus } from "./state.ts";
 import { workUnit, type PublishRequest, type Publisher } from "./unit.ts";
 
 const MS_PER_MINUTE = 60_000;
@@ -18,6 +18,7 @@ export interface RunTicket {
   tokens: TokenProvider;
   tickets: TicketRepo;
   number: number;
+  key: string;
   repo: string;
   body: string;
   local: boolean;
@@ -72,7 +73,7 @@ class LocalPublisher implements Publisher {
 }
 
 export async function runTicket(input: RunTicket): Promise<AttemptResult & { checkouts: string[] }> {
-  const { config, tokens, tickets, number, repo, local } = input;
+  const { config, tokens, tickets, number, key, repo, local } = input;
   const fixer = config.fixer;
   const readToken = await tokens({ repositories: [repo], permissions: { contents: "read", pull_requests: "read" } });
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: (name) => `https://github.com/${config.org}/${name}.git`, token: readToken });
@@ -80,10 +81,13 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const readApi = new RepoApi(readToken, config.org, repo);
   let state = loadState(fixer.stateFile);
   const command = commandComment(await tickets.comments(number), fixer.bot, lastCommentId(state, number));
-  if (command && !local) {
-    await tickets.react(command.id, "eyes");
-    state = recordComment(state, number, command.id);
-    saveState(fixer.stateFile, state);
+  if (command) {
+    const next = recordIgnored(recordComment(state, number, command.id), number, command.command === "ignore");
+    if (!local) {
+      await tickets.react(command.id, "eyes");
+      saveState(fixer.stateFile, next);
+    }
+    state = next;
   }
   const llm = new OllamaClient({
     url: fixer.ollama.url,
@@ -97,7 +101,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const publisher = local ? new LocalPublisher() : new LivePublisher(config, tokens, store, number);
   const checkouts: string[] = [];
   const result = await runAttempt(
-    { ticket: { number, repo, body: input.body }, force: command !== null, state, local },
+    { ticket: { number, key, repo, body: input.body }, force: command?.command === "fix", state, local },
     {
       org: config.org,
       fetch: async () => {
