@@ -166,7 +166,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const commit = await commitAllowed(ctx.store, checkout, { bot: ctx.bot, message: title, allowed });
     if (!commit) return none("the agent made no change to the manifest or lockfile that could be committed", extra);
     const diff = await diffOf(ctx, checkout, headSha, commit, unit.source);
-    const summary = await verifySummary(ctx.llm.withThink(false), loop.finish.summary, diff);
+    const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, diff);
     const draft = tests.kind === "failed";
     const body = renderPrBody({
       org: ctx.org,

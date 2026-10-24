@@ -75,9 +75,9 @@ describe("pull request body", () => {
 
   it("lists discarded changes only when there are some", () => {
     assert.equal(renderPrBody(input()).includes("not committed"), false);
-    const body = renderPrBody(input({ discarded: ["src/a.js", "node_modules/"] }));
+    const body = renderPrBody(input({ discarded: ["src/a.js", "docs/b.md"] }));
     assert.match(body, /not committed/);
-    assert.match(body, /- `src\/a\.js`\n- `node_modules\/`/);
+    assert.match(body, /- `src\/a\.js`\n- `docs\/b\.md`/);
   });
 
   it("escapes pipes in table cells", () => {
@@ -87,8 +87,8 @@ describe("pull request body", () => {
 });
 
 describe("discarded changes summary", () => {
-  it("collapses files under node_modules into their directory", () => {
-    assert.deepEqual(summariseDiscarded(["node_modules/a/i.js", "node_modules/b/i.js", "web/node_modules/x/y.js", "src/a.js"]), ["node_modules/", "web/node_modules/", "src/a.js"]);
+  it("leaves out installed packages, which are not changes the agent made on purpose", () => {
+    assert.deepEqual(summariseDiscarded(["node_modules/a/i.js", "node_modules/b/i.js", "web/node_modules/x/y.js", "src/a.js", "src/a.js"]), ["src/a.js"]);
   });
 
   it("caps the list in the body and says how many more there were", () => {

@@ -66,6 +66,10 @@ export class OllamaClient {
     return new OllamaClient({ ...this.options, think }, this.#fetch);
   }
 
+  withTemperature(temperature: number): OllamaClient {
+    return new OllamaClient({ ...this.options, temperature }, this.#fetch);
+  }
+
   async chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> {
     const { model, url, timeoutMs } = this.options;
     const body: Record<string, unknown> = {

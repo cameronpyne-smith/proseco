@@ -95,6 +95,13 @@ describe("ollama client", () => {
     await assert.rejects(client.chat(messages, []), /ollama model m:1b .*timed out after 0\.03 s/);
   });
 
+  it("derives a client with another temperature", async () => {
+    const captured: Captured[] = [];
+    const client = new OllamaClient(OPTIONS, fakeFetch(() => json({ message: { role: "assistant", content: "" }, done: true }), captured));
+    await client.withTemperature(0).chat(messages, []);
+    assert.equal((captured[0]!.body["options"] as Record<string, unknown>)["temperature"], 0);
+  });
+
   it("derives a client with another think setting without changing the original", async () => {
     const captured: Captured[] = [];
     const client = new OllamaClient(OPTIONS, fakeFetch(() => json({ message: { role: "assistant", content: "" }, done: true }), captured));

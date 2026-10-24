@@ -34,11 +34,7 @@ export function commitMessage(lockfile: string, fixes: PrFix[]): string {
 }
 
 export function summariseDiscarded(paths: string[]): string[] {
-  const collapsed = paths.map((path) => {
-    const index = path.split("/").indexOf("node_modules");
-    return index === -1 ? path : `${path.split("/").slice(0, index + 1).join("/")}/`;
-  });
-  return [...new Set(collapsed)];
+  return [...new Set(paths.filter((path) => !path.split("/").includes("node_modules")))];
 }
 
 function cell(text: string): string {

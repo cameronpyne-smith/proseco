@@ -136,6 +136,8 @@ describe("agent end to end", { skip: !enabled && "set PROSECO_AGENT_TESTS=1 to r
     const [report] = outcome.reports;
     const stats = report?.result.stats;
     console.log(`agent stats: ${JSON.stringify(stats)}`);
+    console.log(`tool calls: ${report?.result.trace?.map((entry) => `${entry.tool}(${entry.args})`).join("\n  ")}`);
+    if (captured[0]) console.log(`commit files: ${captured[0].commit.files.join(", ")}\nsummary: ${captured[0].summary}\ndiff:\n${captured[0].diff}\nbody:\n${captured[0].body}`);
     if (report?.outcome.kind !== "pr") console.log(`last tool calls: ${JSON.stringify(report?.result.trace?.slice(-5), null, 2)}\noutcome: ${JSON.stringify(report?.outcome)}`);
   });
 
