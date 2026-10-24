@@ -45,3 +45,57 @@ export function packageKey(ecosystem: string | null, name: string): string {
       return name;
   }
 }
+
+interface ParsedVersion {
+  epoch: number;
+  release: number[];
+  pre: { rank: number; tag: string; number: number[] } | null;
+  post: number | null;
+  dev: number | null;
+}
+
+const PRE_RANK: Record<string, number> = { alpha: 0, a: 0, beta: 1, b: 1, rc: 2, c: 2, pre: 2, preview: 2 };
+
+function parseVersion(value: string): ParsedVersion | null {
+  const head = /^v?(?:(\d+)!)?(\d+(?:\.\d+)*)(.*)$/.exec(value.trim());
+  if (!head) return null;
+  const parsed: ParsedVersion = { epoch: Number(head[1] ?? 0), release: head[2]!.split(".").map(Number), pre: null, post: null, dev: null };
+  let rest = head[3]!.replace(/\+.*$/, "");
+  while (rest !== "") {
+    let match: RegExpExecArray | null;
+    if (parsed.pre === null && (match = /^[-._]?(alpha|beta|preview|pre|rc|a|b|c)(?![A-Za-z])[-._]?(\d+(?:\.\d+)*)?/i.exec(rest))) {
+      parsed.pre = { rank: PRE_RANK[match[1]!.toLowerCase()]!, tag: "", number: (match[2] ?? "").split(".").filter(Boolean).map(Number) };
+    } else if (parsed.post === null && (match = /^[-._]?post[-._]?(\d+)?/i.exec(rest))) {
+      parsed.post = Number(match[1] ?? 0);
+    } else if (parsed.dev === null && (match = /^[-._]?dev[-._]?(\d+)?/i.exec(rest))) {
+      parsed.dev = Number(match[1] ?? 0);
+    } else if (parsed.pre === null && (match = /^-([A-Za-z][A-Za-z0-9]*)(?:\.(\d+))?/.exec(rest))) {
+      parsed.pre = { rank: 0, tag: match[1]!.toLowerCase(), number: match[2] === undefined ? [] : [Number(match[2])] };
+    } else {
+      return null;
+    }
+    rest = rest.slice(match[0].length);
+  }
+  return parsed;
+}
+
+function preKey(version: ParsedVersion): number {
+  if (version.pre) return version.pre.rank;
+  return version.post === null && version.dev !== null ? -Infinity : Infinity;
+}
+
+export function compareVersions(a: string, b: string): number | null {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  if (!left || !right) return null;
+  const steps = [
+    left.epoch - right.epoch,
+    compareNumeric(left.release, right.release),
+    preKey(left) === preKey(right) ? 0 : preKey(left) < preKey(right) ? -1 : 1,
+    (left.pre?.tag ?? "") === (right.pre?.tag ?? "") ? 0 : (left.pre?.tag ?? "") < (right.pre?.tag ?? "") ? -1 : 1,
+    compareNumeric(left.pre?.number ?? [], right.pre?.number ?? []),
+    (left.post ?? -1) - (right.post ?? -1),
+    (left.dev ?? Infinity) === (right.dev ?? Infinity) ? 0 : (left.dev ?? Infinity) < (right.dev ?? Infinity) ? -1 : 1,
+  ];
+  return steps.find((step) => step !== 0) ?? 0;
+}

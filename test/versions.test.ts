@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { highestVersion, isMajorUpgrade, packageKey } from "../src/core/versions.ts";
+import { compareVersions, highestVersion, isMajorUpgrade, packageKey } from "../src/core/versions.ts";
 
 describe("highest fixed-in version", () => {
   it("compares version parts as numbers, not text", () => {
@@ -62,5 +62,37 @@ describe("package identity", () => {
   it("keeps npm and unknown-ecosystem names exact", () => {
     assert.notEqual(packageKey("npm", "JSONStream"), packageKey("npm", "jsonstream"));
     assert.notEqual(packageKey(null, "OpenSSL"), packageKey(null, "openssl"));
+  });
+});
+
+describe("version comparison", () => {
+  const order = (versions: string[]) => [...versions].sort((a, b) => compareVersions(a, b)!);
+
+  it("orders semver releases numerically and ignores build metadata", () => {
+    assert.deepEqual(order(["1.10.0", "1.2.0", "1.2.10", "1.2.9"]), ["1.2.0", "1.2.9", "1.2.10", "1.10.0"]);
+    assert.equal(compareVersions("1.2.3+build.5", "1.2.3"), 0);
+    assert.equal(compareVersions("v1.2.3", "1.2.3"), 0);
+    assert.equal(compareVersions("1.2", "1.2.0"), 0);
+  });
+
+  it("puts semver pre-releases before the release and orders their tags", () => {
+    assert.deepEqual(order(["1.0.0", "1.0.0-rc.1", "1.0.0-beta.2", "1.0.0-alpha", "1.0.0-beta.10"]), ["1.0.0-alpha", "1.0.0-beta.2", "1.0.0-beta.10", "1.0.0-rc.1", "1.0.0"]);
+    assert.ok(compareVersions("1.0.1-beta", "1.0.0")! > 0);
+  });
+
+  it("orders PEP 440 development, pre, release, post and epoch", () => {
+    assert.deepEqual(order(["1.0.post1", "1.0", "1.0rc1", "1.0b2", "1.0a1", "1.0.dev3"]), ["1.0.dev3", "1.0a1", "1.0b2", "1.0rc1", "1.0", "1.0.post1"]);
+    assert.ok(compareVersions("1!1.0", "2.0")! > 0);
+    assert.equal(compareVersions("1.0.0rc1", "1.0.0-rc.1"), 0);
+  });
+
+  it("treats an unknown semver pre-release tag as a pre-release", () => {
+    assert.ok(compareVersions("2.0.0-canary.4", "2.0.0")! < 0);
+    assert.ok(compareVersions("2.0.0-canary.4", "2.0.0-canary.10")! < 0);
+  });
+
+  it("returns null for a version it cannot read", () => {
+    assert.equal(compareVersions("latest", "1.0.0"), null);
+    assert.equal(compareVersions("1.0.0", ""), null);
   });
 });
