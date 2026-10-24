@@ -1,4 +1,4 @@
-import type { FixerConfig } from "../core/config.ts";
+import type { FixerConfig, TicketsConfig } from "../core/config.ts";
 import { UNMAPPED_KEY } from "../core/findings.ts";
 import type { TicketFilter } from "../core/github.ts";
 import { isProsecoTicket, markerKey } from "../core/ticket.ts";
@@ -7,13 +7,13 @@ import type { ExistingTicket } from "../core/types.ts";
 export interface FixRequest {
   number: number;
   repo: string;
-  request: "assess" | "fix";
+  force: boolean;
 }
 
-export function requestFilters(labels: FixerConfig["labels"]): TicketFilter[] {
+export function requestFilters(find: TicketsConfig["find"]): TicketFilter[] {
   return [
-    { labels: labels.assess, state: "open" },
-    { labels: labels.fix, state: "open" },
+    ...find.labels.map((labels): TicketFilter => ({ labels, state: "open" })),
+    ...find.creators.map((creator): TicketFilter => ({ creator, state: "open" })),
   ];
 }
 
@@ -23,8 +23,7 @@ export function fixRequests(tickets: ExistingTicket[], creators: string[], label
     if (ticket.state !== "open" || !isProsecoTicket(ticket, creators)) continue;
     const repo = markerKey(ticket.body)!;
     if (repo === UNMAPPED_KEY) continue;
-    const request = ticket.labels.includes(labels.fix) ? "fix" : ticket.labels.includes(labels.assess) ? "assess" : null;
-    if (request) requests.push({ number: ticket.number, repo, request });
+    requests.push({ number: ticket.number, repo, force: ticket.labels.includes(labels.fix) });
   }
   return requests.sort((a, b) => a.number - b.number);
 }

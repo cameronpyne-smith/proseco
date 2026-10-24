@@ -16,7 +16,16 @@ function full(): Record<string, unknown> {
       maintainedIn: "acme-ops",
     },
     sources: { dependabot: {}, defender: { imageRepos: "image-repos.json" } },
-    fixer: { labels: { assess: "proseco-assess", fix: "proseco-fix" } },
+    fixer: fixer(),
+  };
+}
+
+function fixer(): Record<string, unknown> {
+  return {
+    labels: { fix: "proseco-fix" },
+    app: { clientId: "Iv1.acme", installationId: 42 },
+    cloneDir: "/var/lib/proseco/clones",
+    stateFile: "/var/lib/proseco/state.json",
   };
 }
 
@@ -35,7 +44,12 @@ describe("config", () => {
     });
     assert.equal(config.sources.dependabot, true);
     assert.deepEqual([...config.sources.defender!.imageRepos], [["acme-api", "acme-api"]]);
-    assert.deepEqual(config.fixer, { labels: { assess: "proseco-assess", fix: "proseco-fix" } });
+    assert.deepEqual(config.fixer, {
+      labels: { fix: "proseco-fix" },
+      app: { clientId: "Iv1.acme", installationId: 42 },
+      cloneDir: "/var/lib/proseco/clones",
+      stateFile: "/var/lib/proseco/state.json",
+    });
   });
 
   it("treats the project, Defender and the fixer as optional", () => {
@@ -73,10 +87,33 @@ describe("config", () => {
     assert.throws(() => parseConfig(raw, mapping), /org must be a name/);
   });
 
-  it("refuses the same label for assessing and fixing", () => {
+  it("rejects the retired assess label", () => {
     const raw = full();
-    raw["fixer"] = { labels: { assess: "proseco", fix: "proseco" } };
-    assert.throws(() => parseConfig(raw, mapping), /must differ/);
+    (raw["fixer"] as Record<string, unknown>)["labels"] = { assess: "proseco-assess", fix: "proseco-fix" };
+    assert.throws(() => parseConfig(raw, mapping), /fixer.labels has unknown keys: assess/);
+  });
+
+  it("rejects unknown keys under the fixer and its app", () => {
+    const withExtra = full();
+    (withExtra["fixer"] as Record<string, unknown>)["budget"] = {};
+    assert.throws(() => parseConfig(withExtra, mapping), /fixer has unknown keys: budget/);
+    const appExtra = full();
+    ((appExtra["fixer"] as Record<string, unknown>)["app"] as Record<string, unknown>)["secret"] = "x";
+    assert.throws(() => parseConfig(appExtra, mapping), /fixer.app has unknown keys: secret/);
+  });
+
+  for (const key of ["labels", "app", "cloneDir", "stateFile"]) {
+    it(`requires fixer.${key} when the fixer is present`, () => {
+      const raw = full();
+      delete (raw["fixer"] as Record<string, unknown>)[key];
+      assert.throws(() => parseConfig(raw, mapping), new RegExp(`fixer.${key}`));
+    });
+  }
+
+  it("requires the installation id to be a positive integer", () => {
+    const raw = full();
+    ((raw["fixer"] as Record<string, unknown>)["app"] as Record<string, unknown>)["installationId"] = "42";
+    assert.throws(() => parseConfig(raw, mapping), /fixer.app.installationId must be a positive integer/);
   });
 
   it("reads the image mapping relative to the config file and names the file in errors", () => {

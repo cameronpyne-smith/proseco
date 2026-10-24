@@ -14,7 +14,10 @@ export interface DefenderConfig {
 }
 
 export interface FixerConfig {
-  labels: { assess: string; fix: string };
+  labels: { fix: string };
+  app: { clientId: string; installationId: number };
+  cloneDir: string;
+  stateFile: string;
 }
 
 export interface Config {
@@ -44,6 +47,11 @@ function name(value: unknown, path: string, pattern = /^[A-Za-z0-9._-]+$/): stri
 
 function text(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new ConfigError(`${path} must be a non-empty string`);
+  return value;
+}
+
+function positiveInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) throw new ConfigError(`${path} must be a positive integer`);
   return value;
 }
 
@@ -92,10 +100,15 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["labels"]);
-    const labels = object(raw["labels"], "fixer.labels", ["assess", "fix"]);
-    fixer = { labels: { assess: text(labels["assess"], "fixer.labels.assess"), fix: text(labels["fix"], "fixer.labels.fix") } };
-    if (fixer.labels.assess === fixer.labels.fix) throw new ConfigError("fixer.labels.assess and fixer.labels.fix must differ");
+    const raw = object(root["fixer"], "fixer", ["labels", "app", "cloneDir", "stateFile"]);
+    const labels = object(raw["labels"], "fixer.labels", ["fix"]);
+    const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
+    fixer = {
+      labels: { fix: text(labels["fix"], "fixer.labels.fix") },
+      app: { clientId: text(app["clientId"], "fixer.app.clientId"), installationId: positiveInteger(app["installationId"], "fixer.app.installationId") },
+      cloneDir: text(raw["cloneDir"], "fixer.cloneDir"),
+      stateFile: text(raw["stateFile"], "fixer.stateFile"),
+    };
   }
   return {
     org: name(root["org"], "org"),

@@ -20,7 +20,7 @@ async function main(args: string[]): Promise<void> {
 
   switch (command) {
     case "find": {
-      const open = await tickets.list(requestFilters(config.fixer.labels));
+      const open = await tickets.list(requestFilters(config.tickets.find));
       const requests = fixRequests(open, config.tickets.find.creators, config.fixer.labels);
       const json = JSON.stringify(requests);
       console.log(json);

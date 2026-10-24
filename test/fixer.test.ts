@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { ExistingTicket } from "../src/core/types.ts";
 import { fixRequests, requestFilters } from "../src/fixer/requests.ts";
 
-const LABELS = { assess: "proseco-assess", fix: "proseco-fix" };
+const LABELS = { fix: "proseco-fix" };
 const CREATORS = ["proseco-bot[bot]"];
 
 function ticket(number: number, overrides: Partial<ExistingTicket> = {}): ExistingTicket {
@@ -15,35 +15,35 @@ function ticket(number: number, overrides: Partial<ExistingTicket> = {}): Existi
     title: `Vulnerabilities: Acme.Repo${number}`,
     body: `<!-- proseco:Acme.Repo${number} -->\n\nbody`,
     author: "proseco-bot[bot]",
-    labels: ["Security", LABELS.assess],
+    labels: ["Security"],
     ...overrides,
   };
 }
 
 describe("finding fix requests", () => {
-  it("asks only for open tickets carrying either request label", () => {
-    assert.deepEqual(requestFilters(LABELS), [
-      { labels: "proseco-assess", state: "open" },
-      { labels: "proseco-fix", state: "open" },
+  it("lists open tickets by every label and creator that can find a proseco ticket", () => {
+    assert.deepEqual(requestFilters({ labels: ["Security", "team"], creators: ["proseco-bot[bot]"] }), [
+      { labels: "Security", state: "open" },
+      { labels: "team", state: "open" },
+      { creator: "proseco-bot[bot]", state: "open" },
     ]);
   });
 
-  it("turns each labelled proseco ticket into a request for its repo, in ticket order", () => {
-    const requests = fixRequests([ticket(9), ticket(3, { labels: [LABELS.fix] })], CREATORS, LABELS);
-    assert.deepEqual(requests, [
-      { number: 3, repo: "Acme.Repo3", request: "fix" },
-      { number: 9, repo: "Acme.Repo9", request: "assess" },
+  it("requests every open proseco ticket, in ticket order, whether or not it carries a label", () => {
+    assert.deepEqual(fixRequests([ticket(9), ticket(3)], CREATORS, LABELS), [
+      { number: 3, repo: "Acme.Repo3", force: false },
+      { number: 9, repo: "Acme.Repo9", force: false },
     ]);
   });
 
-  it("treats a ticket with both labels as a fix request, which includes the assessment", () => {
-    assert.deepEqual(fixRequests([ticket(1, { labels: [LABELS.assess, LABELS.fix] })], CREATORS, LABELS), [
-      { number: 1, repo: "Acme.Repo1", request: "fix" },
+  it("forces a redo when the fix label is on the ticket", () => {
+    assert.deepEqual(fixRequests([ticket(1, { labels: ["Security", LABELS.fix] })], CREATORS, LABELS), [
+      { number: 1, repo: "Acme.Repo1", force: true },
     ]);
   });
 
   it("ignores a ticket someone else wrote, even with the marker and the label", () => {
-    assert.deepEqual(fixRequests([ticket(1, { author: "someone" })], CREATORS, LABELS), []);
+    assert.deepEqual(fixRequests([ticket(1, { author: "someone", labels: [LABELS.fix] })], CREATORS, LABELS), []);
   });
 
   it("ignores a ticket that only quotes the marker below its first line", () => {

@@ -15,14 +15,16 @@ function nextLink(response: Response): string | null {
 
 export class GitHubApi {
   readonly #token: string;
+  readonly #fetch: typeof fetch;
 
-  constructor(token: string) {
+  constructor(token: string, fetchImpl: typeof fetch = fetch) {
     this.#token = token;
+    this.#fetch = fetchImpl;
   }
 
   protected async request(url: string, init: RequestInit = {}): Promise<Response> {
     const target = url.startsWith("https://") ? url : `https://api.github.com${url}`;
-    return fetch(target, {
+    return this.#fetch(target, {
       ...init,
       headers: {
         authorization: `Bearer ${this.#token}`,
