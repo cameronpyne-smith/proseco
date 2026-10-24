@@ -90,7 +90,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   ),
   fn(
     "finish",
-    "Call once when the work is done, or when you cannot make further progress. summary is 1 to 5 sentences for a reviewer. changes lists every package version change you made.",
+    "Call once when the work is done, or when you cannot make further progress. summary is for a reviewer, as long as the task asks. changes lists every package version change you made.",
     {
       summary: { type: "string" },
       changes: {

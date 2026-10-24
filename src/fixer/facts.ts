@@ -2,6 +2,7 @@ import { dirname } from "node:path/posix";
 import type { Advisory } from "./advisories.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 import type { PrUnit } from "./plan.ts";
+import type { ReleaseNotes } from "./releases.ts";
 
 export interface RowFacts {
   cve: string;
@@ -16,10 +17,12 @@ export interface FixFacts {
   target: string[];
   severity: string;
   chain: string[] | null;
+  releases: ReleaseNotes | null;
   rows: RowFacts[];
 }
 
 export interface UnitFacts {
+  kind: PrUnit["kind"];
   lockfile: string;
   directory: string;
   ecosystem: string;
@@ -33,6 +36,7 @@ export async function buildFacts(
   lockfileText: string,
   toolchain: string | null,
   advisory: (cve: string, pkg: string) => Promise<Advisory | null>,
+  releases?: (ecosystem: string, pkg: string, installed: string, target: string) => Promise<ReleaseNotes>,
 ): Promise<UnitFacts> {
   const fixes: FixFacts[] = [];
   for (const fix of unit.fixes) {
@@ -46,8 +50,9 @@ export async function buildFacts(
       target: fix.target,
       severity: fix.severity,
       chain: ecosystem.parentChain(lockfileText, fix.package, fix.installed),
+      releases: unit.kind === "major" && releases && fix.target[0] ? await releases(ecosystem.findingEcosystem, fix.package, fix.installed, fix.target[0]) : null,
       rows,
     });
   }
-  return { lockfile: unit.source, directory: dirname(unit.source), ecosystem: ecosystem.name, toolchain, fixes };
+  return { kind: unit.kind, lockfile: unit.source, directory: dirname(unit.source), ecosystem: ecosystem.name, toolchain, fixes };
 }
