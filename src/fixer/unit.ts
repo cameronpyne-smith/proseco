@@ -189,7 +189,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const draft = major || tests.kind === "failed";
     const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, discarded: summariseDiscarded([...discarded]) };
     const body = major
-      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releaseTags: facts.fixes[0]?.releases?.releases.map((release) => release.tag) ?? [] })
+      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releaseTags: facts.fixes[0]?.releases?.releases.map((release) => release.tag) ?? [], codeChanged: commit.files.some((file) => !manifests.has(file)) })
       : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
     if (!published) return none("not published (local run)", extra);

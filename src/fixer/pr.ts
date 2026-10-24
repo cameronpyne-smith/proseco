@@ -35,6 +35,7 @@ export interface MajorPrBodyInput {
   lockfile: string;
   fix: PrFix;
   releaseTags: string[];
+  codeChanged: boolean;
   summary: string;
   checks: PackageCheck[];
   tests: TestOutcome;
@@ -158,7 +159,9 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "",
     "### Why this is a draft",
     "",
-    `The upgrade from ${input.fix.installed} to ${target} crosses a major version, and the agent changed code to adapt to it. A person must confirm the change is correct and complete before this pull request can merge, whatever the sandbox run reported.`,
+    input.codeChanged
+      ? `The upgrade from ${input.fix.installed} to ${target} crosses a major version, and the agent changed code to adapt to it. A person must confirm the change is correct and complete before this pull request can merge, whatever the sandbox run reported.`
+      : `The upgrade from ${input.fix.installed} to ${target} crosses a major version. The agent changed only the manifest and lockfile, but a person must confirm nothing else needs to change before this pull request can merge, whatever the sandbox run reported.`,
     "",
     `Part of ${input.org}/${input.ticketsRepo}#${input.ticket}`,
     "",

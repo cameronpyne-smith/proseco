@@ -112,6 +112,7 @@ describe("major upgrade pull request", () => {
       lockfile: "package-lock.json",
       fix: nodeFetch,
       releaseTags: ["v3.0.0", "v2.7.0"],
+      codeChanged: true,
       summary: "Changed index.js to import node-fetch dynamically because version 3 is ESM only.",
       checks: [{ package: "node-fetch", installed: ["3.3.2"], ok: true, reason: "installed 3.3.2 is at or above 3.1.1" }],
       tests: { kind: "passed", commands: ["npm ci --no-audit --no-fund", "npm test"], tail: "ok 1" },
@@ -142,6 +143,13 @@ describe("major upgrade pull request", () => {
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
     assert.ok(body.trimEnd().endsWith("Part of acme-org/acme-tickets#12"));
     assert.equal(body.includes("Fixes"), false);
+  });
+
+  it("says the agent changed code only when it did", () => {
+    assert.match(renderMajorPrBody(major()), /the agent changed code to adapt to it/);
+    const manifestOnly = renderMajorPrBody(major({ codeChanged: false }));
+    assert.doesNotMatch(manifestOnly, /changed code/);
+    assert.match(manifestOnly, /crosses a major version\. The agent changed only the manifest and lockfile, but a person must confirm nothing else needs to change before this pull request can merge, whatever the sandbox run reported\./);
   });
 
   it("is a draft whether the harness passed, had no tests or failed, and never claims the upgrade is safe", () => {

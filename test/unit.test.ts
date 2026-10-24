@@ -244,6 +244,13 @@ describe("workUnit for a major upgrade", () => {
     assert.match(body, /Part of acme-org\/acme-tickets#12/);
   });
 
+  it("words the draft reason by whether code changed", async () => {
+    const withCode = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS });
+    assert.match(withCode.seen.published[0]!.body, /the agent changed code to adapt to it/);
+    const manifestOnly = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")] });
+    assert.match(manifestOnly.seen.published[0]!.body, /changed only the manifest and lockfile/);
+  });
+
   it("still names the failing command when the harness fails, and is still a draft", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES, exits: { "fake-test": 3 } });
     assert.equal(seen.published[0]!.draft, true);
