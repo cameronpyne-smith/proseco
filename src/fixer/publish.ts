@@ -1,11 +1,20 @@
-import { rmdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import type { Ecosystem } from "./ecosystems/ecosystem.ts";
+import { closeSync, openSync, readSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import type { Ecosystem, ImageFamily } from "./ecosystems/ecosystem.ts";
 import type { GitStore } from "./git.ts";
 
 const NEVER = ".github/workflows/";
 const CHUNK = 200;
 const LITERAL = "--literal-pathspecs";
+const MAX_NEW_BINARY_BYTES = 256 * 1024;
+const BINARY_PROBE_BYTES = 8000;
+const VENDORED = new Set(["node_modules", ".venv"]);
+
+const FAMILY_FILES: Record<ImageFamily | "dotnet", RegExp> = {
+  node: /^(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/,
+  python: /^(pyproject\.toml|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock|requirements.*\.txt)$/,
+  dotnet: /^(.+\.(cs|fs|vb)proj|packages\.lock\.json|Directory\.Packages\.props|global\.json)$/,
+};
 
 type CheckoutGit = Pick<GitStore, "inCheckout">;
 
@@ -13,6 +22,10 @@ export interface StatusEntry {
   path: string;
   untracked: boolean;
 }
+
+export type Guard = (entry: StatusEntry) => boolean;
+
+export type Allowed = Set<string> | Guard;
 
 export interface CommitResult {
   sha: string;
@@ -47,6 +60,36 @@ export function isAllowed(allowed: Set<string>, path: string): boolean {
   return allowed.has(path) && !path.startsWith(NEVER);
 }
 
+function permits(allowed: Allowed, entry: StatusEntry): boolean {
+  return typeof allowed === "function" ? allowed(entry) : isAllowed(allowed, entry.path);
+}
+
+function isLargeBinary(file: string): boolean {
+  try {
+    if (statSync(file).size <= MAX_NEW_BINARY_BYTES) return false;
+    const probe = Buffer.alloc(BINARY_PROBE_BYTES);
+    const descriptor = openSync(file, "r");
+    try {
+      return probe.subarray(0, readSync(descriptor, probe, 0, BINARY_PROBE_BYTES, 0)).includes(0);
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch {
+    return false;
+  }
+}
+
+export function majorGuard(options: { root: string; ecosystem: Pick<Ecosystem, "imageFamily"> }): Guard {
+  const foreign = (Object.keys(FAMILY_FILES) as (keyof typeof FAMILY_FILES)[]).filter((family) => family !== options.ecosystem.imageFamily).map((family) => FAMILY_FILES[family]);
+  return (entry) => {
+    if (entry.path.startsWith(NEVER)) return false;
+    const parts = entry.path.split("/");
+    if (parts.some((part) => VENDORED.has(part))) return false;
+    if (foreign.some((pattern) => pattern.test(basename(entry.path)))) return false;
+    return !(entry.untracked && isLargeBinary(join(options.root, entry.path)));
+  };
+}
+
 export function splitPaths(paths: string[], allowed: Set<string>): { allowed: string[]; discarded: string[] } {
   const unique = [...new Set(paths)];
   return { allowed: unique.filter((path) => isAllowed(allowed, path)), discarded: unique.filter((path) => !isAllowed(allowed, path)) };
@@ -68,9 +111,9 @@ function removeEmptyDirectories(root: string, files: string[]): void {
   }
 }
 
-export async function discardOthers(git: CheckoutGit, path: string, base: string, allowed: Set<string>): Promise<string[]> {
+export async function discardOthers(git: CheckoutGit, path: string, base: string, allowed: Allowed): Promise<string[]> {
   await git.inCheckout(path, ["reset", "-q", base], "git reset");
-  const discard = (await changes(git, path)).filter((entry) => !isAllowed(allowed, entry.path));
+  const discard = (await changes(git, path)).filter((entry) => !permits(allowed, entry));
   const tracked = discard.filter((entry) => !entry.untracked).map((entry) => entry.path);
   for (let index = 0; index < tracked.length; index += CHUNK) {
     await git.inCheckout(path, [LITERAL, "checkout", "--", ...tracked.slice(index, index + CHUNK)], "git checkout");
@@ -81,8 +124,8 @@ export async function discardOthers(git: CheckoutGit, path: string, base: string
   return discard.map((entry) => entry.path);
 }
 
-export async function commitAllowed(git: CheckoutGit, path: string, options: { bot: string; message: string; allowed: Set<string> }): Promise<CommitResult | null> {
-  const stage = splitPaths((await changes(git, path)).map((entry) => entry.path), options.allowed).allowed;
+export async function commitAllowed(git: CheckoutGit, path: string, options: { bot: string; message: string; allowed: Allowed }): Promise<CommitResult | null> {
+  const stage = [...new Set((await changes(git, path)).filter((entry) => permits(options.allowed, entry)).map((entry) => entry.path))];
   if (stage.length === 0) return null;
   for (let index = 0; index < stage.length; index += CHUNK) {
     await git.inCheckout(path, [LITERAL, "add", "--", ...stage.slice(index, index + CHUNK)], "git add");

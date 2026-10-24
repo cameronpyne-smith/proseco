@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { npm } from "../src/fixer/ecosystems/npm.ts";
 import { GitStore } from "../src/fixer/git.ts";
-import { allowedFiles, commitAllowed, discardOthers, isAllowed, parseStatus, splitPaths } from "../src/fixer/publish.ts";
+import { allowedFiles, commitAllowed, discardOthers, isAllowed, majorGuard, parseStatus, splitPaths } from "../src/fixer/publish.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", ...args], { cwd, encoding: "utf8" }).trim();
@@ -148,5 +148,64 @@ describe("commit guard", () => {
     const discarded = await discardOthers(work.store, work.path, work.base, allowed);
     assert.deepEqual(discarded, [".github/workflows/package.json"]);
     assert.equal(await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "m", allowed }), null);
+  });
+});
+
+describe("the commit guard for a major upgrade", () => {
+  const big = (bytes: number) => Buffer.alloc(bytes, 0).toString("latin1");
+
+  async function major(edits: Record<string, string>, files: Record<string, string> = {}) {
+    const work = await checkout({ "uv.lock": "x", "docs/notes.md": "old", ...files });
+    for (const [file, content] of Object.entries(edits)) work.write(file, content);
+    const guard = majorGuard({ root: work.path, ecosystem: npm });
+    const discarded = await discardOthers(work.store, work.path, work.base, guard);
+    const commit = await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "Upgrade", allowed: guard });
+    return { discarded: discarded.sort(), files: commit ? commit.files.sort() : null };
+  }
+
+  it("commits code, tests, docs and new source files along with the manifest and lockfile", async () => {
+    const result = await major({ "package.json": '{"v":2}', "package-lock.json": LOCK.replace("1.0.0", "2.0.0"), "src/a.js": "changed", "src/new.mjs": "export {}", "test/a.test.js": "t", "docs/notes.md": "new" });
+    assert.deepEqual(result.discarded, []);
+    assert.deepEqual(result.files, ["docs/notes.md", "package-lock.json", "package.json", "src/a.js", "src/new.mjs", "test/a.test.js"]);
+  });
+
+  it("refuses workflows, node_modules and .venv wherever they are", async () => {
+    const result = await major({ "src/a.js": "changed", ".github/workflows/ci.yml": "on: push", "node_modules/x/index.js": "x", "svc/node_modules/y.js": "y", ".venv/bin/python": "p" });
+    assert.deepEqual(result.discarded, [".github/workflows/ci.yml", ".venv/bin/python", "node_modules/x/index.js", "svc/node_modules/y.js"]);
+    assert.deepEqual(result.files, ["src/a.js"]);
+  });
+
+  it("refuses the lockfiles and manifests of other ecosystems but not its own", async () => {
+    const result = await major({ "uv.lock": "changed", "pyproject.toml": "[project]", "requirements-dev.txt": "x==1", "svc/Api.csproj": "<Project/>", "package.json": '{"v":2}', "src/a.js": "c" });
+    assert.deepEqual(result.discarded, ["pyproject.toml", "requirements-dev.txt", "svc/Api.csproj", "uv.lock"]);
+    assert.deepEqual(result.files, ["package.json", "src/a.js"]);
+  });
+
+  it("refuses a new binary over 256 KB but allows a small one, a large text file and an existing binary", async () => {
+    const result = await major(
+      { "assets/huge.bin": big(256 * 1024 + 1), "assets/small.bin": big(1024), "docs/large.txt": "a".repeat(300_000), "assets/old.bin": big(300_000) + "x" },
+      { "assets/old.bin": big(300_000) },
+    );
+    assert.deepEqual(result.discarded, ["assets/huge.bin"]);
+    assert.deepEqual(result.files, ["assets/old.bin", "assets/small.bin", "docs/large.txt"]);
+  });
+
+  it("commits nothing when only refused paths changed", async () => {
+    const result = await major({ ".github/workflows/ci.yml": "x" });
+    assert.equal(result.files, null);
+  });
+
+  it("does not stage what the repository's .gitignore ignores", async () => {
+    const result = await major({ ".gitignore": "dist/\n", "dist/out.js": "built", "src/a.js": "c" });
+    assert.deepEqual(result.discarded, []);
+    assert.deepEqual(result.files, [".gitignore", "src/a.js"]);
+  });
+
+  it("leaves the lockfile unit's guard exactly as it was", async () => {
+    const work = await checkout({});
+    work.write("src/a.js", "tampered");
+    work.write("package.json", '{"v":2}');
+    const discarded = await discardOthers(work.store, work.path, work.base, allowedFiles(npm, work.lockfile, LOCK));
+    assert.deepEqual(discarded, ["src/a.js"]);
   });
 });
