@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ChatMessage, ChatResult } from "../src/fixer/agent/ollama.ts";
-import { MAX_DIFF_CHARS, VERIFY_PROMPT, verifySummary } from "../src/fixer/agent/verify.ts";
+import { MAX_DIFF_CHARS, VERIFY_PROMPT, verifySummary, type DiffFile } from "../src/fixer/agent/verify.ts";
 
 function llm(reply: string, seen: { messages: ChatMessage[]; tools: unknown[] }[] = []) {
   return {
@@ -56,5 +56,43 @@ describe("summary verification", () => {
     await verifySummary(llm("kept", seen), "THE-SUMMARY", "THE-DIFF");
     const user = seen[0]!.messages[1]!.content;
     assert.ok(user.indexOf("THE-DIFF") < user.indexOf("THE-SUMMARY"));
+  });
+
+  it("allows a diff of up to 120,000 characters", () => {
+    assert.equal(MAX_DIFF_CHARS, 120_000);
+  });
+
+  describe("a diff made of files", () => {
+    const file = (path: string, size: number, manifest = false): DiffFile => ({ path, text: `diff ${path}\n${"x".repeat(size)}`, manifest });
+
+    async function shown(files: DiffFile[]): Promise<string> {
+      const seen: { messages: ChatMessage[]; tools: unknown[] }[] = [];
+      await verifySummary(llm("kept", seen), "s", files);
+      return seen[0]!.messages[1]!.content;
+    }
+
+    it("shows everything, in the order given, when it fits, with no truncation notice", async () => {
+      const user = await shown([file("package.json", 10, true), file("src/a.js", 10)]);
+      assert.ok(user.indexOf("diff package.json") < user.indexOf("diff src/a.js"));
+      assert.ok(!/truncated/i.test(user));
+    });
+
+    it("shows manifest and lockfile hunks first, then code hunks until the cap, and says the diff is truncated", async () => {
+      const user = await shown([file("src/a.js", 50_000), file("package-lock.json", 40_000, true), file("src/b.js", 50_000), file("package.json", 100, true), file("src/c.js", 50_000)]);
+      assert.ok(user.indexOf("diff package-lock.json") < user.indexOf("diff src/a.js"));
+      assert.ok(user.indexOf("diff package.json") < user.indexOf("diff src/a.js"));
+      assert.ok(user.includes("diff src/a.js"));
+      assert.ok(!user.includes("diff src/c.js"));
+      assert.match(user, /diff is truncated/i);
+      assert.match(user, /not shown[^]*src\/c\.js/);
+      assert.ok(user.length < MAX_DIFF_CHARS + 2000);
+    });
+
+    it("keeps a manifest and lockfile hunk even when it alone exceeds the cap, cut at the cap", async () => {
+      const user = await shown([file("package-lock.json", MAX_DIFF_CHARS + 5000, true), file("src/a.js", 10)]);
+      assert.ok(user.includes("diff package-lock.json"));
+      assert.ok(!user.includes("diff src/a.js"));
+      assert.ok(user.length < MAX_DIFF_CHARS + 2000);
+    });
   });
 });
