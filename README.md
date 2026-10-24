@@ -190,9 +190,7 @@ Commands:
 - `npm run fixer -- check`: runs the startup checks and prints each as `ok <name>: <detail>` or `FAILED <name>: <reason>`; the exit code is non-zero if any failed. The checks are: the config loads and has a `fixer` section; an installation token for the tickets repository can be minted (so the app key works); Ollama answers `/api/tags` and lists the configured model; `docker info` succeeds. A config that does not load stops the run, since the rest depend on it.
 - `npm run fixer -- serve`: the daemon, described below. It needs everything a real `run` needs.
 
-All commands need `PROSECO_CONFIG`. Credentials are one of:
-- `GH_READ_TOKEN`: used as is, nothing is minted. For local runs; a token of a person writes as that person, so the ticket comment will not be found again on a re-run.
-- The app's private key, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The fixer then mints installation tokens scoped to the repositories and permissions each step needs:
+All commands need `PROSECO_CONFIG` and the app's private key, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The app is the only identity the fixer uses, locally too. It mints installation tokens scoped to the repositories and permissions each step needs:
   - `issues: write` on the tickets repository for `find` and the real `run` (comment and reaction), `issues: read` otherwise;
   - `contents: read` and `pull_requests: read` on the repository being fixed, to fetch it and read the state of earlier pull requests;
   - `contents: write` and `pull_requests: write` on that repository, minted only at the moment of the push.

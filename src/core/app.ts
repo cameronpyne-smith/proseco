@@ -62,7 +62,5 @@ export async function mintInstallationToken(
 }
 
 export function tokenProvider(env: Record<string, string | undefined>, app: AppIdentity, fetchImpl: typeof fetch = fetch): TokenProvider {
-  const local = env["GH_READ_TOKEN"];
-  if (local) return async () => local;
   return async (scope) => mintInstallationToken(app, readPrivateKey(env), scope, fetchImpl);
 }

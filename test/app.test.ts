@@ -79,12 +79,6 @@ describe("private key location", () => {
 });
 
 describe("token provider", () => {
-  it("returns GH_READ_TOKEN for every scope and mints nothing", async () => {
-    const fetchImpl = (async () => assert.fail("must not call the network")) as unknown as typeof fetch;
-    const provider = tokenProvider({ GH_READ_TOKEN: "ghp_local" }, { clientId: "x", installationId: 1 }, fetchImpl);
-    assert.equal(await provider({ repositories: ["a"], permissions: { contents: "read" } }), "ghp_local");
-  });
-
   it("mints per scope using the key from the environment", async () => {
     const dir = mkdtempSync(join(tmpdir(), "proseco-key-"));
     writeFileSync(join(dir, "key.pem"), PEM);
