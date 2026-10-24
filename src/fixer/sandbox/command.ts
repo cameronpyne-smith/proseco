@@ -28,7 +28,7 @@ export async function runInSandbox(input: SandboxCommand): Promise<SandboxOutcom
   const sha = await input.store.headSha(input.repo);
   const toolchain = await declaredToolchain(ecosystem, input.lockfile, (path) => input.store.tryShow(input.repo, sha, path));
   const docker = new Docker();
-  const image = await ensureImage(docker, imageFor(ecosystem.name, toolchain));
+  const image = await ensureImage(docker, imageFor(ecosystem.imageFamily, toolchain));
   const checkout = await input.store.checkout(input.repo, sha);
   let sandbox: Sandbox | undefined;
   try {

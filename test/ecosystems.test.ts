@@ -209,3 +209,87 @@ describe("real lockfiles", () => {
     assert.deepEqual(uv.parentChain(lock, "pytest", "9.1.1"), ["pytest"]);
   });
 });
+
+describe("allowed files", () => {
+  it("allows npm's manifest and lockfiles beside the lockfile and each workspace member's package.json", () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: { "": {}, "packages/app": {}, "node_modules/x": { version: "1.0.0" } } });
+    assert.deepEqual(ecosystem("web/package-lock.json").allowedFiles("web/package-lock.json", lock).sort(), ["web/npm-shrinkwrap.json", "web/package-lock.json", "web/package.json", "web/packages/app/package.json"]);
+  });
+
+  it("allows pyproject.toml and uv.lock beside the lockfile, and the pyproject.toml of workspace members only", () => {
+    const lock = [
+      "version = 1",
+      "[manifest]",
+      'members = ["root-app", "lib-one", "tool"]',
+      "[[package]]",
+      'name = "root-app"',
+      'version = "0.1.0"',
+      'source = { virtual = "." }',
+      "[[package]]",
+      'name = "lib-one"',
+      'version = "0.1.0"',
+      'source = { editable = "packages/lib-one" }',
+      "[[package]]",
+      'name = "tool"',
+      'version = "0.1.0"',
+      'source = { virtual = "tools/tool" }',
+      "[[package]]",
+      'name = "outsider"',
+      'version = "1.0.0"',
+      'source = { editable = "elsewhere" }',
+      "",
+    ].join("\n");
+    assert.deepEqual(ecosystem("svc/uv.lock").allowedFiles("svc/uv.lock", lock).sort(), ["svc/packages/lib-one/pyproject.toml", "svc/pyproject.toml", "svc/tools/tool/pyproject.toml", "svc/uv.lock"]);
+    assert.deepEqual(ecosystem("uv.lock").allowedFiles("uv.lock", fixture("acme-uv.lock")).sort(), ["pyproject.toml", "uv.lock"]);
+  });
+
+  it("allows only the requirements file itself", () => {
+    assert.deepEqual(ecosystem("svc/requirements.txt").allowedFiles("svc/requirements.txt", "requests==2.31.0\n"), ["svc/requirements.txt"]);
+    assert.deepEqual(ecosystem("requirements-dev.txt").allowedFiles("requirements-dev.txt", ""), ["requirements-dev.txt"]);
+  });
+});
+
+describe("harness", () => {
+  const reading = (files: Record<string, string>) => (path: string) => files[path] ?? null;
+
+  it("runs npm ci and npm test, and finds tests only when package.json has a test script", () => {
+    const harness = ecosystem("web/package-lock.json").harness("web/package-lock.json");
+    assert.equal(harness.install, "npm ci --no-audit --no-fund");
+    assert.equal(harness.test, "npm test --if-present");
+    assert.equal(harness.hasTests(reading({ "web/package.json": '{"scripts":{"test":"node t.js"}}' })), true);
+    assert.equal(harness.hasTests(reading({ "web/package.json": '{"scripts":{}}' })), false);
+    assert.equal(harness.hasTests(reading({ "package.json": '{"scripts":{"test":"x"}}' })), false);
+    assert.equal(harness.hasTests(reading({ "web/package.json": "not json" })), false);
+  });
+
+  it("runs uv sync and uv run pytest, and finds tests only when pytest is locked", () => {
+    const harness = ecosystem("uv.lock").harness("uv.lock");
+    assert.equal(harness.install, "uv sync --frozen");
+    assert.equal(harness.test, "uv run pytest -x -q");
+    const locked = (name: string) => `version = 1\n[[package]]\nname = "${name}"\nversion = "8.0.0"\nsource = { registry = "https://pypi.org/simple" }\n`;
+    assert.equal(harness.hasTests(reading({ "uv.lock": locked("pytest") })), true);
+    assert.equal(harness.hasTests(reading({ "uv.lock": locked("pytest-cov") })), false);
+    assert.equal(harness.hasTests(reading({})), false);
+    assert.equal(harness.hasTests(reading({ "uv.lock": "garbage = [" })), false);
+  });
+
+  it("installs the requirements file from its directory, and finds tests only when pytest is pinned in it", () => {
+    const harness = ecosystem("svc/requirements.txt").harness("svc/requirements.txt");
+    assert.equal(harness.install, "python -m pip install -r requirements.txt");
+    assert.equal(harness.test, "python -m pytest -x -q");
+    assert.equal(harness.hasTests(reading({ "svc/requirements.txt": "requests==2.31.0\nPyTest==8.3.3 ; python_version > '3'\n" })), true);
+    assert.equal(harness.hasTests(reading({ "svc/requirements.txt": "requests==2.31.0\n" })), false);
+    assert.equal(harness.hasTests(reading({ "requirements.txt": "pytest==8.3.3\n" })), false);
+  });
+});
+
+describe("unsupported files", () => {
+  it("rejects a hash-pinned requirements file and nothing else", () => {
+    const requirements = ecosystem("requirements.txt");
+    assert.match(requirements.unsupported("requests==2.31.0 \\\n    --hash=sha256:abc\n")!, /hash-pinned/);
+    assert.match(requirements.unsupported("requests==2.31.0 --hash=sha256:abc\n")!, /hash-pinned/);
+    assert.equal(requirements.unsupported("requests==2.31.0\npytest==8.3.3\n"), null);
+    assert.equal(ecosystem("uv.lock").unsupported("x"), null);
+    assert.equal(ecosystem("package-lock.json").unsupported("x"), null);
+  });
+});

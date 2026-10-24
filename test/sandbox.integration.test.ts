@@ -27,7 +27,7 @@ describe("sandbox", { skip: !enabled && "set PROSECO_DOCKER_TESTS=1 to run again
 
   before(async () => {
     cpSync(fixture, worktree, { recursive: true });
-    const image = await ensureImage(new Docker(), imageFor("npm", ">=24"));
+    const image = await ensureImage(new Docker(), imageFor("node", ">=24"));
     sandbox = await Sandbox.start({ worktree, image, attemptId, uid: process.getuid!(), gid: process.getgid!() });
   });
 

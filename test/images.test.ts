@@ -16,7 +16,7 @@ describe("imageFor node", () => {
   ];
   for (const [declared, major] of cases) {
     it(`resolves ${JSON.stringify(declared)} to node ${major}`, () => {
-      const image = imageFor("npm", declared);
+      const image = imageFor("node", declared);
       assert.equal(image.name, "proseco/node");
       assert.equal(image.tag, major);
       assert.deepEqual(image.buildArgs, { NODE_MAJOR: major });
@@ -37,14 +37,12 @@ describe("imageFor python", () => {
     [null, "3.13"],
   ];
   for (const [declared, version] of cases) {
-    for (const ecosystem of ["uv", "requirements"] as const) {
-      it(`resolves ${JSON.stringify(declared)} for ${ecosystem} to python ${version}`, () => {
-        const image = imageFor(ecosystem, declared);
-        assert.equal(image.name, "proseco/python");
-        assert.equal(image.tag, version);
-        assert.deepEqual(image.buildArgs, { PYTHON_VERSION: version, UV_VERSION });
-        assert.match(image.dockerfile, /images\/python\/Dockerfile$/);
-      });
-    }
+    it(`resolves ${JSON.stringify(declared)} to python ${version}`, () => {
+      const image = imageFor("python", declared);
+      assert.equal(image.name, "proseco/python");
+      assert.equal(image.tag, version);
+      assert.deepEqual(image.buildArgs, { PYTHON_VERSION: version, UV_VERSION });
+      assert.match(image.dockerfile, /images\/python\/Dockerfile$/);
+    });
   }
 });

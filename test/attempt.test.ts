@@ -102,13 +102,23 @@ describe("attempt", () => {
     const mixed = ticket([
       finding({}),
       finding({ cve: "CVE-2026-0003", package: "express", installed: "3.0.0", fixedIn: "4.0.0", source: "package-lock.json" }),
-      finding({ cve: "CVE-2026-0004", ecosystem: "pip", package: "flask", installed: "1.0.0", fixedIn: "1.0.1", source: "uv.lock" }),
+      finding({ cve: "CVE-2026-0004", ecosystem: "pip", package: "flask", installed: "1.0.0", fixedIn: "1.0.1", source: "Gemfile.lock" }),
     ]);
     const run = harness();
     await runAttempt({ ticket: mixed, force: false, state: emptyState(), local: false }, run.deps);
     assert.deepEqual(run.worked, ["package-lock.json"]);
     assert.match(run.comments[0]!, /express.*major.*: no pull request: major upgrades are not attempted yet/);
-    assert.match(run.comments[0]!, /`uv\.lock`: no pull request: unsupported ecosystem: uv/);
+    assert.match(run.comments[0]!, /`Gemfile\.lock`: no pull request: unsupported ecosystem: unknown lockfile type/);
+  });
+
+  it("works uv and requirements units like npm ones", async () => {
+    const python = ticket([
+      finding({ ecosystem: "pip", package: "requests", installed: "2.31.0", fixedIn: "2.32.0", source: "uv.lock" }),
+      finding({ cve: "CVE-2026-0005", ecosystem: "pip", package: "flask", installed: "1.0.0", fixedIn: "1.0.1", source: "tools/requirements.txt" }),
+    ]);
+    const run = harness();
+    await runAttempt({ ticket: python, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(run.worked, ["tools/requirements.txt", "uv.lock"]);
   });
 
   it("does nothing when an open pull request from the last attempt exists, without fetching", async () => {

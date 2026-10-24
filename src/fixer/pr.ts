@@ -2,6 +2,7 @@ import type { PackageCheck } from "./check.ts";
 
 const MAX_DISCARDED = 20;
 const MAX_TAIL_CHARS = 4000;
+const NOISE = new Set(["node_modules", ".venv", "__pycache__", ".pytest_cache"]);
 
 export interface PrFix {
   package: string;
@@ -11,9 +12,9 @@ export interface PrFix {
 }
 
 export type TestOutcome =
-  | { kind: "passed"; tail: string }
-  | { kind: "no-tests"; tail: string }
-  | { kind: "failed"; step: "npm ci" | "npm test"; exitCode: number; timedOut: boolean; tail: string };
+  | { kind: "passed"; commands: string[]; tail: string }
+  | { kind: "no-tests"; commands: string[]; tail: string }
+  | { kind: "failed"; step: string; exitCode: number; timedOut: boolean; tail: string };
 
 export interface PrBodyInput {
   org: string;
@@ -34,7 +35,7 @@ export function commitMessage(lockfile: string, fixes: PrFix[]): string {
 }
 
 export function summariseDiscarded(paths: string[]): string[] {
-  return [...new Set(paths.filter((path) => !path.split("/").includes("node_modules")))];
+  return [...new Set(paths.filter((path) => !path.split("/").some((part) => NOISE.has(part))))];
 }
 
 function cell(text: string): string {
@@ -56,9 +57,9 @@ function testSection(tests: TestOutcome): string[] {
   const output = tests.tail.trim() === "" ? [] : ["", "<details>", "<summary>Output</summary>", "", fence(tailOf(tests.tail)), "", "</details>"];
   switch (tests.kind) {
     case "passed":
-      return ["- `npm ci` and `npm test` passed in the sandbox.", ...output];
+      return [`- ${tests.commands.map((command) => `\`${command}\``).join(" and ")} passed in the sandbox.`, ...output];
     case "no-tests":
-      return ["- `npm ci` passed in the sandbox; the project has no test script, so nothing else was run.", ...output];
+      return [`- ${tests.commands.map((command) => `\`${command}\``).join(" and ")} passed in the sandbox; the project has no tests the fixer can run, so nothing else was run.`, ...output];
     case "failed":
       return [
         `- Draft: \`${tests.step}\` ${tests.timedOut ? "timed out" : `failed with exit code ${tests.exitCode}`} in the sandbox. A person needs to look before this can merge.`,

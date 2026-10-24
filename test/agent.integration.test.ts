@@ -68,6 +68,7 @@ describe("agent end to end", { skip: !enabled && "set PROSECO_AGENT_TESTS=1 to r
       app: { clientId: "Iv1.acme", installationId: 1 },
       cloneDir: join(workspace, "clones"),
       stateFile: join(workspace, "state.json"),
+      pollMinutes: 1,
       proxy: { allow: DEFAULT_PROXY_ALLOW },
       sandbox: DEFAULT_SANDBOX_LIMITS,
       ollama: DEFAULT_OLLAMA,

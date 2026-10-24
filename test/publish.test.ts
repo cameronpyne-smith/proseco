@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { npm } from "../src/fixer/ecosystems/npm.ts";
 import { GitStore } from "../src/fixer/git.ts";
 import { allowedFiles, commitAllowed, discardOthers, isAllowed, parseStatus, splitPaths } from "../src/fixer/publish.ts";
 
@@ -51,24 +52,24 @@ describe("status parsing", () => {
 
 describe("allowed files", () => {
   it("allows the manifest and lockfiles beside the lockfile and the package.json of each workspace member", () => {
-    const allowed = allowedFiles("web/package-lock.json", LOCK);
+    const allowed = allowedFiles(npm, "web/package-lock.json", LOCK);
     assert.deepEqual([...allowed].sort(), ["web/npm-shrinkwrap.json", "web/package-lock.json", "web/package.json", "web/packages/app/package.json", "web/packages/lib/package.json"]);
   });
 
   it("uses the repository root for a lockfile at the root", () => {
-    assert.deepEqual([...allowedFiles("package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }))].sort(), ["npm-shrinkwrap.json", "package-lock.json", "package.json"]);
+    assert.deepEqual([...allowedFiles(npm, "package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }))].sort(), ["npm-shrinkwrap.json", "package-lock.json", "package.json"]);
   });
 
   it("never allows anything under .github/workflows, even when the lockfile's directory is there", () => {
-    const allowed = allowedFiles(".github/workflows/package-lock.json", LOCK);
+    const allowed = allowedFiles(npm, ".github/workflows/package-lock.json", LOCK);
     assert.equal(allowed.has(".github/workflows/package.json"), true);
     assert.equal(isAllowed(allowed, ".github/workflows/package.json"), false);
     assert.equal(isAllowed(allowed, ".github/workflows/ci.yml"), false);
-    assert.equal(isAllowed(allowedFiles("package-lock.json", LOCK), "package.json"), true);
+    assert.equal(isAllowed(allowedFiles(npm, "package-lock.json", LOCK), "package.json"), true);
   });
 
   it("splits changed paths into allowed and discarded", () => {
-    const allowed = allowedFiles("package-lock.json", LOCK);
+    const allowed = allowedFiles(npm, "package-lock.json", LOCK);
     assert.deepEqual(splitPaths(["package.json", "src/a.js", "package-lock.json", ".github/workflows/ci.yml"], allowed), {
       allowed: ["package.json", "package-lock.json"],
       discarded: ["src/a.js", ".github/workflows/ci.yml"],
@@ -84,7 +85,7 @@ describe("commit guard", () => {
     work.write("src/new.js", "new");
     work.write(".github/workflows/ci.yml", "evil");
     execFileSync("rm", [join(work.path, "README.md")]);
-    const allowed = allowedFiles(work.lockfile, LOCK);
+    const allowed = allowedFiles(npm, work.lockfile, LOCK);
     const discarded = await discardOthers(work.store, work.path, work.base, allowed);
     assert.deepEqual([...discarded].sort(), [".github/workflows/ci.yml", "README.md", "src/a.js", "src/new.js"]);
     assert.equal(readFileSync(join(work.path, "src/a.js"), "utf8"), "a");
@@ -103,7 +104,7 @@ describe("commit guard", () => {
     git(work.path, "commit", "-q", "-m", "agent commit");
     work.write("src/b.js", "staged");
     git(work.path, "add", "src/b.js");
-    const discarded = await discardOthers(work.store, work.path, work.base, allowedFiles(work.lockfile, LOCK));
+    const discarded = await discardOthers(work.store, work.path, work.base, allowedFiles(npm, work.lockfile, LOCK));
     assert.deepEqual([...discarded].sort(), ["src/a.js", "src/b.js"]);
     assert.equal(git(work.path, "rev-parse", "HEAD"), work.base);
     assert.equal(git(work.path, "status", "--porcelain"), "M package.json");
@@ -112,7 +113,7 @@ describe("commit guard", () => {
   it("discards untracked node_modules without listing every file in it", async () => {
     const work = await checkout({});
     for (let index = 0; index < 600; index++) work.write(`node_modules/pkg/f${index}.js`, "x");
-    const discarded = await discardOthers(work.store, work.path, work.base, allowedFiles(work.lockfile, LOCK));
+    const discarded = await discardOthers(work.store, work.path, work.base, allowedFiles(npm, work.lockfile, LOCK));
     assert.equal(discarded.length, 600);
     assert.equal(existsSync(join(work.path, "node_modules")), false);
   });
@@ -122,7 +123,7 @@ describe("commit guard", () => {
     work.write("package.json", '{"bumped":true}');
     work.write("package-lock.json", LOCK.replace("1.0.0", "1.0.1"));
     work.write("src/a.js", "tampered");
-    const allowed = allowedFiles(work.lockfile, LOCK);
+    const allowed = allowedFiles(npm, work.lockfile, LOCK);
     await discardOthers(work.store, work.path, work.base, allowed);
     const commit = await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "Bump minimist to 1.2.6", allowed });
     assert.deepEqual(commit!.files.sort(), ["package-lock.json", "package.json"]);
@@ -134,7 +135,7 @@ describe("commit guard", () => {
   it("commits nothing when nothing allowed changed", async () => {
     const work = await checkout({});
     work.write("src/a.js", "tampered");
-    const allowed = allowedFiles(work.lockfile, LOCK);
+    const allowed = allowedFiles(npm, work.lockfile, LOCK);
     await discardOthers(work.store, work.path, work.base, allowed);
     assert.equal(await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "m", allowed }), null);
     assert.equal(git(work.path, "rev-parse", "HEAD"), work.base);
@@ -143,7 +144,7 @@ describe("commit guard", () => {
   it("refuses to stage a workflow file even if the allowed set somehow lists it", async () => {
     const work = await checkout({ ".github/workflows/package.json": "{}" }, ".github/workflows");
     work.write(".github/workflows/package.json", '{"x":1}');
-    const allowed = allowedFiles(work.lockfile, LOCK);
+    const allowed = allowedFiles(npm, work.lockfile, LOCK);
     const discarded = await discardOthers(work.store, work.path, work.base, allowed);
     assert.deepEqual(discarded, [".github/workflows/package.json"]);
     assert.equal(await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "m", allowed }), null);

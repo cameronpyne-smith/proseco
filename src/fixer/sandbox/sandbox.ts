@@ -75,6 +75,8 @@ export class Sandbox {
           no_proxy: "",
           NODE_USE_ENV_PROXY: "1",
           HOME: "/tmp/home",
+          UV_LINK_MODE: "copy",
+          PIP_NO_INPUT: "1",
         },
         binds: [`${options.worktree}:/work`],
         tmpfs: ["/tmp:exec,mode=1777"],

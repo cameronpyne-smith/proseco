@@ -1,17 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { dirname } from "node:path/posix";
 import type { FixerConfig } from "../core/config.ts";
 import type { Advisory } from "./advisories.ts";
 import type { UnitResult } from "./attempt.ts";
 import { checkLockfile, checkPassed, type PackageCheck } from "./check.ts";
 import { declaredToolchain } from "./dryrun.ts";
-import { npm } from "./ecosystems/npm.ts";
+import { ecosystemFor, type Ecosystem } from "./ecosystems/ecosystem.ts";
 import { buildFacts } from "./facts.ts";
 import type { GitStore } from "./git.ts";
 import { runLoop } from "./agent/loop.ts";
 import type { OllamaClient } from "./agent/ollama.ts";
-import { SYSTEM_PROMPT, userPrompt } from "./agent/prompts.ts";
+import { systemPrompt, userPrompt } from "./agent/prompts.ts";
 import { executeTool, TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { verifySummary } from "./agent/verify.ts";
 import { commitMessage, renderPrBody, summariseDiscarded, type TestOutcome } from "./pr.ts";
@@ -57,6 +58,7 @@ export interface UnitContext {
   advisory(cve: string, pkg: string): Promise<Advisory | null>;
   publisher: Publisher;
   keepCheckout: boolean;
+  ecosystemFor?(lockfile: string): Ecosystem | null;
   startSandbox?(options: StartOptions): Promise<SandboxHandle>;
   log(message: string): void;
 }
@@ -75,21 +77,26 @@ function combined(result: ExecResult): string {
   return `${result.stdout}${result.stderr}`;
 }
 
-async function harness(sandbox: SandboxHandle, directory: string, checkout: string, commandMs: number): Promise<TestOutcome> {
+function readIfPresent(checkout: string): (path: string) => string | null {
+  return (path) => {
+    try {
+      return readFileSync(join(checkout, path), "utf8");
+    } catch {
+      return null;
+    }
+  };
+}
+
+async function harness(sandbox: SandboxHandle, ecosystem: Ecosystem, lockfile: string, checkout: string, commandMs: number): Promise<TestOutcome> {
+  const plan = ecosystem.harness(lockfile);
+  const directory = dirname(lockfile);
   const prefix = directory === "." ? "" : `cd ${shellQuote(`/work/${directory}`)} && `;
-  const install = await sandbox.run(["sh", "-c", `${prefix}npm ci --no-audit --no-fund`], commandMs);
-  if (install.exitCode !== 0) return { kind: "failed", step: "npm ci", exitCode: install.exitCode, timedOut: install.timedOut, tail: combined(install) };
-  let hasTest = false;
-  try {
-    const manifest = JSON.parse(readFileSync(join(checkout, directory, "package.json"), "utf8")) as { scripts?: { test?: unknown } };
-    hasTest = typeof manifest.scripts?.test === "string";
-  } catch {
-    hasTest = false;
-  }
-  if (!hasTest) return { kind: "no-tests", tail: "" };
-  const test = await sandbox.run(["sh", "-c", `${prefix}npm test --if-present`], commandMs);
-  if (test.exitCode !== 0) return { kind: "failed", step: "npm test", exitCode: test.exitCode, timedOut: test.timedOut, tail: combined(test) };
-  return { kind: "passed", tail: combined(test) };
+  const install = await sandbox.run(["sh", "-c", `${prefix}${plan.install}`], commandMs);
+  if (install.exitCode !== 0) return { kind: "failed", step: plan.install, exitCode: install.exitCode, timedOut: install.timedOut, tail: combined(install) };
+  if (!plan.hasTests(readIfPresent(checkout))) return { kind: "no-tests", commands: [plan.install], tail: "" };
+  const test = await sandbox.run(["sh", "-c", `${prefix}${plan.test}`], commandMs);
+  if (test.exitCode !== 0) return { kind: "failed", step: plan.test, exitCode: test.exitCode, timedOut: test.timedOut, tail: combined(test) };
+  return { kind: "passed", commands: [plan.install, plan.test], tail: combined(test) };
 }
 
 async function diffOf(ctx: UnitContext, checkout: string, base: string, commit: CommitResult, lockfile: string): Promise<string> {
@@ -102,12 +109,16 @@ async function diffOf(ctx: UnitContext, checkout: string, base: string, commit: 
 }
 
 export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string): Promise<UnitResult> {
+  const ecosystem = (ctx.ecosystemFor ?? ecosystemFor)(unit.source);
+  if (!ecosystem) return none("unsupported ecosystem: unknown lockfile type");
   const readFile = (path: string) => ctx.store.tryShow(ctx.repo, headSha, path);
   const lockfileText = await readFile(unit.source);
   if (lockfileText === null) return none(`${unit.source} does not exist at the default branch head`);
-  const toolchain = await declaredToolchain(npm, unit.source, readFile);
-  const facts = await buildFacts(unit, npm, lockfileText, toolchain, ctx.advisory);
-  const image = await ensureImage(ctx.docker, imageFor("npm", toolchain));
+  const unsupported = ecosystem.unsupported(lockfileText);
+  if (unsupported) return none(unsupported);
+  const toolchain = await declaredToolchain(ecosystem, unit.source, readFile);
+  const facts = await buildFacts(unit, ecosystem, lockfileText, toolchain, ctx.advisory);
+  const image = await ensureImage(ctx.docker, imageFor(ecosystem.imageFamily, toolchain));
   const checkout = await ctx.store.checkout(ctx.repo, headSha);
   let sandbox: SandboxHandle | undefined;
   try {
@@ -135,7 +146,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
           name,
           args,
         ),
-      system: SYSTEM_PROMPT,
+      system: systemPrompt(ecosystem.notes),
       user: userPrompt(facts),
       timeBudgetMs: ctx.fixer.budget.minutes * MS_PER_MINUTE,
       maxToolCalls: ctx.fixer.budget.toolCalls,
@@ -145,12 +156,12 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     if (loop.outcome !== "finished" || !loop.finish) {
       return none(`the agent gave up (${loop.outcome}${loop.error ? `: ${loop.error}` : ""})`, extra);
     }
-    const allowed = allowedFiles(unit.source, lockfileText);
+    const allowed = allowedFiles(ecosystem, unit.source, lockfileText);
     const discarded = new Set(await discardOthers(ctx.store, checkout, headSha, allowed));
 
     let checks: PackageCheck[];
     try {
-      checks = checkLockfile(npm, readFileSync(join(checkout, unit.source), "utf8"), unit.fixes.map((fix) => ({ package: fix.package, target: fix.target })));
+      checks = checkLockfile(ecosystem, readFileSync(join(checkout, unit.source), "utf8"), unit.fixes.map((fix) => ({ package: fix.package, target: fix.target })));
     } catch (error) {
       return none(`the lockfile cannot be read after the agent's changes: ${(error as Error).message}`, extra);
     }
@@ -158,7 +169,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       return none(`lockfile check failed: ${checks.filter((check) => !check.ok).map((check) => `${check.package}: ${check.reason}`).join("; ")}`, extra);
     }
 
-    const tests = await harness(box, facts.directory, checkout, commandMs);
+    const tests = await harness(box, ecosystem, unit.source, checkout, commandMs);
     ctx.log(`harness: ${tests.kind}`);
     for (const path of await discardOthers(ctx.store, checkout, headSha, allowed)) discarded.add(path);
 

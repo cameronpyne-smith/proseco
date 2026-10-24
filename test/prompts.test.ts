@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { NPM_NOTES, RULES, SYSTEM_PROMPT, UNTRUSTED, userPrompt } from "../src/fixer/agent/prompts.ts";
+import { RULES, systemPrompt, UNTRUSTED, userPrompt } from "../src/fixer/agent/prompts.ts";
+import { NPM_NOTES } from "../src/fixer/ecosystems/npm.ts";
+import { REQUIREMENTS_NOTES } from "../src/fixer/ecosystems/requirements.ts";
+import { UV_NOTES } from "../src/fixer/ecosystems/uv.ts";
 import type { UnitFacts } from "../src/fixer/facts.ts";
 
 const facts: UnitFacts = {
@@ -29,8 +32,10 @@ const facts: UnitFacts = {
 };
 
 describe("prompts", () => {
-  it("gives the system prompt the job, the npm commands, the rules and the untrusted-input warning", () => {
+  it("gives the system prompt the job, the ecosystem's notes, the rules and the untrusted-input warning", () => {
+    const SYSTEM_PROMPT = systemPrompt(NPM_NOTES);
     for (const part of [NPM_NOTES, RULES, UNTRUSTED]) assert.ok(SYSTEM_PROMPT.includes(part));
+    assert.ok(!systemPrompt(UV_NOTES).includes(NPM_NOTES));
     assert.match(NPM_NOTES, /npm install --package-lock-only --no-audit --no-fund/);
     assert.match(NPM_NOTES, /npm ci --no-audit --no-fund/);
     assert.match(NPM_NOTES, /overrides/);
@@ -42,13 +47,22 @@ describe("prompts", () => {
     assert.match(SYSTEM_PROMPT, /call the finish tool/);
   });
 
+  it("tells the python agents how to resolve, never to edit the lockfile by hand, and to touch one file for a requirements file", () => {
+    assert.match(UV_NOTES, /uv lock --upgrade-package <package>/);
+    assert.match(UV_NOTES, /uv sync --frozen/);
+    assert.match(UV_NOTES, /Never edit uv\.lock by hand/);
+    assert.match(REQUIREMENTS_NOTES, /text edit/);
+    assert.match(REQUIREMENTS_NOTES, /script or a tool/);
+    assert.match(REQUIREMENTS_NOTES, /nothing but the pins in this one file/);
+  });
+
   it("interpolates the unit's rows, versions, targets, CVEs, toolchain and working directory", () => {
     const prompt = userPrompt(facts);
     assert.match(prompt, /Package minimist: installed 1\.2\.5, target 1\.2\.6, severity critical\./);
     assert.match(prompt, /CVE-2021-44906 \(critical\), fixed in 1\.2\.6\./);
     assert.match(prompt, /vulnerable < 1\.2\.6, patched 1\.2\.6/);
     assert.match(prompt, /Toolchain declared by the repository: 22\./);
-    assert.match(prompt, /Run npm from web \(\/work\/web\)/);
+    assert.match(prompt, /Run commands from web \(\/work\/web\)/);
     assert.match(prompt, /Make these packages safe in web\/package-lock\.json/);
   });
 
@@ -66,7 +80,7 @@ describe("prompts", () => {
 
   it("handles a lockfile at the root and a missing toolchain", () => {
     const prompt = userPrompt({ ...facts, lockfile: "package-lock.json", directory: ".", toolchain: null, fixes: [{ ...facts.fixes[1]!, chain: null }] });
-    assert.match(prompt, /Run npm from the repository root \(\/work\)/);
+    assert.match(prompt, /Run commands from the repository root \(\/work\)/);
     assert.match(prompt, /Toolchain declared by the repository: none/);
     assert.match(prompt, /Dependency path: not found in the lockfile/);
     assert.match(prompt, /Make this package safe in package-lock\.json/);

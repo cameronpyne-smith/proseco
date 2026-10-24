@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { EcosystemName } from "../ecosystems/ecosystem.ts";
+import type { ImageFamily } from "../ecosystems/ecosystem.ts";
 import type { Docker } from "./docker.ts";
 
 const run = promisify(execFile);
@@ -33,8 +33,8 @@ function pythonVersion(declared: string | null): string {
   return match ? `${match[1]}.${match[2]}` : PYTHON_DEFAULT_VERSION;
 }
 
-export function imageFor(ecosystem: EcosystemName, declared: string | null): ImageSpec {
-  if (ecosystem === "npm") {
+export function imageFor(family: ImageFamily, declared: string | null): ImageSpec {
+  if (family === "node") {
     const major = nodeMajor(declared);
     return { name: "proseco/node", tag: major, dockerfile: join(IMAGES_DIR, "node", "Dockerfile"), buildArgs: { NODE_MAJOR: major } };
   }

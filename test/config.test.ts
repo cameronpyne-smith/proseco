@@ -51,11 +51,23 @@ describe("config", () => {
       app: { clientId: "Iv1.acme", installationId: 42 },
       cloneDir: "/var/lib/proseco/clones",
       stateFile: "/var/lib/proseco/state.json",
+      pollMinutes: 1,
       proxy: { allow: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"] },
       sandbox: { memory: "8g", cpus: 4 },
       ollama: { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 },
       budget: { minutes: 30, toolCalls: 200, commandMinutes: 10 },
     });
+  });
+
+  it("reads the poll interval, defaulting to one minute, and validates it", () => {
+    const set = (patch: Record<string, unknown>) => {
+      const raw = full();
+      Object.assign(raw["fixer"] as Record<string, unknown>, patch);
+      return raw;
+    };
+    assert.equal(parseConfig(set({ pollMinutes: 0.5 }), mapping).fixer!.pollMinutes, 0.5);
+    assert.throws(() => parseConfig(set({ pollMinutes: 0 }), mapping), /fixer.pollMinutes must be a positive number/);
+    assert.throws(() => parseConfig(set({ pollMinutes: "1" }), mapping), /fixer.pollMinutes must be a positive number/);
   });
 
   it("overrides the ollama and budget settings and validates them", () => {

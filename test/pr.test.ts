@@ -16,7 +16,7 @@ function input(overrides: Partial<PrBodyInput> = {}): PrBodyInput {
     fixes: [minimist],
     summary: "Bumped minimist to 1.2.8.",
     checks,
-    tests: { kind: "passed", tail: "ok 1 - works" },
+    tests: { kind: "passed", commands: ["npm ci --no-audit --no-fund", "npm test --if-present"], tail: "ok 1 - works" },
     discarded: [],
     ...overrides,
   };
@@ -45,27 +45,29 @@ describe("pull request body", () => {
     const body = renderPrBody(input());
     assert.match(body, /Bumped minimist to 1\.2\.8\./);
     assert.match(body, /minimist: installed 1\.2\.8 is at or above 1\.2\.6/);
-    assert.match(body, /`npm ci` and `npm test` passed/);
+    assert.match(body, /`npm ci --no-audit --no-fund` and `npm test --if-present` passed in the sandbox/);
     assert.match(body, /ok 1 - works/);
     assert.ok(body.trimEnd().endsWith("Part of acme-org/acme-tickets#12"));
     assert.equal(body.includes("Fixes"), false);
   });
 
-  it("says when there is no test script", () => {
-    const body = renderPrBody(input({ tests: { kind: "no-tests", tail: "" } }));
-    assert.match(body, /no test script/);
+  it("names the commands that ran for any ecosystem, and says when there were no tests to run", () => {
+    const python = renderPrBody(input({ tests: { kind: "passed", commands: ["uv sync --frozen", "uv run pytest -x -q"], tail: "" } }));
+    assert.match(python, /`uv sync --frozen` and `uv run pytest -x -q` passed in the sandbox/);
+    const none = renderPrBody(input({ tests: { kind: "no-tests", commands: ["uv sync --frozen"], tail: "" } }));
+    assert.match(none, /`uv sync --frozen` passed in the sandbox; the project has no tests the fixer can run/);
   });
 
   it("says what failed for a draft, with the tail of the output", () => {
-    const body = renderPrBody(input({ tests: { kind: "failed", step: "npm test", exitCode: 1, timedOut: false, tail: "AssertionError: boom" } }));
-    assert.match(body, /Draft: `npm test` failed with exit code 1/);
+    const body = renderPrBody(input({ tests: { kind: "failed", step: "npm test --if-present", exitCode: 1, timedOut: false, tail: "AssertionError: boom" } }));
+    assert.match(body, /Draft: `npm test --if-present` failed with exit code 1/);
     assert.match(body, /AssertionError: boom/);
     const timedOut = renderPrBody(input({ tests: { kind: "failed", step: "npm ci", exitCode: 124, timedOut: true, tail: "" } }));
     assert.match(timedOut, /`npm ci` timed out/);
   });
 
   it("uses a longer fence when the output contains backticks", () => {
-    const body = renderPrBody(input({ tests: { kind: "passed", tail: "```\ninner\n```" } }));
+    const body = renderPrBody(input({ tests: { kind: "passed", commands: ["npm ci"], tail: "```\ninner\n```" } }));
     assert.match(body, /\n````\n```\ninner\n```\n````\n/);
   });
 
@@ -88,7 +90,7 @@ describe("pull request body", () => {
 
 describe("discarded changes summary", () => {
   it("leaves out installed packages, which are not changes the agent made on purpose", () => {
-    assert.deepEqual(summariseDiscarded(["node_modules/a/i.js", "node_modules/b/i.js", "web/node_modules/x/y.js", "src/a.js", "src/a.js"]), ["src/a.js"]);
+    assert.deepEqual(summariseDiscarded(["node_modules/a/i.js", "node_modules/b/i.js", "web/node_modules/x/y.js", "svc/.venv/lib/x.py", "tests/__pycache__/t.pyc", ".pytest_cache/v", "src/a.js", "src/a.js"]), ["src/a.js"]);
   });
 
   it("caps the list in the body and says how many more there were", () => {

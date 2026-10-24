@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path/posix";
 import { packageKey } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
@@ -63,10 +64,39 @@ export function pythonToolchain(files: Record<string, string>): string | null {
   return /^\s*requires-python\s*=\s*"([^"]+)"/m.exec(files["pyproject.toml"] ?? "")?.[1] ?? null;
 }
 
+export const UV_NOTES = [
+  "Ecosystem notes (uv):",
+  "- Run every uv command from the lockfile's directory. The lockfile is uv.lock, the manifest is pyproject.toml.",
+  "- Resolve one package at a time with `uv lock --upgrade-package <package>`. It rewrites uv.lock with the newest version the constraints in pyproject.toml allow.",
+  "- A direct dependency whose constraint in pyproject.toml excludes the target (for example an exact pin below it): change the constraint to the smallest version at or above the target, then run `uv lock --upgrade-package <package>`.",
+  "- A transitive dependency: first try `uv lock --upgrade-package <package>`. If the lockfile stays below the target, raise the named parent's constraint in pyproject.toml and run `uv lock --upgrade-package <parent>`. If no parent release helps, add `constraint-dependencies = [\"<package>>=<target>\"]` under `[tool.uv]` in pyproject.toml, then run `uv lock`.",
+  "- Never edit uv.lock by hand. Only `uv lock` may write it.",
+  "- Install with `uv sync --frozen`; the tests run with `uv run pytest -x -q` when pytest is locked. `uv tree --invert --package <package>` shows what requires a package.",
+  "- Dependency groups such as `dev` live under `[dependency-groups]` in pyproject.toml; a workspace member has its own pyproject.toml.",
+].join("\n");
+
+function workspaceMembers(text: string): string[] {
+  const parsed = parseToml(text);
+  const members = table(parsed["manifest"])["members"];
+  if (!Array.isArray(members)) return [];
+  const names = new Set(members.filter((member): member is string => typeof member === "string").map((member) => packageKey("pip", member)));
+  const paths: string[] = [];
+  for (const raw of Array.isArray(parsed["package"]) ? parsed["package"] : []) {
+    const entry = table(raw);
+    if (typeof entry["name"] !== "string" || !names.has(packageKey("pip", entry["name"]))) continue;
+    const source = table(entry["source"]);
+    const path = source["editable"] ?? source["virtual"];
+    if (typeof path === "string" && path !== ".") paths.push(path);
+  }
+  return paths;
+}
+
 export const uv: Ecosystem = {
   name: "uv",
   findingEcosystem: "pip",
   toolchainFiles: [".python-version", "pyproject.toml"],
+  imageFamily: "python",
+  notes: UV_NOTES,
 
   installedVersions(text) {
     const installed = new Map<string, string[]>();
@@ -97,4 +127,28 @@ export const uv: Ecosystem = {
   },
 
   toolchainVersion: pythonToolchain,
+
+  allowedFiles(lockfile, text) {
+    const directory = dirname(lockfile);
+    const inDirectory = (file: string) => (directory === "." ? file : join(directory, file));
+    return [inDirectory("pyproject.toml"), inDirectory("uv.lock"), ...workspaceMembers(text).map((member) => inDirectory(join(member, "pyproject.toml")))];
+  },
+
+  harness(lockfile) {
+    return {
+      install: "uv sync --frozen",
+      test: "uv run pytest -x -q",
+      hasTests(read) {
+        try {
+          return uv.installedVersions(read(lockfile) ?? "").has("pytest");
+        } catch {
+          return false;
+        }
+      },
+    };
+  },
+
+  unsupported() {
+    return null;
+  },
 };

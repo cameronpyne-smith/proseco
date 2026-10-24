@@ -45,11 +45,14 @@ export interface BudgetConfig {
 export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 };
 export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, toolCalls: 200, commandMinutes: 10 };
 
+export const DEFAULT_POLL_MINUTES = 1;
+
 export interface FixerConfig {
   bot: string;
   app: { clientId: string; installationId: number };
   cloneDir: string;
   stateFile: string;
+  pollMinutes: number;
   proxy: { allow: string[] };
   sandbox: SandboxLimits;
   ollama: OllamaConfig;
@@ -186,7 +189,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "proxy", "sandbox", "ollama", "budget"]);
+    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget"]);
     const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
@@ -199,6 +202,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
       app: { clientId: text(app["clientId"], "fixer.app.clientId"), installationId: positiveInteger(app["installationId"], "fixer.app.installationId") },
       cloneDir: text(raw["cloneDir"], "fixer.cloneDir"),
       stateFile: text(raw["stateFile"], "fixer.stateFile"),
+      pollMinutes: option(raw, "pollMinutes", "fixer", DEFAULT_POLL_MINUTES, positiveNumber),
       proxy: { allow: [...allow] },
       sandbox: {
         memory: sandbox["memory"] === undefined ? DEFAULT_SANDBOX_LIMITS.memory : name(sandbox["memory"], "fixer.sandbox.memory", /^[1-9][0-9]*[bkmg]$/),

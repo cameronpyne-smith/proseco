@@ -1,7 +1,6 @@
 import { rmdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { dirname as posixDirname, join as posixJoin } from "node:path/posix";
-import { workspaceMembers } from "./ecosystems/npm.ts";
+import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 import type { GitStore } from "./git.ts";
 
 const NEVER = ".github/workflows/";
@@ -40,12 +39,8 @@ export function parseStatus(output: string): string[] {
   return statusEntries(output).map((entry) => entry.path);
 }
 
-export function allowedFiles(lockfile: string, lockfileText: string): Set<string> {
-  const directory = posixDirname(lockfile);
-  const inDirectory = (file: string) => (directory === "." ? file : posixJoin(directory, file));
-  const files = ["package.json", "package-lock.json", "npm-shrinkwrap.json"].map(inDirectory);
-  for (const member of workspaceMembers(lockfileText)) files.push(inDirectory(posixJoin(member, "package.json")));
-  return new Set(files);
+export function allowedFiles(ecosystem: Pick<Ecosystem, "allowedFiles">, lockfile: string, lockfileText: string): Set<string> {
+  return new Set(ecosystem.allowedFiles(lockfile, lockfileText));
 }
 
 export function isAllowed(allowed: Set<string>, path: string): boolean {

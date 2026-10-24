@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path/posix";
 import type { Ecosystem } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
 
@@ -46,10 +47,22 @@ export function workspaceMembers(text: string): string[] {
   return Object.keys(packagesOf(text)).filter((path) => path !== "" && !path.includes(MARKER) && !path.startsWith("node_modules"));
 }
 
+export const NPM_NOTES = [
+  "Ecosystem notes (npm):",
+  "- Resolve the lockfile with `npm install --package-lock-only --no-audit --no-fund`, run from the lockfile's directory. It rewrites package-lock.json from package.json without installing.",
+  "- Install with `npm ci --no-audit --no-fund` and run the tests with `npm test`. Install scripts may run inside the sandbox container.",
+  "- A direct dependency: change its range in package.json to the smallest version that is at or above the target, then resolve.",
+  "- A transitive dependency: prefer bumping the named parent (the direct dependency the chain starts with) to a release that pulls in a fixed version, then resolve. If no parent release does, add an `overrides` entry to package.json for the vulnerable package, then resolve.",
+  "- Never edit package-lock.json by hand. Only the resolver may write it.",
+  "- `npm ls <package>` shows every installed copy and which package requires it.",
+].join("\n");
+
 export const npm: Ecosystem = {
   name: "npm",
   findingEcosystem: "npm",
   toolchainFiles: [".nvmrc", "package.json"],
+  imageFamily: "node",
+  notes: NPM_NOTES,
 
   installedVersions(text) {
     const installed = new Map<string, string[]>();
@@ -84,5 +97,34 @@ export const npm: Ecosystem = {
     if (!manifest) return null;
     const engines = (JSON.parse(manifest) as { engines?: { node?: string } }).engines;
     return engines?.node ?? null;
+  },
+
+  allowedFiles(lockfile, text) {
+    const directory = dirname(lockfile);
+    const inDirectory = (file: string) => (directory === "." ? file : join(directory, file));
+    return [
+      ...["package.json", "package-lock.json", "npm-shrinkwrap.json"].map(inDirectory),
+      ...workspaceMembers(text).map((member) => inDirectory(join(member, "package.json"))),
+    ];
+  },
+
+  harness(lockfile) {
+    const manifest = join(dirname(lockfile), "package.json");
+    return {
+      install: "npm ci --no-audit --no-fund",
+      test: "npm test --if-present",
+      hasTests(read) {
+        try {
+          const scripts = (JSON.parse(read(manifest) ?? "") as { scripts?: { test?: unknown } }).scripts;
+          return typeof scripts?.test === "string";
+        } catch {
+          return false;
+        }
+      },
+    };
+  },
+
+  unsupported() {
+    return null;
   },
 };
