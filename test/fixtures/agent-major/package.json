@@ -1,0 +1,11 @@
+{
+  "name": "agent-major-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "node-fetch": "2.6.1"
+  }
+}

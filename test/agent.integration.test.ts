@@ -10,6 +10,7 @@ import { compareVersions } from "../src/core/versions.ts";
 import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 import type { Advisory } from "../src/fixer/advisories.ts";
+import type { ReleaseNotes } from "../src/fixer/releases.ts";
 import { OllamaClient } from "../src/fixer/agent/ollama.ts";
 import { runAttempt, type AttemptResult } from "../src/fixer/attempt.ts";
 import { GitStore } from "../src/fixer/git.ts";
@@ -25,6 +26,8 @@ interface Scenario {
   finding: Finding;
   branch: string;
   advisory: Advisory;
+  budget?: Partial<FixerConfig["budget"]>;
+  releases?: ReleaseNotes;
 }
 
 const NPM: Scenario = {
@@ -52,6 +55,44 @@ const NPM: Scenario = {
     patchedVersion: "1.2.6",
     affectedFunctions: [],
     references: [],
+  },
+};
+
+const NODE_FETCH_MAJOR: Scenario = {
+  fixture: "agent-major",
+  branch: "proseco/node-fetch-3.1.1",
+  finding: {
+    origin: "dependabot",
+    repo: "acme-api",
+    cve: "CVE-2022-0235",
+    severity: "high",
+    ecosystem: "npm",
+    package: "node-fetch",
+    installed: "2.6.1",
+    fixedIn: "3.1.1",
+    source: "package-lock.json",
+    relationship: null,
+    scope: null,
+    imageKey: null,
+  },
+  advisory: {
+    id: "GHSA-r683-j2x4-v87g",
+    summary: "node-fetch forwards secure headers to untrusted sites",
+    severity: "high",
+    vulnerableRange: "< 2.6.7",
+    patchedVersion: "2.6.7",
+    affectedFunctions: [],
+    references: [],
+  },
+  budget: { minutes: 20, majorMinutes: 20 },
+  releases: {
+    repository: "acme-org/node-fetch-fixture",
+    releases: [
+      { tag: "v3.1.1", name: "v3.1.1", body: "Fix: strip secure headers when redirecting to another host." },
+      { tag: "v3.0.0", name: "v3.0.0", body: "BREAKING: node-fetch is now an ES module and can no longer be loaded with require(). Use import, or a dynamic import() from CommonJS. Node 12.20 or newer is required." },
+      { tag: "v2.7.0", name: "v2.7.0", body: "Add the AbortSignal type to the options." },
+    ],
+    note: null,
   },
 };
 
@@ -132,7 +173,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
     proxy: { allow: DEFAULT_PROXY_ALLOW },
     sandbox: DEFAULT_SANDBOX_LIMITS,
     ollama: DEFAULT_OLLAMA,
-    budget: DEFAULT_BUDGET,
+    budget: { ...DEFAULT_BUDGET, ...scenario.budget },
   };
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: () => bare });
   const llm = new OllamaClient({
@@ -173,6 +214,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
             fixer,
             llm,
             advisory: async () => scenario.advisory,
+            ...(scenario.releases ? { releases: async () => scenario.releases! } : {}),
             publisher,
             keepCheckout: false,
             log: (message) => console.error(`[agent] ${message}`),
@@ -189,6 +231,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
   console.log(`agent stats: ${JSON.stringify(report?.result.stats)}`);
   console.log(`tool calls: ${report?.result.trace?.map((entry) => `${entry.tool}(${entry.args})`).join("\n  ")}`);
   const [request] = result.captured;
+  if (request) console.log(`harness: ${request.tests.kind}${request.tests.kind === "failed" ? ` (${request.tests.step}, exit ${request.tests.exitCode})` : ""}\n${request.tests.tail.split("\n").slice(-25).join("\n")}`);
   if (request) console.log(`commit files: ${request.commit.files.join(", ")}\nsummary: ${request.summary}\ndiff:\n${request.diff}\nbody:\n${request.body}`);
   if (report?.outcome.kind !== "pr") console.log(`last tool calls: ${JSON.stringify(report?.result.trace?.slice(-5), null, 2)}\noutcome: ${JSON.stringify(report?.outcome)}`);
   return result;
@@ -287,5 +330,59 @@ endToEnd("agent end to end: requirements.txt", REQUIREMENTS, (captured) => {
     assert.equal(commands.length, 2);
     assert.match(commands[0]!, /^python -m pip install -r requirements\.txt$/);
     assert.match(commands[1]!, /^python -m pytest/);
+  });
+});
+
+describe("agent end to end: major upgrade", { skip: !enabled && "set PROSECO_AGENT_TESTS=1 to run against Docker and Ollama" }, () => {
+  const workspace = mkdtempSync(join(tmpdir(), "proseco-agent-"));
+  let result: Result;
+
+  before(async () => {
+    result = await attempt(NODE_FETCH_MAJOR, workspace);
+  });
+
+  after(async () => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  const captured = () => result.captured[0]!;
+
+  it("plans one major unit and opens a draft pull request request for it", () => {
+    assert.equal(result.outcome.reports.length, 1);
+    const [report] = result.outcome.reports;
+    assert.equal(report?.unit.kind, "major");
+    assert.equal(report?.outcome.kind, "pr", `outcome: ${JSON.stringify(report?.outcome)}; last tool calls: ${JSON.stringify(report?.result.trace?.slice(-5))}`);
+    assert.equal(result.captured.length, 1);
+    assert.equal(captured().draft, true);
+    assert.equal(captured().branch, NODE_FETCH_MAJOR.branch);
+    assert.equal(captured().title, "Upgrade node-fetch to 3.1.1 (major)");
+  });
+
+  it("passes the lockfile check with node-fetch at 3.1.1 or above", () => {
+    const [check] = captured().checks;
+    assert.equal(check!.package, "node-fetch");
+    assert.equal(check!.ok, true, check!.reason);
+    assert.ok(check!.installed.every((version) => atLeast(version, "3.1.1")), JSON.stringify(check));
+  });
+
+  it("commits package.json and package-lock.json", () => {
+    for (const file of ["package.json", "package-lock.json"]) assert.ok(captured().commit.files.includes(file), captured().commit.files.join(", "));
+  });
+
+  it("explains the draft, names the CVE and ends with Part of", () => {
+    assert.match(captured().body, /### Why this is a draft[^]*major version/);
+    assert.match(captured().body, /CVE-2022-0235/);
+    assert.match(captured().body, /- `v3\.0\.0`/);
+    assert.match(captured().body, /Part of acme-org\/acme-tickets#12/);
+  });
+
+  it("comments on the ticket and records the attempt", () => {
+    assert.equal(result.comments.length, 1);
+    assert.match(result.comments[0]!, /pull\/1/);
+    assert.equal(result.state!.tickets["12"]!.attempt!.outcome, "pr-opened");
+  });
+
+  it("leaves no container, network or checkout behind", async () => {
+    assert.deepEqual(await leftovers(), []);
   });
 });
