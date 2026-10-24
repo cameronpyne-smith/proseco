@@ -1,0 +1,7 @@
+# generated for acme
+acme-client==1.5.0 \
+    --hash=sha256:aa \
+    --hash=sha256:bb
+Acme_Urllib==2.0.1 ; python_version >= "3.12"
+acme-yaml==6.0.0  # pinned
+-e .
