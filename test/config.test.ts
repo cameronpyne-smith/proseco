@@ -51,7 +51,36 @@ describe("config", () => {
       stateFile: "/var/lib/proseco/state.json",
       proxy: { allow: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"] },
       sandbox: { memory: "8g", cpus: 4 },
+      ollama: { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 },
+      budget: { minutes: 30, toolCalls: 200, commandMinutes: 10 },
     });
+  });
+
+  it("overrides the ollama and budget settings and validates them", () => {
+    const set = (patch: Record<string, unknown>) => {
+      const raw = full();
+      Object.assign(raw["fixer"] as Record<string, unknown>, patch);
+      return raw;
+    };
+    const config = parseConfig(
+      set({ ollama: { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, timeoutMinutes: 5 }, budget: { minutes: 10, toolCalls: 20, commandMinutes: 2 } }),
+      mapping,
+    );
+    assert.deepEqual(config.fixer!.ollama, { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, timeoutMinutes: 5 });
+    assert.deepEqual(config.fixer!.budget, { minutes: 10, toolCalls: 20, commandMinutes: 2 });
+    const bad = (patch: Record<string, unknown>, message: RegExp) => assert.throws(() => parseConfig(set(patch), mapping), message);
+    bad({ ollama: { url: "gpu" } }, /fixer.ollama.url must be an http or https URL/);
+    bad({ ollama: { url: "ftp://gpu" } }, /fixer.ollama.url must be an http or https URL/);
+    bad({ ollama: { model: "" } }, /fixer.ollama.model must be a name/);
+    bad({ ollama: { numCtx: 0 } }, /fixer.ollama.numCtx must be a positive integer/);
+    bad({ ollama: { numPredict: 1.5 } }, /fixer.ollama.numPredict must be a positive integer/);
+    bad({ ollama: { think: "high" } }, /fixer.ollama.think must be true or false/);
+    bad({ ollama: { timeoutMinutes: -1 } }, /fixer.ollama.timeoutMinutes must be a positive number/);
+    bad({ ollama: { temperature: 0 } }, /fixer.ollama has unknown keys: temperature/);
+    bad({ budget: { minutes: 0 } }, /fixer.budget.minutes must be a positive number/);
+    bad({ budget: { toolCalls: 0 } }, /fixer.budget.toolCalls must be a positive integer/);
+    bad({ budget: { commandMinutes: 0 } }, /fixer.budget.commandMinutes must be a positive number/);
+    bad({ budget: { time: 1 } }, /fixer.budget has unknown keys: time/);
   });
 
   it("replaces the default proxy allowlist with a configured one and overrides the sandbox limits", () => {
@@ -129,8 +158,8 @@ describe("config", () => {
 
   it("rejects unknown keys under the fixer and its app", () => {
     const withExtra = full();
-    (withExtra["fixer"] as Record<string, unknown>)["budget"] = {};
-    assert.throws(() => parseConfig(withExtra, mapping), /fixer has unknown keys: budget/);
+    (withExtra["fixer"] as Record<string, unknown>)["budgets"] = {};
+    assert.throws(() => parseConfig(withExtra, mapping), /fixer has unknown keys: budgets/);
     const appExtra = full();
     ((appExtra["fixer"] as Record<string, unknown>)["app"] as Record<string, unknown>)["secret"] = "x";
     assert.throws(() => parseConfig(appExtra, mapping), /fixer.app has unknown keys: secret/);

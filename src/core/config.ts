@@ -21,6 +21,24 @@ export interface SandboxLimits {
 export const DEFAULT_PROXY_ALLOW = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"];
 export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = { memory: "8g", cpus: 4 };
 
+export interface OllamaConfig {
+  url: string;
+  model: string;
+  numCtx: number;
+  numPredict: number;
+  think: boolean;
+  timeoutMinutes: number;
+}
+
+export interface BudgetConfig {
+  minutes: number;
+  toolCalls: number;
+  commandMinutes: number;
+}
+
+export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 };
+export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, toolCalls: 200, commandMinutes: 10 };
+
 export interface FixerConfig {
   bot: string;
   app: { clientId: string; installationId: number };
@@ -28,6 +46,8 @@ export interface FixerConfig {
   stateFile: string;
   proxy: { allow: string[] };
   sandbox: SandboxLimits;
+  ollama: OllamaConfig;
+  budget: BudgetConfig;
 }
 
 export interface Config {
@@ -68,6 +88,28 @@ function positiveInteger(value: unknown, path: string): number {
 function positiveNumber(value: unknown, path: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new ConfigError(`${path} must be a positive number`);
   return value;
+}
+
+function flag(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") throw new ConfigError(`${path} must be true or false`);
+  return value;
+}
+
+function httpUrl(value: unknown, path: string): string {
+  const message = `${path} must be an http or https URL`;
+  if (typeof value !== "string") throw new ConfigError(message);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(message);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new ConfigError(message);
+  return value.replace(/\/+$/, "");
+}
+
+function option<T>(raw: Json, key: string, path: string, fallback: T, read: (value: unknown, path: string) => T): T {
+  return raw[key] === undefined ? fallback : read(raw[key], `${path}.${key}`);
 }
 
 function list(value: unknown, path: string, item: (value: unknown, path: string) => string): string[] {
@@ -117,10 +159,12 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "proxy", "sandbox"]);
+    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "proxy", "sandbox", "ollama", "budget"]);
     const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
+    const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "timeoutMinutes"]);
+    const budget = raw["budget"] === undefined ? {} : object(raw["budget"], "fixer.budget", ["minutes", "toolCalls", "commandMinutes"]);
     const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
     if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
     fixer = {
@@ -132,6 +176,19 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
       sandbox: {
         memory: sandbox["memory"] === undefined ? DEFAULT_SANDBOX_LIMITS.memory : name(sandbox["memory"], "fixer.sandbox.memory", /^[1-9][0-9]*[bkmg]$/),
         cpus: sandbox["cpus"] === undefined ? DEFAULT_SANDBOX_LIMITS.cpus : positiveNumber(sandbox["cpus"], "fixer.sandbox.cpus"),
+      },
+      ollama: {
+        url: option(ollama, "url", "fixer.ollama", DEFAULT_OLLAMA.url, httpUrl),
+        model: option(ollama, "model", "fixer.ollama", DEFAULT_OLLAMA.model, (value, path) => name(value, path, /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/)),
+        numCtx: option(ollama, "numCtx", "fixer.ollama", DEFAULT_OLLAMA.numCtx, positiveInteger),
+        numPredict: option(ollama, "numPredict", "fixer.ollama", DEFAULT_OLLAMA.numPredict, positiveInteger),
+        think: option(ollama, "think", "fixer.ollama", DEFAULT_OLLAMA.think, flag),
+        timeoutMinutes: option(ollama, "timeoutMinutes", "fixer.ollama", DEFAULT_OLLAMA.timeoutMinutes, positiveNumber),
+      },
+      budget: {
+        minutes: option(budget, "minutes", "fixer.budget", DEFAULT_BUDGET.minutes, positiveNumber),
+        toolCalls: option(budget, "toolCalls", "fixer.budget", DEFAULT_BUDGET.toolCalls, positiveInteger),
+        commandMinutes: option(budget, "commandMinutes", "fixer.budget", DEFAULT_BUDGET.commandMinutes, positiveNumber),
       },
     };
   }
