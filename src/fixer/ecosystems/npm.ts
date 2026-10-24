@@ -42,6 +42,10 @@ function dependencyNames(path: string, entry: Entry): string[] {
   return groups.flatMap((group) => Object.keys(group ?? {}));
 }
 
+export function workspaceMembers(text: string): string[] {
+  return Object.keys(packagesOf(text)).filter((path) => path !== "" && !path.includes(MARKER) && !path.startsWith("node_modules"));
+}
+
 export const npm: Ecosystem = {
   name: "npm",
   findingEcosystem: "npm",
