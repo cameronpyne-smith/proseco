@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PackageCheck } from "../src/fixer/check.ts";
-import { commitMessage, renderPrBody, summariseDiscarded, type PrBodyInput, type PrFix } from "../src/fixer/pr.ts";
+import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type MajorPrBodyInput, type PrBodyInput, type PrFix } from "../src/fixer/pr.ts";
 
 const minimist: PrFix = { package: "minimist", installed: "1.2.5", target: ["1.2.6"], rows: [{ cve: "CVE-2021-44906", severity: "critical" }, { cve: "CVE-2020-7598", severity: "medium" }] };
 const leftPad: PrFix = { package: "left-pad", installed: "1.0.0", target: ["1.3.0", "2.0.1"], rows: [{ cve: "CVE-2026-1", severity: "high" }] };
@@ -98,5 +98,82 @@ describe("discarded changes summary", () => {
     const body = renderPrBody(input({ discarded: many }));
     assert.match(body, /- `f19\.js`\n\nand 10 more/);
     assert.equal(body.includes("f20.js"), false);
+  });
+});
+
+describe("major upgrade pull request", () => {
+  const nodeFetch: PrFix = { package: "node-fetch", installed: "2.6.1", target: ["3.1.1"], rows: [{ cve: "CVE-2022-0235", severity: "high" }] };
+
+  function major(overrides: Partial<MajorPrBodyInput> = {}): MajorPrBodyInput {
+    return {
+      org: "acme-org",
+      ticketsRepo: "acme-tickets",
+      ticket: 12,
+      lockfile: "package-lock.json",
+      fix: nodeFetch,
+      releaseTags: ["v3.0.0", "v2.7.0"],
+      summary: "Changed index.js to import node-fetch dynamically because version 3 is ESM only.",
+      checks: [{ package: "node-fetch", installed: ["3.3.2"], ok: true, reason: "installed 3.3.2 is at or above 3.1.1" }],
+      tests: { kind: "passed", commands: ["npm ci --no-audit --no-fund", "npm test"], tail: "ok 1" },
+      discarded: [],
+      ...overrides,
+    };
+  }
+
+  it("titles the pull request with the package and target", () => {
+    assert.equal(majorTitle(nodeFetch), "Upgrade node-fetch to 3.1.1 (major)");
+    assert.equal(majorTitle({ ...nodeFetch, target: ["3.1.1", "4.0.0"] }), "Upgrade node-fetch to 3.1.1 or 4.0.0 (major)");
+  });
+
+  it("has the package row, the release tags, the summary, the harness result, why it is a draft and Part of, in that order", () => {
+    const body = renderMajorPrBody(major());
+    const positions = [
+      /\| `node-fetch` \| 2\.6\.1 → 3\.1\.1 \| CVE-2022-0235 \(high\) \|/,
+      /### Breaking changes considered\n\n- `v3\.0\.0`\n- `v2\.7\.0`/,
+      /### Summary[^]*dynamically/,
+      /### Checks[^]*node-fetch: installed 3\.3\.2/,
+      /### Why this is a draft[^]*crosses a major version[^]*person must confirm/,
+      /Part of acme-org\/acme-tickets#12/,
+    ].map((pattern) => {
+      const match = pattern.exec(body);
+      assert.ok(match, String(pattern));
+      return match.index;
+    });
+    assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+    assert.ok(body.trimEnd().endsWith("Part of acme-org/acme-tickets#12"));
+    assert.equal(body.includes("Fixes"), false);
+  });
+
+  it("is a draft whether the harness passed, had no tests or failed, and never claims the upgrade is safe", () => {
+    for (const tests of [major().tests, { kind: "no-tests" as const, commands: ["npm ci"], tail: "" }, { kind: "failed" as const, step: "npm test", exitCode: 1, timedOut: false, tail: "boom" }]) {
+      const body = renderMajorPrBody(major({ tests }));
+      assert.match(body, /### Why this is a draft/);
+      assert.doesNotMatch(body, /\bsafe\b|\bready\b/i);
+    }
+  });
+
+  it("reports what ran: commands that passed, the one that failed with its output, and that nothing else ran without tests", () => {
+    assert.match(renderMajorPrBody(major()), /`npm ci --no-audit --no-fund` and `npm test` ran in the sandbox and exited 0/);
+    assert.match(renderMajorPrBody(major()), /ok 1/);
+    assert.match(renderMajorPrBody(major({ tests: { kind: "no-tests", commands: ["npm ci"], tail: "" } })), /`npm ci` ran in the sandbox and exited 0; the project has no tests the fixer can run, so nothing else ran/);
+    const failed = renderMajorPrBody(major({ tests: { kind: "failed", step: "npm test", exitCode: 1, timedOut: false, tail: "AssertionError: boom" } }));
+    assert.match(failed, /`npm test` failed with exit code 1 in the sandbox/);
+    assert.match(failed, /AssertionError: boom/);
+    assert.match(renderMajorPrBody(major({ tests: { kind: "failed", step: "npm ci", exitCode: 124, timedOut: true, tail: "" } })), /`npm ci` timed out/);
+  });
+
+  it("says so when no release notes were found", () => {
+    assert.match(renderMajorPrBody(major({ releaseTags: [] })), /### Breaking changes considered\n\n_No release notes were found for this version range\._/);
+  });
+
+  it("notes a summary with nothing the diff supports", () => {
+    assert.match(renderMajorPrBody(major({ summary: "" })), /no claim in the agent's summary is supported by the diff/i);
+  });
+
+  it("lists discarded paths, capped, only when there are some", () => {
+    assert.equal(renderMajorPrBody(major()).includes("not committed"), false);
+    const body = renderMajorPrBody(major({ discarded: Array.from({ length: 22 }, (_, index) => `f${index}.js`) }));
+    assert.match(body, /### Changes not committed/);
+    assert.match(body, /- `f19\.js`\n\nand 2 more/);
   });
 });
