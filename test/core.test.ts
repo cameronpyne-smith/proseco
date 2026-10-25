@@ -371,9 +371,59 @@ describe("markers", () => {
 });
 
 describe("body size", () => {
-  it("flags a body over GitHub's limit", () => {
+  const KIBANA_IMAGE = "docker.elastic.co/kibana/kibana";
+  const many = (count: number, overrides: (index: number) => Partial<Finding> = () => ({})) =>
+    Array.from({ length: count }, (_, index) =>
+      finding({
+        origin: "defender",
+        repo: "acme-infra",
+        imageKey: KIBANA_IMAGE,
+        cve: `CVE-2026-${String(index).padStart(5, "0")}`,
+        package: `package-${index % 150}`,
+        installed: `1.0.${index % 150}`,
+        fixedIn: `1.1.${index % 150}`,
+        source: `${KIBANA_IMAGE}:8.15.0`,
+        ...overrides(index),
+      }),
+    );
+
+  it("measures the body in UTF-8 bytes, which is never less than GitHub's character count", () => {
     assert.equal(BODY_LIMIT, 65536);
     assert.equal(bodyTooLarge("x".repeat(65536)), false);
     assert.equal(bodyTooLarge("x".repeat(65537)), true);
+    assert.equal(bodyTooLarge("é".repeat(32769)), true);
+  });
+
+  it("renders a small body whole, with no note", () => {
+    const body = render(KIBANA_IMAGE, many(3), enrichment());
+    assert.equal(parseRawTable(body).length, 3);
+    assert.doesNotMatch(body, /are listed, to keep this ticket within GitHub's size limit/);
+  });
+
+  it("lists as many raw findings as fit, KEV then critical first, and says how many it left out", () => {
+    const findings = many(900, (index) => ({ severity: index % 3 === 0 ? "critical" : "high" }));
+    const body = render(KIBANA_IMAGE, findings, enrichment({}, ["CVE-2026-00899"]));
+    assert.equal(bodyTooLarge(body), false);
+    const rows = parseRawTable(body);
+    assert.ok(rows.length > 100 && rows.length < 900);
+    assert.match(body, new RegExp(`<summary>Raw findings \\(900\\)</summary>\n\nOnly ${rows.length} of 900 findings are listed`));
+    assert.ok(rows.some((row) => row.cve === "CVE-2026-00899"));
+    assert.equal(rows.filter((row) => row.severity === "critical").length, 300);
+    assert.equal(fixesFor(findings, enrichment(), "acme-org").length, body.split("\n").filter((line) => line.startsWith("| `package-")).length);
+  });
+
+  it("lists the same findings whatever their EPSS, so a daily score change does not rewrite the ticket", () => {
+    const findings = many(900);
+    const scores = (seed: number) => Object.fromEntries(findings.map((each, index) => [each.cve, ((index * seed) % 97) / 100]));
+    assert.deepEqual(new Set(rowCves(render(KIBANA_IMAGE, findings, enrichment(scores(7))))), new Set(rowCves(render(KIBANA_IMAGE, findings, enrichment(scores(13))))));
+  });
+
+  it("trims the package table too when it alone would not fit", () => {
+    const findings = many(1200, (index) => ({ package: `package-${index}-${"x".repeat(60)}`, installed: `1.0.${index}` }));
+    const body = render(KIBANA_IMAGE, findings, enrichment());
+    assert.equal(bodyTooLarge(body), false);
+    assert.match(body, /Only \d+ of 1200 packages are listed/);
+    assert.match(body, /Only 0 of 1200 findings are listed/);
+    assert.deepEqual(parseRawTable(body), []);
   });
 });

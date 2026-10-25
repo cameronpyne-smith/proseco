@@ -1,5 +1,5 @@
 import { compareText, groupFindings } from "../core/findings.ts";
-import { BODY_LIMIT, bodyTooLarge, cvesInBody, markerKey, renderBody, sameBody, titleFor } from "../core/ticket.ts";
+import { cvesInBody, markerKey, renderBody, sameBody, titleFor } from "../core/ticket.ts";
 import type { TicketsConfig } from "../core/config.ts";
 import type { TicketFilter } from "../core/github.ts";
 import type { TicketContext } from "../core/ticket.ts";
@@ -10,8 +10,7 @@ export type Action =
   | { type: "update"; key: string; number: number; title: string; body: string }
   | { type: "close"; key: string; number: number; comment: string }
   | { type: "reopen"; key: string; number: number; title: string; body: string; comment: string }
-  | { type: "noop"; key: string; number: number }
-  | { type: "oversize"; key: string; message: string };
+  | { type: "noop"; key: string; number: number };
 
 export function ticketFilters(find: TicketsConfig["find"]): TicketFilter[] {
   return [
@@ -62,11 +61,6 @@ export function planActions(
     const title = titleFor(key);
     const body = renderBody(key, group, enrichment, context);
 
-    if (bodyTooLarge(body)) {
-      actions.push({ type: "oversize", key, message: `${key}: ticket body is ${body.length} characters, over GitHub's limit of ${BODY_LIMIT}` });
-      continue;
-    }
-
     if (!ticket) {
       actions.push({ type: "create", key, title, body });
       continue;
@@ -84,7 +78,7 @@ export function planActions(
 
     if (ticket.stateReason === "not_planned") {
       const known = cvesInBody(ticket.body);
-      const fresh = [...new Set(group.map((finding) => finding.cve))].filter((cve) => !known.has(cve)).sort(compareText);
+      const fresh = [...cvesInBody(body)].filter((cve) => !known.has(cve)).sort(compareText);
       actions.push(
         fresh.length === 0
           ? { type: "noop", key, number: ticket.number }
@@ -120,7 +114,6 @@ export function formatPlan(actions: Action[]): string {
     lines.push(`${action.type.toUpperCase()} ${action.key}${ref}`);
     if ("body" in action) lines.push(...action.body.split("\n").map((line) => `    ${line}`));
     if ("comment" in action) lines.push(`    comment: ${action.comment}`);
-    if ("message" in action) lines.push(`    ${action.message}`);
   }
   if (lines.length === 0) lines.push("Nothing to do.");
   return lines.join("\n");

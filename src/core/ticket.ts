@@ -1,4 +1,4 @@
-import { UNMAPPED_KEY, compareText, epssPercent, fixesFor, sortFindings } from "./findings.ts";
+import { SEVERITY_RANK, UNMAPPED_KEY, compareText, epssPercent, fixesFor, sortFindings } from "./findings.ts";
 import type { Enrichment, ExistingTicket, Finding, Severity } from "./types.ts";
 import { toSeverity } from "./types.ts";
 
@@ -48,7 +48,7 @@ export function markerRepo(body: string): string | null {
 }
 
 export function bodyTooLarge(body: string): boolean {
-  return body.length > BODY_LIMIT;
+  return Buffer.byteLength(body, "utf8") > BODY_LIMIT;
 }
 
 export function isProsecoTicket(ticket: Pick<ExistingTicket, "body" | "author">, creators: string[]): boolean {
@@ -119,9 +119,46 @@ export function sameBody(stored: string, rendered: string): boolean {
   return comparable(stored) === comparable(rendered);
 }
 
+interface Ranked {
+  row: string;
+  kev: boolean;
+  severity: Severity;
+  tiebreak: string[];
+}
+
+function byStableRank(a: Ranked, b: Ranked): number {
+  return (
+    Number(b.kev) - Number(a.kev) ||
+    SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+    a.tiebreak.reduce((order, value, index) => order || compareText(value, b.tiebreak[index]!), 0)
+  );
+}
+
+function keep(rows: Ranked[], fits: (shown: string[]) => boolean): string[] {
+  const ranked = [...rows].sort(byStableRank);
+  const shown = (count: number) => {
+    const chosen = new Set(ranked.slice(0, count));
+    return rows.filter((each) => chosen.has(each)).map((each) => each.row);
+  };
+  let low = 0;
+  let high = ranked.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(shown(middle))) low = middle;
+    else high = middle - 1;
+  }
+  return shown(low);
+}
+
+function omittedNote(shown: number, total: number, noun: string): string[] {
+  return shown === total
+    ? []
+    : [`Only ${shown} of ${total} ${noun} are listed, to keep this ticket within GitHub's size limit. KEV first, then by severity; the rest are in the source alerts.`, ""];
+}
+
 export function renderBody(key: string, findings: Finding[], enrichment: Enrichment, context: TicketContext): string {
-  const fixRows = fixesFor(findings, enrichment, context.org).map((fix) =>
-    tableRow([
+  const fixRows: Ranked[] = fixesFor(findings, enrichment, context.org).map((fix) => ({
+    row: tableRow([
       code(fix.package),
       cell(fix.installed),
       cell(fix.target.join(", ")),
@@ -134,9 +171,12 @@ export function renderBody(key: string, findings: Finding[], enrichment: Enrichm
       fix.alertsUrl ? `[${fix.findings.length}](${fix.alertsUrl})` : String(fix.findings.length),
       code(fix.source),
     ]),
-  );
-  const rawRows = sortFindings(findings, enrichment).map((finding) =>
-    tableRow([
+    kev: fix.kev,
+    severity: fix.severity,
+    tiebreak: [fix.package, fix.installed, fix.source],
+  }));
+  const rawRows: Ranked[] = sortFindings(findings, enrichment).map((finding) => ({
+    row: tableRow([
       cell(finding.cve),
       finding.severity,
       code(finding.package),
@@ -146,36 +186,48 @@ export function renderBody(key: string, findings: Finding[], enrichment: Enrichm
       percent(epssPercent(finding, enrichment)),
       enrichment.kev.has(finding.cve) ? "yes" : "no",
     ]),
-  );
+    kev: enrichment.kev.has(finding.cve),
+    severity: finding.severity,
+    tiebreak: [finding.cve, finding.package, finding.installed, finding.source],
+  }));
   const repo = findings[0]?.repo ?? undefined;
   const imageTicket = repo !== undefined && repo !== key;
-  return [
-    markerFor(key, repo),
-    "",
-    `Critical and high findings with a fix available. This ticket is maintained by proseco in ${context.maintainedIn}; the tables are rewritten on every run.`,
-    "",
-    "One row per package to upgrade. Severity, EPSS and KEV are the worst across the row's findings. Highest fixed-in is the largest fixed-in version among them, or every one of them when they cannot be compared. Major upgrade is yes when the first non-zero part of the version changes, and ? when a version cannot be read. Relationship and scope are as Dependabot reports them. The raw findings below are the source data for every row.",
-    "",
-    ...(imageTicket
-      ? [
-          `These findings are fixed in \`${repo}\` by bumping the image tag or chart version where it is declared. Images shipped by the managed Kubernetes service are updated by upgrading the cluster.`,
-          "",
-        ]
-      : []),
-    FIX_HEADER,
-    FIX_DIVIDER,
-    ...fixRows,
-    "",
-    "<details>",
-    `<summary>Raw findings (${rawRows.length})</summary>`,
-    "",
-    RAW_HEADER,
-    RAW_DIVIDER,
-    ...rawRows,
-    "",
-    "</details>",
-    "",
-  ].join("\n");
+  const layout = (fixShown: string[], rawShown: string[]) =>
+    [
+      markerFor(key, repo),
+      "",
+      `Critical and high findings with a fix available. This ticket is maintained by proseco in ${context.maintainedIn}; the tables are rewritten on every run.`,
+      "",
+      "One row per package to upgrade. Severity, EPSS and KEV are the worst across the row's findings. Highest fixed-in is the largest fixed-in version among them, or every one of them when they cannot be compared. Major upgrade is yes when the first non-zero part of the version changes, and ? when a version cannot be read. Relationship and scope are as Dependabot reports them. The raw findings below are the source data for every row.",
+      "",
+      ...(imageTicket
+        ? [
+            `These findings are fixed in \`${repo}\` by bumping the image tag or chart version where it is declared. Images shipped by the managed Kubernetes service are updated by upgrading the cluster.`,
+            "",
+          ]
+        : []),
+      ...omittedNote(fixShown.length, fixRows.length, "packages"),
+      FIX_HEADER,
+      FIX_DIVIDER,
+      ...fixShown,
+      "",
+      "<details>",
+      `<summary>Raw findings (${rawRows.length})</summary>`,
+      "",
+      ...omittedNote(rawShown.length, rawRows.length, "findings"),
+      RAW_HEADER,
+      RAW_DIVIDER,
+      ...rawShown,
+      "",
+      "</details>",
+      "",
+    ].join("\n");
+  const fits = (body: string) => !bodyTooLarge(body);
+  const allFixes = fixRows.map((each) => each.row);
+  const fixShown = fits(layout(allFixes, [])) ? allFixes : keep(fixRows, (shown) => fits(layout(shown, [])));
+  const body = layout(fixShown, keep(rawRows, (shown) => fits(layout(fixShown, shown))));
+  if (!fits(body)) throw new Error(`${key}: the ticket body does not fit GitHub's limit of ${BODY_LIMIT} even with no rows`);
+  return body;
 }
 
 function rawCells(body: string): string[][] {

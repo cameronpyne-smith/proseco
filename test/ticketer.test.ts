@@ -304,17 +304,18 @@ describe("oversize bodies", () => {
       finding({ cve: `${cve}-${index}`, package: `a-very-long-package-name-${index}-${"x".repeat(40)}`, installed: `1.0.${index}`, fixedIn: `1.1.${index}` }),
     );
 
-  it("fails the oversize ticket with its key and length and still plans the others", () => {
+  it("creates the ticket with as many rows as fit", () => {
     const actions = plan([...huge("CVE-2026-9").map((f) => ({ ...f, repo: "big" })), finding({ repo: "small" })], [], enrichment());
     const big = actions.find((action) => action.key === "big")!;
-    assert.equal(big.type, "oversize");
-    assert.match((big as { message: string }).message, /^big: .* \d{5,} characters/);
+    assert.equal(big.type, "create");
+    assert.ok((big as { body: string }).body.length <= 65536);
     assert.equal(actions.find((action) => action.key === "small")!.type, "create");
   });
 
-  it("does not update an existing ticket whose new body is oversize", () => {
-    const old = render("big", [finding({ repo: "big" })], enrichment());
-    const actions = plan(huge("CVE-2026-9").map((f) => ({ ...f, repo: "big" })), [ticket({ body: old })], enrichment());
-    assert.deepEqual(actions.map((action) => action.type), ["oversize"]);
+  it("keeps a risk-accepted ticket closed when the unchanged findings did not all fit its table", () => {
+    const findings = huge("CVE-2026-9");
+    const accepted = ticket({ body: render("acme-docs", findings, enrichment()), state: "closed", stateReason: "not_planned" });
+    assert.ok(rowCves(accepted.body).length < findings.length);
+    assert.deepEqual(plan(findings, [accepted], enrichment()).map((action) => action.type), ["noop"]);
   });
 });

@@ -71,7 +71,6 @@ async function apply(config: Config, tickets: TicketRepo, actions: Action[], exi
   };
   const failures: string[] = [];
   for (const action of actions) {
-    if (action.type === "oversize") continue;
     try {
       await applyAction(action);
     } catch (error) {
@@ -103,11 +102,6 @@ async function main(): Promise<void> {
   const existing = await new TicketRepo(readToken, config.org, config.tickets.repo).list(ticketFilters(config.tickets.find));
   const actions = planActions(findings, existing, enrichment, { org: config.org, maintainedIn: config.tickets.maintainedIn });
   console.log(formatPlan(actions));
-  for (const action of actions) {
-    if (action.type !== "oversize") continue;
-    console.error(`::error::${action.message}`);
-    process.exitCode = 1;
-  }
 
   if (dryRun) {
     console.log("dry run: nothing written");

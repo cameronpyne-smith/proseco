@@ -34,7 +34,7 @@ deploy/         systemd unit, install script and example config for the fixer se
 ## Ticket format
 
 - **Line 1:** `<!-- proseco:<key> -->`, where the key is a repository name, `unmapped` for images that map to no repository, or an image reference such as `docker.elastic.co/kibana/kibana` for a third-party image. An image ticket carries the repository its fix belongs in: `<!-- proseco:<image> repo:<repo> -->`. The `repo:` part is written only when the key is not itself the repository, and older tickets without it still parse.
-  - A ticket's body may not exceed GitHub's 65,536 characters. A ticket whose body would is not written, the run logs an error naming the key and the length, the other tickets are still handled, and the run exits non-zero. The raw table is never truncated.
+  - A ticket's body always fits GitHub's limit of 65,536 characters, counted as UTF-8 bytes so it can never be over. When every row would not fit, the raw table lists as many findings as fit, KEV first, then by severity, then by CVE, and a note says how many of how many are listed. Only if the fix table alone is too big is it cut the same way. The order ignores EPSS, so a daily score change does not swap which rows are listed. The fixer works from the listed rows only, and a ticket closed as not planned reopens only for a CVE that makes the list.
   - Tickets are found by any of `tickets.find.labels` or `tickets.find.creators`.
   - Only a ticket with the marker on line 1 **and** an author in `tickets.find.creators` is treated as proseco's.
 - **Fix table:** one row per package version per lockfile. It is a view for people.
