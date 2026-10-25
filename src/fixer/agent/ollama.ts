@@ -1,3 +1,5 @@
+import type { Think } from "../../core/config.ts";
+
 export interface ToolCall {
   function: { name: string; arguments: Record<string, unknown> };
 }
@@ -15,7 +17,7 @@ export interface ToolDefinition {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
-export type Think = boolean | "low" | "medium" | "high";
+export type { Think };
 
 export interface OllamaOptions {
   url: string;
@@ -49,7 +51,7 @@ interface ChatResponse {
   total_duration?: number;
 }
 
-const DEFAULT_TEMPERATURE = 0.6;
+const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_KEEP_ALIVE = "15m";
 const MAX_ERROR_BODY = 300;
 
@@ -64,6 +66,10 @@ export class OllamaClient {
 
   withThink(think: Think): OllamaClient {
     return new OllamaClient({ ...this.options, think }, this.#fetch);
+  }
+
+  withLowThink(): OllamaClient {
+    return this.withThink(typeof this.options.think === "string" ? "low" : false);
   }
 
   withTemperature(temperature: number): OllamaClient {

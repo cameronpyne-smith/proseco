@@ -9,6 +9,7 @@ export interface UnitResult {
   checkout?: string;
   stats?: LoopStats;
   trace?: TraceEntry[];
+  transcript?: string;
 }
 
 export interface AttemptInput {

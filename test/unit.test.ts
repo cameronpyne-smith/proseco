@@ -85,6 +85,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
   ];
   const llm = {
     withThink: () => llm,
+    withLowThink: () => llm,
     withTemperature: () => llm,
     async chat(messages: ChatMessage[], tools: ToolDefinition[]): Promise<ChatResult> {
       const usage = { promptTokens: 10, outputTokens: 1, durationMs: 1, truncated: false };
@@ -101,7 +102,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
     },
   } as unknown as Docker;
   const fixer: FixerConfig = {
-    cloneDir: "unused",
+    cloneDir: mkdtempSync(join(tmpdir(), "proseco-unit-work-")),
     stateFile: "unused",
     pollMinutes: 1,
     proxy: { allow: DEFAULT_PROXY_ALLOW },

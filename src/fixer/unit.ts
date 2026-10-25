@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dirname } from "node:path/posix";
 import type { FixerConfig } from "../core/config.ts";
@@ -112,6 +112,12 @@ async function diffFilesOf(ctx: UnitContext, checkout: string, base: string, com
   return parts;
 }
 
+function transcriptPath(ctx: UnitContext, unit: PrUnit): string {
+  const directory = join(ctx.fixer.cloneDir, "transcripts");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  return join(directory, `${ctx.ticket}-${unit.branch.replace(/[^A-Za-z0-9._-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
+}
+
 export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string): Promise<UnitResult> {
   const ecosystem = (ctx.ecosystemFor ?? ecosystemFor)(unit.source);
   if (!ecosystem) return none("unsupported ecosystem: unknown lockfile type");
@@ -140,8 +146,12 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     });
     const box = sandbox;
     const commandMs = ctx.fixer.budget.commandMinutes * MS_PER_MINUTE;
+    const transcript = transcriptPath(ctx, unit);
+    ctx.log(`transcript: ${transcript}`);
     const loop = await runLoop({
       llm: ctx.llm,
+      finaliseWith: [ctx.llm.withLowThink(), ctx.llm.withThink(false)],
+      record: (message) => appendFileSync(transcript, `${JSON.stringify(message)}\n`, { mode: 0o600 }),
       numCtx: ctx.fixer.ollama.numCtx,
       headroom: ctx.fixer.ollama.numPredict,
       tools: TOOL_DEFINITIONS,
@@ -156,8 +166,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,
       maxToolCalls: ctx.fixer.budget.toolCalls,
     });
-    const extra = { stats: loop.stats, trace: loop.trace, ...(ctx.keepCheckout ? { checkout } : {}) };
-    ctx.log(`agent ${loop.outcome} after ${loop.stats.toolCalls} tool calls in ${Math.round(loop.stats.elapsedMs / 1000)} s`);
+    const extra = { stats: loop.stats, trace: loop.trace, transcript, ...(ctx.keepCheckout ? { checkout } : {}) };
+    ctx.log(`agent ${loop.outcome}${loop.forced ? ` (forced after ${loop.forced})` : ""} after ${loop.stats.toolCalls} tool calls in ${Math.round(loop.stats.elapsedMs / 1000)} s`);
     if (loop.outcome !== "finished" || !loop.finish) {
       return none(`the agent gave up (${loop.outcome}${loop.error ? `: ${loop.error}` : ""})`, extra);
     }
@@ -186,7 +196,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const diffFiles = await diffFilesOf(ctx, checkout, headSha, commit, unit.source, major ? manifests : null);
     const diff = diffFiles.map((file) => file.text).join("\n");
     const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, major ? diffFiles : diff);
-    const draft = major || tests.kind === "failed";
+    const draft = major || tests.kind === "failed" || loop.forced !== undefined;
     const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, discarded: summariseDiscarded([...discarded]) };
     const body = major
       ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releaseTags: facts.fixes[0]?.releases?.releases.map((release) => release.tag) ?? [], codeChanged: commit.files.some((file) => !manifests.has(file)) })

@@ -13,7 +13,7 @@
     "pollMinutes": 1,
     "proxy": { "allow": ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"] },
     "sandbox": { "memory": "8g", "cpus": 4 },
-    "ollama": { "url": "http://127.0.0.1:11434", "model": "qwen3.8:27b", "numCtx": 65536, "numPredict": 12288, "think": true, "timeoutMinutes": 20 },
+    "ollama": { "url": "http://127.0.0.1:11434", "model": "qwen3.8:27b", "numCtx": 131072, "numPredict": 12288, "think": "medium", "temperature": 0.2, "timeoutMinutes": 20 },
     "budget": { "minutes": 30, "majorMinutes": 60, "toolCalls": 200, "commandMinutes": 10 }
   }
 }

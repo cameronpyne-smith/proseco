@@ -27,12 +27,15 @@ export interface SandboxLimits {
 export const DEFAULT_PROXY_ALLOW = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "api.nuget.org", "*.nuget.org"];
 export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = { memory: "8g", cpus: 4 };
 
+export type Think = boolean | "low" | "medium" | "high";
+
 export interface OllamaConfig {
   url: string;
   model: string;
   numCtx: number;
   numPredict: number;
-  think: boolean;
+  think: Think;
+  temperature: number;
   timeoutMinutes: number;
 }
 
@@ -43,7 +46,7 @@ export interface BudgetConfig {
   commandMinutes: number;
 }
 
-export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 65536, numPredict: 12288, think: true, timeoutMinutes: 20 };
+export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 131072, numPredict: 12288, think: "medium", temperature: 0.2, timeoutMinutes: 20 };
 export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 };
 
 export const DEFAULT_POLL_MINUTES = 1;
@@ -110,8 +113,13 @@ function positiveNumber(value: unknown, path: string): number {
   return value;
 }
 
-function flag(value: unknown, path: string): boolean {
-  if (typeof value !== "boolean") throw new ConfigError(`${path} must be true or false`);
+function thinkLevel(value: unknown, path: string): Think {
+  if (typeof value === "boolean" || value === "low" || value === "medium" || value === "high") return value;
+  throw new ConfigError(`${path} must be true, false, "low", "medium" or "high"`);
+}
+
+function temperature(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 2) throw new ConfigError(`${path} must be a number from 0 to 2`);
   return value;
 }
 
@@ -208,7 +216,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
     const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
-    const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "timeoutMinutes"]);
+    const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "temperature", "timeoutMinutes"]);
     const budget = raw["budget"] === undefined ? {} : object(raw["budget"], "fixer.budget", ["minutes", "majorMinutes", "toolCalls", "commandMinutes"]);
     const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
     if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
@@ -226,7 +234,8 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
         model: option(ollama, "model", "fixer.ollama", DEFAULT_OLLAMA.model, (value, path) => name(value, path, /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/)),
         numCtx: option(ollama, "numCtx", "fixer.ollama", DEFAULT_OLLAMA.numCtx, positiveInteger),
         numPredict: option(ollama, "numPredict", "fixer.ollama", DEFAULT_OLLAMA.numPredict, positiveInteger),
-        think: option(ollama, "think", "fixer.ollama", DEFAULT_OLLAMA.think, flag),
+        think: option(ollama, "think", "fixer.ollama", DEFAULT_OLLAMA.think, thinkLevel),
+        temperature: option(ollama, "temperature", "fixer.ollama", DEFAULT_OLLAMA.temperature, temperature),
         timeoutMinutes: option(ollama, "timeoutMinutes", "fixer.ollama", DEFAULT_OLLAMA.timeoutMinutes, positiveNumber),
       },
       budget: {

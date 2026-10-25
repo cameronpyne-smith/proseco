@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { runLoop, SHRUNK_OUTPUT, type LoopInput } from "../src/fixer/agent/loop.ts";
+import { contextLimit, runLoop, SHRUNK_OUTPUT, type LoopInput } from "../src/fixer/agent/loop.ts";
 import type { ChatMessage, ChatResult, ToolDefinition } from "../src/fixer/agent/ollama.ts";
 import { executeTool, TOOL_DEFINITIONS, type ToolEnv } from "../src/fixer/agent/tools.ts";
 
@@ -168,6 +168,74 @@ describe("agent loop", () => {
     assert.equal(last[1]!.thinking, "second thoughts");
   });
 
+  it("hands every message to the recorder as it happens, thinking included", async () => {
+    const recorded: ChatMessage[] = [];
+    const model = scripted([{ thinking: "plan", tool_calls: [call("run", { command: "a" })] }, { tool_calls: [FINISH] }]);
+    await runLoop(input(model, fakeEnv().env, { record: (message) => recorded.push(message) }));
+    assert.deepEqual(recorded.map((message) => message.role), ["system", "user", "assistant", "tool", "assistant", "tool"]);
+    assert.equal(recorded[2]!.thinking, "plan");
+  });
+
+  it("sends a reply cut off before it said anything back without its thinking", async () => {
+    const model = scripted([{ truncated: true, thinking: "a very long chain" }, { tool_calls: [FINISH] }]);
+    await runLoop(input(model, fakeEnv().env));
+    const cut = model.seen[1]!.find((message) => message.role === "assistant")!;
+    assert.equal(cut.thinking, undefined);
+  });
+
+  describe("forced finish", () => {
+    function finaliser(replies: string[]) {
+      const calls: { messages: ChatMessage[]; tools: ToolDefinition[]; format: unknown }[] = [];
+      return {
+        calls,
+        async chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> {
+          calls.push({ messages: structuredClone(messages), tools, format });
+          return { message: { role: "assistant", content: replies.shift() ?? "" }, usage: { promptTokens: 1, outputTokens: 1, durationMs: 1, truncated: false } };
+        },
+      };
+    }
+    const ANSWER = JSON.stringify({ summary: "Added an override.", changes: [{ package: "p", from: "1.0.0", to: "1.0.1", how: "override" }] });
+
+    it("asks for the finish arguments with no tools and the finish schema when the model stalls", async () => {
+      const model = scripted([{ thinking: "old", tool_calls: [call("run", { command: "a" })] }, { content: "hmm" }, { content: "still hmm" }]);
+      const low = finaliser([ANSWER]);
+      const result = await runLoop(input(model, fakeEnv().env, { finaliseWith: [low] }));
+      assert.equal(result.outcome, "finished");
+      assert.equal(result.forced, "stalled");
+      assert.equal(result.finish!.summary, "Added an override.");
+      assert.deepEqual(low.calls[0]!.tools, []);
+      assert.deepEqual(low.calls[0]!.format, TOOL_DEFINITIONS.find((tool) => tool.function.name === "finish")!.function.parameters);
+      assert.match(low.calls[0]!.messages.at(-1)!.content, /Produce the finish arguments as a JSON object/);
+      assert.ok(low.calls[0]!.messages.every((message) => message.thinking === undefined));
+    });
+
+    it("tries the next client when an answer is not a valid finish object, then gives the original outcome when none is", async () => {
+      const model = scripted([{ content: "a" }, { content: "b" }]);
+      const low = finaliser(["not json"]);
+      const off = finaliser([`\`\`\`json\n${ANSWER}\n\`\`\``]);
+      const result = await runLoop(input(model, fakeEnv().env, { finaliseWith: [low, off] }));
+      assert.equal(result.forced, "stalled");
+      assert.match(off.calls[0]!.messages.at(-1)!.content, /not a valid finish object/);
+
+      const failing = await runLoop(input(scripted([{ content: "a" }, { content: "b" }]), fakeEnv().env, { finaliseWith: [finaliser(["{}"]), finaliser(["nope"])] }));
+      assert.equal(failing.outcome, "stalled");
+      assert.equal(failing.finish, undefined);
+    });
+
+    it("forces a final answer at the tool-call cap and the time budget too", async () => {
+      const capped = await runLoop(input(scripted([{ tool_calls: [call("run", { command: "a" }), call("run", { command: "b" })] }]), fakeEnv().env, { maxToolCalls: 1, finaliseWith: [finaliser([ANSWER])] }));
+      assert.deepEqual([capped.outcome, capped.forced], ["finished", "budget"]);
+      let clock = 0;
+      const late = await runLoop(input(scripted([{ tool_calls: [call("run", { command: "a" })] }]), fakeEnv().env, { timeBudgetMs: 5000, now: () => (clock += 3000), finaliseWith: [finaliser([ANSWER])] }));
+      assert.deepEqual([late.outcome, late.forced], ["finished", "budget"]);
+    });
+  });
+
+  it("limits context to 80% of numCtx, or numCtx minus the output headroom when that is smaller", () => {
+    assert.equal(contextLimit(131072, 12288), 104857);
+    assert.equal(contextLimit(16384, 12288), 4096);
+  });
+
   describe("shrinking", () => {
     function bulky(rounds: number) {
       const steps: Step[] = Array.from({ length: rounds }, (_, index) => ({ tool_calls: [call("run", { command: `cmd-${index}` })] }));
@@ -176,7 +244,7 @@ describe("agent loop", () => {
       return { model: scripted(steps), env: fakeEnv(outputs).env };
     }
 
-    it("replaces the oldest tool results with a placeholder once the estimate passes numCtx minus headroom, keeping the last 8", async () => {
+    it("replaces the oldest tool results with a placeholder once the estimate passes the context limit, keeping the last 8", async () => {
       const { model, env } = bulky(20);
       const result = await runLoop(input(model, env, { numCtx: 9000, headroom: 1000 }));
       assert.equal(result.outcome, "finished");
@@ -200,9 +268,28 @@ describe("agent loop", () => {
       assert.equal(result.stats.shrinks, 0);
     });
 
+    it("trusts Ollama's prompt token count over the character estimate", async () => {
+      const steps: Step[] = Array.from({ length: 10 }, (_, index) => ({ tool_calls: [call("run", { command: `cmd-${index}` })] }));
+      steps.push({ tool_calls: [FINISH] });
+      const outputs = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`cmd-${index}`, "x".repeat(1500)]));
+      const seen: ChatMessage[][] = [];
+      let index = 0;
+      const model = {
+        seen,
+        async chat(messages: ChatMessage[]): Promise<ChatResult> {
+          seen.push(structuredClone(messages));
+          const step = steps[index++]!;
+          return { message: { role: "assistant", content: "", tool_calls: step.tool_calls! }, usage: { promptTokens: messages.reduce((sum, message) => sum + message.content.length, 0), outputTokens: 1, durationMs: 1, truncated: false } };
+        },
+      };
+      const result = await runLoop(input(model as ReturnType<typeof scripted>, fakeEnv(outputs).env, { numCtx: 16000, headroom: 1000 }));
+      assert.ok(result.stats.shrinks > 0);
+      assert.ok(seen.at(-1)!.some((message) => message.content === SHRUNK_OUTPUT));
+    });
+
     it("stops replacing as soon as the estimate fits", async () => {
       const { model, env } = bulky(12);
-      await runLoop(input(model, env, { numCtx: 11500, headroom: 1000 }));
+      await runLoop(input(model, env, { numCtx: 19500, headroom: 1000 }));
       const tools = model.seen.at(-1)!.filter((message) => message.role === "tool");
       const replaced = tools.filter((message) => message.content === SHRUNK_OUTPUT).length;
       assert.ok(replaced > 0 && replaced < 4, `replaced ${replaced}`);

@@ -107,6 +107,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
     numCtx: fixer.ollama.numCtx,
     numPredict: fixer.ollama.numPredict,
     think: fixer.ollama.think,
+    temperature: fixer.ollama.temperature,
     timeoutMs: fixer.ollama.timeoutMinutes * MS_PER_MINUTE,
   });
   const docker = new Docker();
@@ -161,7 +162,7 @@ export function summarise(result: AttemptResult & { checkouts: string[] }, numbe
     skipped: result.skipped,
     decision: result.decision,
     headSha: result.headSha,
-    units: result.reports.map((report) => ({ unit: report.label, branch: report.unit.branch, outcome: report.outcome, stats: report.result.stats, checkout: report.result.checkout })),
+    units: result.reports.map((report) => ({ unit: report.label, branch: report.unit.branch, outcome: report.outcome, stats: report.result.stats, transcript: report.result.transcript, checkout: report.result.checkout })),
     checkouts: result.checkouts,
   };
 }

@@ -50,7 +50,7 @@ describe("ollama client", () => {
       stream: false,
       think: true,
       keep_alive: "15m",
-      options: { num_ctx: 8192, num_predict: 512, temperature: 0.6 },
+      options: { num_ctx: 8192, num_predict: 512, temperature: 0.2 },
     });
     assert.equal(message.tool_calls![0]!.function.name, "read_file");
     assert.deepEqual(usage, { promptTokens: 120, outputTokens: 30, durationMs: 2500, truncated: false });

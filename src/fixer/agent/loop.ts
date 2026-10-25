@@ -4,13 +4,19 @@ import type { FinishArgs, ToolResult } from "./tools.ts";
 export const SHRUNK_OUTPUT = "[output dropped to save space; call the tool again if needed]";
 
 const KEEP_RECENT_TOOL_RESULTS = 8;
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 3;
+const CONTEXT_SHARE = 0.8;
 const NUDGE = "You did not call a tool. Keep working with the tools, or call finish with your summary and changes if you are done.";
 const CUT_OFF_NUDGE = "Your reasoning was cut off before you acted. Decide now with what you have: call a tool, or call finish.";
+const FINALISE = "Stop working now. Produce the finish arguments as a JSON object: summary, stating only what you changed and verified and what is still unresolved, and changes, every package version change you made. No tool calls, no prose.";
+const NOT_JSON = "That was not a valid finish object. Output only the JSON object.";
 const TRACE_CHARS = 300;
 
+type Chat = { chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> };
+
 export interface LoopInput {
-  llm: { chat(messages: ChatMessage[], tools: ToolDefinition[]): Promise<ChatResult> };
+  llm: Chat;
+  finaliseWith?: Chat[];
   numCtx: number;
   headroom: number;
   tools: ToolDefinition[];
@@ -20,6 +26,7 @@ export interface LoopInput {
   timeBudgetMs: number;
   maxToolCalls: number;
   now?: () => number;
+  record?(message: ChatMessage): void;
 }
 
 export interface LoopStats {
@@ -40,6 +47,7 @@ export interface TraceEntry {
 
 export interface LoopResult {
   outcome: "finished" | "budget" | "stalled" | "error";
+  forced?: "budget" | "stalled";
   finish?: FinishArgs;
   error?: string;
   stats: LoopStats;
@@ -55,13 +63,18 @@ export function estimateTokens(messages: ChatMessage[]): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
-function shrink(messages: ChatMessage[], limit: number): boolean {
-  if (estimateTokens(messages) <= limit) return false;
+export function contextLimit(numCtx: number, headroom: number): number {
+  return Math.min(numCtx - headroom, Math.floor(numCtx * CONTEXT_SHARE));
+}
+
+function shrink(messages: ChatMessage[], limit: number, scale: number, keep = KEEP_RECENT_TOOL_RESULTS): boolean {
+  const used = () => estimateTokens(messages) * scale;
+  if (used() <= limit) return false;
   const tools = messages.filter((message) => message.role === "tool");
-  const droppable = tools.slice(0, Math.max(0, tools.length - KEEP_RECENT_TOOL_RESULTS));
+  const droppable = tools.slice(0, Math.max(0, tools.length - keep));
   let changed = false;
   for (const message of droppable) {
-    if (estimateTokens(messages) <= limit) break;
+    if (used() <= limit) break;
     if (message.content === SHRUNK_OUTPUT) continue;
     message.content = SHRUNK_OUTPUT;
     changed = true;
@@ -77,6 +90,18 @@ function dropOldThinking(messages: ChatMessage[]): void {
   messages.forEach((message, index) => {
     if (message.role === "assistant" && index !== newest) delete message.thinking;
   });
+}
+
+function extractJson(text: string): Record<string, unknown> | null {
+  const body = text.replace(/^[\s\S]*<\/think>/, "").replace(/```(?:json)?/g, "").trim();
+  const start = body.indexOf("{");
+  if (start === -1) return null;
+  try {
+    const parsed: unknown = JSON.parse(body.slice(start, body.lastIndexOf("}") + 1));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 function argumentsOf(call: ToolCall): Record<string, unknown> {
@@ -96,20 +121,54 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
   const started = now();
   const stats: LoopStats = { rounds: 0, toolCalls: 0, promptTokens: 0, outputTokens: 0, modelMs: 0, elapsedMs: 0, shrinks: 0 };
   const trace: TraceEntry[] = [];
-  const messages: ChatMessage[] = [
-    { role: "system", content: input.system },
-    { role: "user", content: input.user },
-  ];
-  const limit = input.numCtx - input.headroom;
+  const messages: ChatMessage[] = [];
+  const append = (message: ChatMessage) => {
+    messages.push(message);
+    input.record?.(structuredClone(message));
+  };
+  append({ role: "system", content: input.system });
+  append({ role: "user", content: input.user });
+  const limit = contextLimit(input.numCtx, input.headroom);
+  let scale = 1;
   const done = (outcome: LoopResult["outcome"], extra: Partial<LoopResult> = {}): LoopResult => {
     stats.elapsedMs = now() - started;
     return { outcome, stats, trace, ...extra };
   };
+  const finalise = async (reason: "budget" | "stalled"): Promise<LoopResult> => {
+    const finish = input.tools.find((tool) => tool.function.name === "finish");
+    if (!finish || !input.finaliseWith?.length) return done(reason);
+    dropOldThinking(messages);
+    for (const message of messages) if (message.role === "assistant") delete message.thinking;
+    shrink(messages, limit, scale, 2);
+    append({ role: "user", content: FINALISE });
+    for (const client of input.finaliseWith) {
+      let reply: ChatResult;
+      try {
+        reply = await client.chat(messages, [], finish.function.parameters);
+      } catch (error) {
+        return done(reason, { error: (error as Error).message });
+      }
+      stats.rounds++;
+      stats.outputTokens += reply.usage.outputTokens;
+      stats.modelMs += reply.usage.durationMs;
+      input.record?.(structuredClone(reply.message));
+      const args = extractJson(reply.message.content);
+      const result = args ? await input.execute("finish", args) : null;
+      if (result?.finish) {
+        trace.push({ tool: "finish", args: JSON.stringify(args).slice(0, TRACE_CHARS), result: result.content.slice(0, TRACE_CHARS) });
+        return done("finished", { forced: reason, finish: result.finish });
+      }
+      messages.push({ role: "assistant", content: reply.message.content });
+      append({ role: "user", content: result ? `${result.content}. ${NOT_JSON}` : NOT_JSON });
+    }
+    return done(reason);
+  };
   let silent = 0;
   for (;;) {
-    if (now() - started >= input.timeBudgetMs) return done("budget");
+    if (now() - started >= input.timeBudgetMs) return finalise("budget");
     dropOldThinking(messages);
-    if (shrink(messages, limit)) stats.shrinks++;
+    if (shrink(messages, limit, scale)) stats.shrinks++;
+    const sent = estimateTokens(messages);
     let reply: ChatResult;
     try {
       reply = await input.llm.chat(messages, input.tools);
@@ -120,12 +179,16 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
     stats.promptTokens = Math.max(stats.promptTokens, reply.usage.promptTokens);
     stats.outputTokens += reply.usage.outputTokens;
     stats.modelMs += reply.usage.durationMs;
-    messages.push(reply.message);
+    if (sent > 0 && reply.usage.promptTokens > 0) scale = Math.max(1, reply.usage.promptTokens / sent);
     const calls = reply.message.tool_calls ?? [];
+    const cutOff = reply.usage.truncated && reply.message.content === "" && calls.length === 0;
+    input.record?.(structuredClone(reply.message));
+    if (cutOff) delete reply.message.thinking;
+    messages.push(reply.message);
     if (calls.length === 0) {
       silent++;
-      if (silent >= 2) return done("stalled");
-      messages.push({ role: "user", content: reply.usage.truncated && reply.message.content === "" ? CUT_OFF_NUDGE : NUDGE });
+      if (silent >= 2) return finalise("stalled");
+      append({ role: "user", content: cutOff ? CUT_OFF_NUDGE : NUDGE });
       continue;
     }
     silent = 0;
@@ -133,12 +196,12 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       const name = call.function.name;
       const args = argumentsOf(call);
       if (name !== "finish") {
-        if (stats.toolCalls >= input.maxToolCalls) return done("budget");
+        if (stats.toolCalls >= input.maxToolCalls) return finalise("budget");
         stats.toolCalls++;
       }
       const result = await input.execute(name, args);
       trace.push({ tool: name, args: JSON.stringify(args).slice(0, TRACE_CHARS), result: result.content.slice(0, TRACE_CHARS) });
-      messages.push({ role: "tool", tool_name: name, content: result.content });
+      append({ role: "tool", tool_name: name, content: result.content });
       if (result.finish) return done("finished", { finish: result.finish });
     }
   }
