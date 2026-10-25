@@ -30,7 +30,7 @@ export interface RunTicket {
 
 export async function findTickets(config: Config & { fixer: FixerConfig }, tickets: TicketRepo): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
   const open = await tickets.list(requestFilters(config.tickets.find));
-  const found = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.fixer.bot, loadState(config.fixer.stateFile), true);
+  const found = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, loadState(config.fixer.stateFile), true);
   saveState(config.fixer.stateFile, found.state);
   return { requests: found.requests, bodies: new Map(open.map((ticket) => [ticket.number, ticket.body])) };
 }
@@ -92,7 +92,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const releases = new Releases(readToken);
   const readApi = new RepoApi(readToken, config.org, repo);
   let state = loadState(fixer.stateFile);
-  const command = input.request ? null : commandComment(await (await tickets()).comments(number), fixer.bot, lastCommentId(state, number));
+  const command = input.request ? null : commandComment(await (await tickets()).comments(number), config.app.bot, lastCommentId(state, number));
   if (command) {
     const next = recordIgnored(recordComment(state, number, command.id), number, command.command === "ignore");
     if (!local) {
@@ -128,7 +128,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
             ticketsRepo: config.tickets.repo,
             ticket: number,
             repo,
-            bot: fixer.bot,
+            bot: config.app.bot,
             store,
             docker,
             fixer,
@@ -145,7 +145,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
         if (outcome.checkout) checkouts.push(outcome.checkout);
         return outcome;
       },
-      postComment: async (body) => void (await upsertComment(await tickets(), number, fixer.bot, body)),
+      postComment: async (body) => void (await upsertComment(await tickets(), number, config.app.bot, body)),
       saveState: (next) => saveState(fixer.stateFile, next),
       ...(input.started ? { started: input.started } : {}),
       ...(input.shouldStop ? { shouldStop: input.shouldStop } : {}),

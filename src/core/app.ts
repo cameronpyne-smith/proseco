@@ -9,7 +9,7 @@ export interface AppIdentity {
 }
 
 export interface TokenScope {
-  repositories: string[];
+  repositories?: string[];
   permissions: Record<string, "read" | "write">;
 }
 
@@ -52,7 +52,7 @@ export async function mintInstallationToken(
         "x-github-api-version": "2022-11-28",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ repositories: scope.repositories, permissions: scope.permissions }),
+      body: JSON.stringify(scope),
     }),
     "installation token",
   );

@@ -101,8 +101,6 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
     },
   } as unknown as Docker;
   const fixer: FixerConfig = {
-    bot: "acme-proseco",
-    app: { clientId: "Iv1.acme", installationId: 1 },
     cloneDir: "unused",
     stateFile: "unused",
     pollMinutes: 1,
@@ -116,7 +114,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
     ticketsRepo: "acme-tickets",
     ticket: 12,
     repo: "acme-api",
-    bot: fixer.bot,
+    bot: "acme-proseco",
     store,
     docker,
     fixer,

@@ -48,9 +48,18 @@ export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, majorMinutes: 60, too
 
 export const DEFAULT_POLL_MINUTES = 1;
 
-export interface FixerConfig {
+export interface AppConfig {
+  clientId: string;
+  installationId: number;
   bot: string;
-  app: { clientId: string; installationId: number };
+}
+
+export interface SourcesConfig {
+  dependabot: boolean;
+  defender: DefenderConfig | null;
+}
+
+export interface FixerConfig {
   cloneDir: string;
   stateFile: string;
   pollMinutes: number;
@@ -63,7 +72,8 @@ export interface FixerConfig {
 export interface Config {
   org: string;
   tickets: TicketsConfig;
-  sources: { dependabot: boolean; defender: DefenderConfig | null };
+  app: AppConfig;
+  sources: SourcesConfig | null;
   fixer: FixerConfig | null;
 }
 
@@ -171,7 +181,7 @@ export function parseImageRepos(mapping: unknown, path = "imageRepos"): ImageRou
 }
 
 export function parseConfig(raw: unknown, readJson: (relativePath: string) => unknown): Config {
-  const root = object(raw, "config", ["org", "tickets", "sources", "fixer"]);
+  const root = object(raw, "config", ["org", "tickets", "app", "sources", "fixer"]);
   const tickets = object(root["tickets"], "tickets", ["repo", "project", "labels", "find", "maintainedIn"]);
   const find = object(tickets["find"], "tickets.find", ["labels", "creators"]);
   const findLabels = list(find["labels"], "tickets.find.labels", LABEL);
@@ -179,19 +189,23 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   if (findLabels.length + creators.length === 0) {
     throw new ConfigError("tickets.find needs at least one label or creator, or existing tickets cannot be found");
   }
-  const sources = object(root["sources"], "sources", ["dependabot", "defender"]);
-  if (sources["dependabot"] !== undefined) object(sources["dependabot"], "sources.dependabot", []);
-  let defender: DefenderConfig | null = null;
-  if (sources["defender"] !== undefined) {
-    const raw = object(sources["defender"], "sources.defender", ["imageRepos"]);
-    const file = text(raw["imageRepos"], "sources.defender.imageRepos");
-    defender = { imageRepos: parseImageRepos(readJson(file), file) };
+  const app = object(root["app"], "app", ["clientId", "installationId", "bot"]);
+  let sources: SourcesConfig | null = null;
+  if (root["sources"] !== undefined) {
+    const raw = object(root["sources"], "sources", ["dependabot", "defender"]);
+    if (raw["dependabot"] !== undefined) object(raw["dependabot"], "sources.dependabot", []);
+    let defender: DefenderConfig | null = null;
+    if (raw["defender"] !== undefined) {
+      const section = object(raw["defender"], "sources.defender", ["imageRepos"]);
+      const file = text(section["imageRepos"], "sources.defender.imageRepos");
+      defender = { imageRepos: parseImageRepos(readJson(file), file) };
+    }
+    if (raw["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
+    sources = { dependabot: raw["dependabot"] !== undefined, defender };
   }
-  if (sources["dependabot"] === undefined && !defender) throw new ConfigError("sources must enable at least one source");
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["bot", "app", "cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget"]);
-    const app = object(raw["app"], "fixer.app", ["clientId", "installationId"]);
+    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "timeoutMinutes"]);
@@ -199,8 +213,6 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
     const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
     if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
     fixer = {
-      bot: name(raw["bot"], "fixer.bot", /^[A-Za-z0-9-]+$/),
-      app: { clientId: text(app["clientId"], "fixer.app.clientId"), installationId: positiveInteger(app["installationId"], "fixer.app.installationId") },
       cloneDir: text(raw["cloneDir"], "fixer.cloneDir"),
       stateFile: text(raw["stateFile"], "fixer.stateFile"),
       pollMinutes: option(raw, "pollMinutes", "fixer", DEFAULT_POLL_MINUTES, positiveNumber),
@@ -234,7 +246,12 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
       find: { labels: findLabels, creators },
       maintainedIn: text(tickets["maintainedIn"], "tickets.maintainedIn"),
     },
-    sources: { dependabot: sources["dependabot"] !== undefined, defender },
+    app: {
+      clientId: text(app["clientId"], "app.clientId"),
+      installationId: positiveInteger(app["installationId"], "app.installationId"),
+      bot: name(app["bot"], "app.bot", /^[A-Za-z0-9-]+$/),
+    },
+    sources,
     fixer,
   };
 }

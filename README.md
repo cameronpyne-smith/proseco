@@ -46,6 +46,8 @@ deploy/         systemd unit, install script and example config for the fixer se
 
 ## Config
 
+The ticketer and the fixer read the same format, usually from two files: the ticketer's in the repository whose workflow runs it, with `org`, `tickets`, `app` and `sources`; the fixer's on its host, with `org`, `tickets`, `app` and `fixer`. Keep `org`, `tickets` and `app` the same in both.
+
 ```json
 {
   "org": "acme-org",
@@ -56,13 +58,12 @@ deploy/         systemd unit, install script and example config for the fixer se
     "find": { "labels": ["security"], "creators": ["acme-proseco[bot]"] },
     "maintainedIn": "acme-ops"
   },
+  "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678, "bot": "acme-proseco" },
   "sources": {
     "dependabot": {},
     "defender": { "imageRepos": "image-repos.json" }
   },
   "fixer": {
-    "bot": "acme-proseco",
-    "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678 },
     "cloneDir": "/var/lib/proseco/clones",
     "stateFile": "/var/lib/proseco/state.json",
     "pollMinutes": 1,
@@ -82,10 +83,12 @@ deploy/         systemd unit, install script and example config for the fixer se
 | `tickets.labels` | Labels put on a new ticket. |
 | `tickets.find.labels`, `tickets.find.creators` | How existing tickets are found. List every app that has ever created tickets, so a ticket whose label was removed is still found after the app is replaced. |
 | `tickets.maintainedIn` | The repository running proseco, named in each ticket body. |
+| `app.clientId`, `app.installationId` | The proseco GitHub App's client id and the id of its installation on the org. Both the ticketer and the fixer mint their tokens as this app. |
+| `app.bot` | The app's slug, i.e. its login without `[bot]`. A person comments `@<bot> fix` on a ticket to force the fixer to redo it. Every open proseco ticket is worked without a command. List `<bot>[bot]` in `tickets.find.creators`. |
+| `sources` | Required by the ticketer, which reads at least one of the sources below. The fixer ignores it. |
 | `sources.dependabot` | Present to read the org's open Dependabot alerts. |
 | `sources.defender.imageRepos` | Present to read Defender container findings. Points to a JSON routing file, relative to the config file, described below. |
-| `fixer.bot` | The app's slug, i.e. its login without `[bot]`. A person comments `@<bot> fix` on a ticket to force the fixer to redo it. Every open proseco ticket is worked without a command. |
-| `fixer.app` | The proseco GitHub App's `clientId` and the `installationId` of its installation on the org. All of `bot`, `app`, `cloneDir` and `stateFile` are required when `fixer` is present. |
+| `fixer` | Required by the fixer. `cloneDir` and `stateFile` are required within it. |
 | `fixer.cloneDir` | Directory holding the fixer's bare clones, one `<repo>.git` each. |
 | `fixer.stateFile` | JSON file recording each ticket's last attempt. |
 | `fixer.pollMinutes` | Optional. How often `fixer serve` polls for tickets, in minutes (a positive number). Default `1`. |
@@ -127,23 +130,6 @@ steps:
   - uses: actions/checkout@<sha>
     with:
       persist-credentials: false
-  - id: read-token
-    uses: actions/create-github-app-token@<sha>
-    with:
-      client-id: ${{ vars.PROSECO_CLIENT_ID }}
-      private-key: ${{ secrets.PROSECO_PRIVATE_KEY }}
-      owner: acme-org
-      permission-vulnerability-alerts: read
-      permission-issues: read
-  - id: write-token
-    uses: actions/create-github-app-token@<sha>
-    with:
-      client-id: ${{ vars.PROSECO_CLIENT_ID }}
-      private-key: ${{ secrets.PROSECO_PRIVATE_KEY }}
-      owner: acme-org
-      repositories: acme-tickets
-      permission-issues: write
-      permission-organization-projects: write
   - uses: azure/login@<sha>
     with:
       client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -152,13 +138,13 @@ steps:
   - uses: <owner>/proseco@<full commit sha>
     with:
       config: proseco.json
-      read-token: ${{ steps.read-token.outputs.token }}
-      write-token: ${{ steps.write-token.outputs.token }}
+      private-key: ${{ secrets.PROSECO_PRIVATE_KEY }}
       azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       dry-run: "false"
 ```
 
 **Notes:**
+- **The ticketer mints its own tokens** as the app named in `app`, each scoped to one step: `vulnerability_alerts: read` across the installation for Dependabot, `issues: read` on the tickets repository, and, only when not a dry run, `issues: write` on it plus `organization_projects: write` when `tickets.project` is set. The action writes the key to a mode-0600 file under `RUNNER_TEMP` and deletes it when the step ends.
 - **Pin the action by full commit SHA.** This is a security control; a moved tag must not change it.
 - **The GitHub App must be installed on every repository whose alerts it reads.** Dependabot alerts are only returned for repositories in the installation.
 - **Defender** is read from its individual container vulnerability recommendations (one `Update <package>` assessment per vulnerable package per running container, with the CVEs inside), not the retired grouped format. Runtime scanning is registry-agnostic, so images from any registry appear. It needs Defender for Containers with agentless scanning and Kubernetes API access enabled, and first results appear within about a day of enabling. The identity needs a Reader-level role that covers security assessments (e.g. Security Reader) on the subscription. `azure/login` must run before the action. Skip both when the config has no `defender` source.
@@ -167,9 +153,9 @@ steps:
 
 **Locally:**
 ```
-PROSECO_CONFIG=path/to/proseco.json GH_READ_TOKEN=... AZURE_SUBSCRIPTION_ID=... npm run ticketer
+PROSECO_CONFIG=path/to/proseco.json PROSECO_APP_KEY=path/to/private-key.pem AZURE_SUBSCRIPTION_ID=... npm run ticketer
 ```
-It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only needed then.
+It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only minted then.
 
 ## The fixer
 
@@ -190,7 +176,7 @@ Commands:
 - `npm run fixer -- check`: runs the startup checks and prints each as `ok <name>: <detail>` or `FAILED <name>: <reason>`; the exit code is non-zero if any failed. The checks are: the config loads and has a `fixer` section; an installation token for the tickets repository can be minted (so the app key works); Ollama answers `/api/tags` and lists the configured model; `docker info` succeeds. A config that does not load stops the run, since the rest depend on it.
 - `npm run fixer -- serve`: the daemon, described below. It needs everything a real `run` needs.
 
-All commands need `PROSECO_CONFIG` and the app's private key, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The app is the only identity the fixer uses, locally too. It mints installation tokens scoped to the repositories and permissions each step needs:
+All commands need `PROSECO_CONFIG` and the private key of the app named in `app`, from the file named by `PROSECO_APP_KEY`, or from `$CREDENTIALS_DIRECTORY/private-key` when systemd supplies it. The app is the only identity the fixer uses, locally too. It mints installation tokens scoped to the repositories and permissions each step needs:
   - `issues: write` on the tickets repository for `find` and the real `run` (comment and reaction), `issues: read` otherwise;
   - `contents: read` and `pull_requests: read` on the repository being fixed, to fetch it and read the state of earlier pull requests;
   - `contents: write` and `pull_requests: write` on that repository, minted only at the moment of the push.
@@ -307,11 +293,11 @@ The commit must be the full sha: a branch, tag or abbreviation is refused. `--dr
 | User | `proseco`, a system user with home `/var/lib/proseco-home` and no login shell, and a 65536 range in `/etc/subuid` and `/etc/subgid` that starts above every existing range. |
 | Linger | `loginctl enable-linger proseco`, so the user's systemd instance and its rootless `docker.service` start at boot. |
 | Docker | `dockerd-rootless-setuptool.sh install` as `proseco` in its own user session, then `systemctl --user enable --now docker`. |
-| Config | `/etc/proseco/config.json` and `/etc/proseco/image-repos.json` from `deploy/config.example.json` and `deploy/image-repos.example.json`, only when absent. They are root-owned, mode 0644. The script never creates or touches `/etc/proseco/private-key.pem`. |
+| Config | `/etc/proseco/config.json` from `deploy/config.example.json`, only when absent. It is root-owned, mode 0644. The script never creates or touches `/etc/proseco/private-key.pem`. |
 | Unit | `/etc/systemd/system/proseco-fixer.service`, and a drop-in `proseco-fixer.service.d/docker.conf` that sets `DOCKER_HOST=unix:///run/user/<uid>/docker.sock` and `ReadWritePaths=/run/user/<uid>`, because the uid is only known on the host. Then `systemctl daemon-reload`. |
 | Check | When the key is present, `fixer check` runs as `proseco` with the unit's environment and a temporary `CREDENTIALS_DIRECTORY` holding a copy of the key, which is removed afterwards. Its output is printed. |
 
-It ends by printing what is left to do: copy the key (`sudo install -m 0600 -o root -g root <key> /etc/proseco/private-key.pem`), edit the two config files, then `sudo systemctl enable --now proseco-fixer` and `journalctl -fu proseco-fixer`. The example config is a complete fixer-only config with every `fixer` key at its default and anonymised values. `sources.dependabot` is there only because the parser requires a source.
+It ends by printing what is left to do: copy the key (`sudo install -m 0600 -o root -g root <key> /etc/proseco/private-key.pem`), edit the config, then `sudo systemctl enable --now proseco-fixer` and `journalctl -fu proseco-fixer`. The example config is a complete fixer-only config, with no `sources`, every `fixer` key at its default and anonymised values.
 
 State: `/var/lib/proseco` (`StateDirectory=proseco`) holds `clones/`, with the attempt checkouts under `clones/attempts/`, and `state.json`.
 

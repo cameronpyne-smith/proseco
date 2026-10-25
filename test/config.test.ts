@@ -15,6 +15,7 @@ function full(): Record<string, unknown> {
       find: { labels: ["Security"], creators: ["proseco-bot[bot]"] },
       maintainedIn: "acme-ops",
     },
+    app: { clientId: "Iv1.acme", installationId: 42, bot: "acme-proseco" },
     sources: { dependabot: {}, defender: { imageRepos: "image-repos.json" } },
     fixer: fixer(),
   };
@@ -22,8 +23,6 @@ function full(): Record<string, unknown> {
 
 function fixer(): Record<string, unknown> {
   return {
-    bot: "acme-proseco",
-    app: { clientId: "Iv1.acme", installationId: 42 },
     cloneDir: "/var/lib/proseco/clones",
     stateFile: "/var/lib/proseco/state.json",
   };
@@ -42,13 +41,12 @@ describe("config", () => {
       find: { labels: ["Security"], creators: ["proseco-bot[bot]"] },
       maintainedIn: "acme-ops",
     });
-    assert.equal(config.sources.dependabot, true);
-    assert.deepEqual([...config.sources.defender!.imageRepos.own], [["ghcr.io/acme-org/acme-api", "acme-api"]]);
-    assert.deepEqual([...config.sources.defender!.imageRepos.thirdParty], [["docker.elastic.co/", "acme-infra"]]);
-    assert.deepEqual(config.sources.defender!.imageRepos.ignore, ["docker.io/library/busybox"]);
+    assert.deepEqual(config.app, { clientId: "Iv1.acme", installationId: 42, bot: "acme-proseco" });
+    assert.equal(config.sources!.dependabot, true);
+    assert.deepEqual([...config.sources!.defender!.imageRepos.own], [["ghcr.io/acme-org/acme-api", "acme-api"]]);
+    assert.deepEqual([...config.sources!.defender!.imageRepos.thirdParty], [["docker.elastic.co/", "acme-infra"]]);
+    assert.deepEqual(config.sources!.defender!.imageRepos.ignore, ["docker.io/library/busybox"]);
     assert.deepEqual(config.fixer, {
-      bot: "acme-proseco",
-      app: { clientId: "Iv1.acme", installationId: 42 },
       cloneDir: "/var/lib/proseco/clones",
       stateFile: "/var/lib/proseco/state.json",
       pollMinutes: 1,
@@ -131,8 +129,14 @@ describe("config", () => {
     delete raw["fixer"];
     const config = parseConfig(raw, mapping);
     assert.equal(config.tickets.project, null);
-    assert.equal(config.sources.defender, null);
+    assert.equal(config.sources!.defender, null);
     assert.equal(config.fixer, null);
+  });
+
+  it("treats the sources as optional, for a fixer-only config", () => {
+    const raw = full();
+    delete raw["sources"];
+    assert.equal(parseConfig(raw, () => assert.fail("must not read the image routing file")).sources, null);
   });
 
   it("rejects a misspelt key rather than ignoring it", () => {
@@ -167,20 +171,34 @@ describe("config", () => {
 
   it("requires the bot to be a login without the [bot] suffix", () => {
     const raw = full();
-    (raw["fixer"] as Record<string, unknown>)["bot"] = "acme-proseco[bot]";
-    assert.throws(() => parseConfig(raw, mapping), /fixer.bot must be a name/);
+    (raw["app"] as Record<string, unknown>)["bot"] = "acme-proseco[bot]";
+    assert.throws(() => parseConfig(raw, mapping), /app.bot must be a name/);
   });
 
-  it("rejects unknown keys under the fixer and its app", () => {
+  it("rejects unknown keys under the fixer and the app", () => {
     const withExtra = full();
     (withExtra["fixer"] as Record<string, unknown>)["budgets"] = {};
     assert.throws(() => parseConfig(withExtra, mapping), /fixer has unknown keys: budgets/);
     const appExtra = full();
-    ((appExtra["fixer"] as Record<string, unknown>)["app"] as Record<string, unknown>)["secret"] = "x";
-    assert.throws(() => parseConfig(appExtra, mapping), /fixer.app has unknown keys: secret/);
+    (appExtra["app"] as Record<string, unknown>)["secret"] = "x";
+    assert.throws(() => parseConfig(appExtra, mapping), /app has unknown keys: secret/);
   });
 
-  for (const key of ["bot", "app", "cloneDir", "stateFile"]) {
+  for (const key of ["clientId", "installationId", "bot"]) {
+    it(`requires app.${key}`, () => {
+      const raw = full();
+      delete (raw["app"] as Record<string, unknown>)[key];
+      assert.throws(() => parseConfig(raw, mapping), new RegExp(`app.${key}`));
+    });
+  }
+
+  it("requires the app", () => {
+    const raw = full();
+    delete raw["app"];
+    assert.throws(() => parseConfig(raw, mapping), /app must be an object/);
+  });
+
+  for (const key of ["cloneDir", "stateFile"]) {
     it(`requires fixer.${key} when the fixer is present`, () => {
       const raw = full();
       delete (raw["fixer"] as Record<string, unknown>)[key];
@@ -190,15 +208,15 @@ describe("config", () => {
 
   it("requires the installation id to be a positive integer", () => {
     const raw = full();
-    ((raw["fixer"] as Record<string, unknown>)["app"] as Record<string, unknown>)["installationId"] = "42";
-    assert.throws(() => parseConfig(raw, mapping), /fixer.app.installationId must be a positive integer/);
+    (raw["app"] as Record<string, unknown>)["installationId"] = "42";
+    assert.throws(() => parseConfig(raw, mapping), /app.installationId must be a positive integer/);
   });
 
   it("reads the image mapping relative to the config file and names the file in errors", () => {
     const dir = mkdtempSync(join(tmpdir(), "proseco-config-"));
     writeFileSync(join(dir, "proseco.json"), JSON.stringify(full()));
     writeFileSync(join(dir, "image-repos.json"), JSON.stringify(mapping()));
-    assert.equal(loadConfig(join(dir, "proseco.json")).sources.defender!.imageRepos.own.get("ghcr.io/acme-org/acme-api"), "acme-api");
+    assert.equal(loadConfig(join(dir, "proseco.json")).sources!.defender!.imageRepos.own.get("ghcr.io/acme-org/acme-api"), "acme-api");
     writeFileSync(join(dir, "image-repos.json"), JSON.stringify({ ...mapping(), own: { "Acme/Api": "acme-api" } }));
     assert.throws(() => loadConfig(join(dir, "proseco.json")), /proseco\.json: image-repos\.json\.own: "Acme\/Api"/);
   });

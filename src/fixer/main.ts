@@ -54,7 +54,7 @@ async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProv
   const headSha = await store.headSha(repo);
   const advisories = new Advisories(repoToken);
   const state = loadState(config.fixer.stateFile);
-  const command = commandComment(await tickets.comments(number), config.fixer.bot, lastCommentId(state, number));
+  const command = commandComment(await tickets.comments(number), config.app.bot, lastCommentId(state, number));
   const report = await dryRunReport({
     ticket: { number, repo, body, force: command?.command === "fix", ignored: command ? command.command === "ignore" : isIgnored(state, number), commandCommentId: command?.id ?? null },
     rows: parseRawTable(body),
@@ -103,8 +103,8 @@ async function prepare(): Promise<Prepared> {
         const read = loadConfig(path);
         if (!read.fixer) throw new Error("the config has no fixer section");
         config = { ...read, fixer: read.fixer };
-        tokens = tokenProvider(process.env, read.fixer.app);
-        return `${path}: org ${read.org}, tickets repository ${read.tickets.repo}, bot ${read.fixer.bot}`;
+        tokens = tokenProvider(process.env, read.app);
+        return `${path}: org ${read.org}, tickets repository ${read.tickets.repo}, bot ${read.app.bot}`;
       },
     },
     {
@@ -193,7 +193,7 @@ async function main(args: string[]): Promise<void> {
   if (!config.fixer) throw new Error("the config has no fixer section");
   const fixer = config.fixer;
   const [command, argument, ...flags] = args;
-  const tokens = tokenProvider(process.env, fixer.app);
+  const tokens = tokenProvider(process.env, config.app);
   if (command === "sandbox") return sandboxCommand({ ...config, fixer }, tokens, args.slice(1));
   const writes = command === "find" || (command === "run" && flags.length === 0);
   const ticketToken = await tokens({

@@ -165,8 +165,6 @@ function origin(workspace: string, fixture: string): string {
 async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
   const bare = origin(workspace, scenario.fixture);
   const fixer: FixerConfig = {
-    bot: "acme-proseco",
-    app: { clientId: "Iv1.acme", installationId: 1 },
     cloneDir: join(workspace, "clones"),
     stateFile: join(workspace, "state.json"),
     pollMinutes: 1,
@@ -208,7 +206,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
             ticketsRepo: "acme-tickets",
             ticket: 12,
             repo: "acme-api",
-            bot: fixer.bot,
+            bot: "acme-proseco",
             store,
             docker: new Docker(),
             fixer,

@@ -343,8 +343,8 @@ print_next_steps() {
 Left for you:
   1. Copy the GitHub App private key (root only), if not done:
        sudo install -m 0600 -o root -g root /path/to/private-key.pem $ETC_DIR/private-key.pem
-  2. Edit the config and the image routing file for your organisation:
-       sudoedit $ETC_DIR/config.json $ETC_DIR/image-repos.json
+  2. Edit the config for your organisation:
+       sudoedit $ETC_DIR/config.json
   3. Start the service and watch it:
        sudo systemctl enable --now $UNIT_NAME
        journalctl -fu $UNIT_NAME
@@ -363,7 +363,6 @@ main() {
   ensure_linger
   ensure_rootless_docker
   install_config_file config.json config.example.json
-  install_config_file image-repos.json image-repos.example.json
   install_unit_file
   reload_systemd
   restart_if_moved

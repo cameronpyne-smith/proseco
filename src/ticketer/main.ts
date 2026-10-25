@@ -1,4 +1,5 @@
-import type { Config } from "../core/config.ts";
+import { tokenProvider } from "../core/app.ts";
+import type { Config, SourcesConfig } from "../core/config.ts";
 import { loadConfig } from "../core/config.ts";
 import { groupFindings } from "../core/findings.ts";
 import { TicketRepo } from "../core/github.ts";
@@ -16,11 +17,11 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function sourcesFor(config: Config, readToken: string): Source[] {
+async function sourcesFor(config: Config, enabled: SourcesConfig, alertsToken: () => Promise<string>): Promise<Source[]> {
   const sources: Source[] = [];
-  if (config.sources.dependabot) sources.push(new DependabotSource(readToken, config.org));
-  if (config.sources.defender) {
-    sources.push(new DefenderSource(requireEnv("AZURE_SUBSCRIPTION_ID"), config.sources.defender.imageRepos));
+  if (enabled.dependabot) sources.push(new DependabotSource(await alertsToken(), config.org));
+  if (enabled.defender) {
+    sources.push(new DefenderSource(requireEnv("AZURE_SUBSCRIPTION_ID"), enabled.defender.imageRepos));
   }
   return sources;
 }
@@ -83,11 +84,13 @@ async function apply(config: Config, tickets: TicketRepo, actions: Action[], exi
 
 async function main(): Promise<void> {
   const config = loadConfig(requireEnv("PROSECO_CONFIG"));
+  if (!config.sources) throw new Error("the config has no sources section");
   const dryRun = process.env["PROSECO_DRY_RUN"] !== "false";
-  const readToken = requireEnv("GH_READ_TOKEN");
+  const tokens = tokenProvider(process.env, config.app);
+  const ticketsRepo = [config.tickets.repo];
 
   const findings = [];
-  for (const source of sourcesFor(config, readToken)) {
+  for (const source of await sourcesFor(config, config.sources, () => tokens({ permissions: { vulnerability_alerts: "read" } }))) {
     const found = await source.fetch();
     console.log(`${source.name} findings: ${found.length}`);
     for (const line of source.diagnostics?.() ?? []) console.log(line);
@@ -96,6 +99,7 @@ async function main(): Promise<void> {
   const qualifying = [...groupFindings(findings).values()].flat();
   const enrichment = await fetchEnrichment(qualifying.map((finding) => finding.cve));
 
+  const readToken = await tokens({ repositories: ticketsRepo, permissions: { issues: "read" } });
   const existing = await new TicketRepo(readToken, config.org, config.tickets.repo).list(ticketFilters(config.tickets.find));
   const actions = planActions(findings, existing, enrichment, { org: config.org, maintainedIn: config.tickets.maintainedIn });
   console.log(formatPlan(actions));
@@ -109,7 +113,11 @@ async function main(): Promise<void> {
     console.log("dry run: nothing written");
     return;
   }
-  const writer = new TicketRepo(requireEnv("GH_WRITE_TOKEN"), config.org, config.tickets.repo);
+  const writeToken = await tokens({
+    repositories: ticketsRepo,
+    permissions: config.tickets.project ? { issues: "write", organization_projects: "write" } : { issues: "write" },
+  });
+  const writer = new TicketRepo(writeToken, config.org, config.tickets.repo);
   await apply(config, writer, actions, existing);
 }
 

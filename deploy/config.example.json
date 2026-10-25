@@ -6,13 +6,8 @@
     "find": { "labels": ["security"], "creators": ["acme-proseco[bot]"] },
     "maintainedIn": "acme-ops"
   },
-  "sources": {
-    "dependabot": {},
-    "defender": { "imageRepos": "image-repos.json" }
-  },
+  "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678, "bot": "acme-proseco" },
   "fixer": {
-    "bot": "acme-proseco",
-    "app": { "clientId": "Iv1.0000000000000000", "installationId": 12345678 },
     "cloneDir": "/var/lib/proseco/clones",
     "stateFile": "/var/lib/proseco/state.json",
     "pollMinutes": 1,

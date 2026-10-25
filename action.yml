@@ -5,11 +5,8 @@ inputs:
   config:
     description: Path to the proseco config file, relative to the workspace
     required: true
-  read-token:
-    description: Token that can read Dependabot alerts across the org and issues in the tickets repo
-    required: true
-  write-token:
-    description: Token that can write issues in the tickets repo, and add them to the project when one is configured
+  private-key:
+    description: The proseco GitHub App's private key; the config's app section names the app and its installation
     required: true
   azure-subscription-id:
     description: Subscription to read Defender findings from; required when the config enables the defender source, after azure/login
@@ -31,8 +28,13 @@ runs:
       shell: bash
       env:
         PROSECO_CONFIG: ${{ inputs.config }}
-        GH_READ_TOKEN: ${{ inputs.read-token }}
-        GH_WRITE_TOKEN: ${{ inputs.write-token }}
+        PROSECO_PRIVATE_KEY: ${{ inputs.private-key }}
         AZURE_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id }}
         PROSECO_DRY_RUN: ${{ inputs.dry-run }}
-      run: node "$GITHUB_ACTION_PATH/src/ticketer/main.ts"
+      run: |
+        PROSECO_APP_KEY="$(mktemp "$RUNNER_TEMP/proseco-key.XXXXXX")"
+        export PROSECO_APP_KEY
+        trap 'rm -f "$PROSECO_APP_KEY"' EXIT
+        printf '%s\n' "$PROSECO_PRIVATE_KEY" > "$PROSECO_APP_KEY"
+        unset PROSECO_PRIVATE_KEY
+        node "$GITHUB_ACTION_PATH/src/ticketer/main.ts"

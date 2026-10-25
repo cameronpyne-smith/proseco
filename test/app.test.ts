@@ -79,7 +79,7 @@ describe("private key location", () => {
 });
 
 describe("token provider", () => {
-  it("mints per scope using the key from the environment", async () => {
+  it("mints per scope using the key from the environment, across the installation when no repositories are named", async () => {
     const dir = mkdtempSync(join(tmpdir(), "proseco-key-"));
     writeFileSync(join(dir, "key.pem"), PEM);
     const bodies: unknown[] = [];
@@ -90,9 +90,11 @@ describe("token provider", () => {
     const provider = tokenProvider({ PROSECO_APP_KEY: join(dir, "key.pem") }, { clientId: "Iv1.acme", installationId: 42 }, fetchImpl);
     assert.equal(await provider({ repositories: ["a"], permissions: { issues: "read" } }), "ghs_1");
     assert.equal(await provider({ repositories: ["b"], permissions: { contents: "read" } }), "ghs_2");
+    assert.equal(await provider({ permissions: { vulnerability_alerts: "read" } }), "ghs_3");
     assert.deepEqual(bodies, [
       { repositories: ["a"], permissions: { issues: "read" } },
       { repositories: ["b"], permissions: { contents: "read" } },
+      { permissions: { vulnerability_alerts: "read" } },
     ]);
   });
 });

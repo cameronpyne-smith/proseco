@@ -1,5 +1,0 @@
-{
-  "own": { "ghcr.io/acme-org/acme-api": "acme-api" },
-  "thirdParty": { "docker.io/library/postgres": "acme-infra" },
-  "ignore": []
-}
