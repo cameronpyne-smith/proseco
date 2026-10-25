@@ -310,7 +310,7 @@ endToEnd("agent end to end: uv", UV, (captured) => {
   });
 
   it("ran uv sync --frozen and uv run pytest in the harness", () => {
-    assert.deepEqual(commandsOf(captured()), ["uv sync --frozen --all-extras --all-groups", "uv run pytest -x -q"]);
+    assert.deepEqual(commandsOf(captured()), ["uv sync --frozen --all-extras --all-groups", "uv run pytest -q -rfE"]);
   });
 });
 

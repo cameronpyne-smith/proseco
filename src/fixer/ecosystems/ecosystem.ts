@@ -10,6 +10,11 @@ export interface Harness {
   install: string;
   test: string;
   hasTests(read: (path: string) => string | null): boolean;
+  failures?(output: string): string[] | null;
+}
+
+export interface PreflightBox {
+  run(command: string[], timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
 }
 
 export interface Ecosystem {
@@ -25,6 +30,8 @@ export interface Ecosystem {
   allowedFiles(lockfile: string, lockfileText: string): string[];
   harness(lockfile: string): Harness;
   unsupported(lockfileText: string): string | null;
+  preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<string[]>;
+  reviewCommands?(pkg: string, directory: string): string[];
 }
 
 export function ecosystemFor(lockfilePath: string): Ecosystem | null {

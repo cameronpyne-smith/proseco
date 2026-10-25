@@ -69,8 +69,8 @@ describe("pull request body", () => {
   });
 
   it("names the commands that ran for any ecosystem, and says when there were no tests to run", () => {
-    const python = renderPrBody(input({ tests: { kind: "passed", commands: ["uv sync --frozen", "uv run pytest -x -q"], tail: "" } }));
-    assert.match(python, /`uv sync --frozen` and `uv run pytest -x -q` passed in the sandbox/);
+    const python = renderPrBody(input({ tests: { kind: "passed", commands: ["uv sync --frozen", "uv run pytest -q -rfE"], tail: "" } }));
+    assert.match(python, /`uv sync --frozen` and `uv run pytest -q -rfE` passed in the sandbox/);
     const none = renderPrBody(input({ tests: { kind: "no-tests", commands: ["uv sync --frozen"], tail: "" } }));
     assert.match(none, /`uv sync --frozen` passed in the sandbox; the project has no tests the fixer can run/);
   });
@@ -239,5 +239,23 @@ describe("major upgrade pull request", () => {
     assert.match(body, /### Other major upgrades\n\nThese direct dependencies also crossed a major version[^\n]*breaking changes must be checked too[^\n]*\n\n- `svelte` 4\.2\.0 → 5\.1\.0 \(\[releases\]\(https:\/\/github\.com\/acme-org\/svelte\/releases\)\)\n- `acme-plugin` 3\.0\.1 → 5\.0\.0\n/);
     assert.ok(body.indexOf("### Other major upgrades") < body.indexOf("### Summary"));
     assert.doesNotMatch(renderMajorPrBody(major()), /Other major upgrades/);
+  });
+
+  it("words a failure that also happens on the default branch accurately in the major body", () => {
+    const baseline = { kind: "failed" as const, step: "npm test", exitCode: 1, timedOut: false, tail: "before tail" };
+    const after = { ...baseline, tail: "after tail" };
+    const body = renderMajorPrBody(major({ tests: after, comparison: { baseline, mode: "exit", fresh: [], existing: [] } }));
+    assert.match(body, /- `npm test` failed with exit code 1 in the sandbox, and `npm test` also fails with exit code 1 on the default branch\. The failing tests could not be compared one by one/);
+    assert.match(body, /after tail[^]*Output on the default branch[^]*before tail/);
+    assert.doesNotMatch(body, /Draft:/);
+    const ids = renderMajorPrBody(major({ tests: { ...after, failedIds: ["a", "b"] }, comparison: { baseline, mode: "ids", fresh: ["b"], existing: ["a"] } }));
+    assert.match(ids, /1 new failing test, which pass on the default branch:\n  - `b`/);
+    assert.match(ids, /1 failing test also fails on the default branch, so this change did not cause it:\n  - `a`/);
+  });
+
+  it("words a different failing step against the default branch's", () => {
+    const baseline = { kind: "failed" as const, step: "npm test", exitCode: 1, timedOut: false, tail: "" };
+    const body = renderPrBody(input({ tests: { ...baseline, step: "npm ci --no-audit --no-fund", exitCode: 1 }, comparison: { baseline, mode: "exit", fresh: [], existing: [] } }));
+    assert.match(body, /Draft: `npm ci --no-audit --no-fund` failed with exit code 1 in the sandbox\. On the default branch the run got as far as `npm test`/);
   });
 });

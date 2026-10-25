@@ -28,6 +28,7 @@ export interface UnitFacts {
   ecosystem: string;
   toolchain: string | null;
   fixes: FixFacts[];
+  context?: string[];
 }
 
 export async function buildFacts(

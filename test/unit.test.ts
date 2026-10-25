@@ -8,6 +8,7 @@ import { DEFAULT_BUDGET, DEFAULT_OLLAMA, DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LI
 import type { ChatMessage, ChatResult, OllamaClient, ToolDefinition } from "../src/fixer/agent/ollama.ts";
 import type { ReleaseNotes } from "../src/fixer/releases.ts";
 import type { Ecosystem } from "../src/fixer/ecosystems/ecosystem.ts";
+import { pytestFailures } from "../src/fixer/ecosystems/pytest.ts";
 import { GitStore } from "../src/fixer/git.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
 import type { Docker, ExecResult } from "../src/fixer/sandbox/docker.ts";
@@ -83,14 +84,16 @@ interface Run {
   prompts: string[];
   users: string[];
   harnessFiles: string[][];
+  gated: string[];
 }
 
-async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
+async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; baselineExits?: Record<string, number>; stdout?: { before?: string; after?: string }; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
   const { store, head } = await origin();
-  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [] };
+  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [], gated: [] };
   const steps: ChatResult["message"]["tool_calls"][] = [
     options.edits ?? [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/app.py", "changed\n"), write("svc/new.txt", "x\n")],
     [FINISH],
+    ...((options.unit ?? UNIT).kind === "major" ? [[FINISH]] : []),
   ];
   const llm = {
     withThink: () => llm,
@@ -101,6 +104,8 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
       if (tools.length === 0) return { message: { role: "assistant", content: "Bumped pkg." }, usage };
       seen.prompts.push(messages[0]!.content);
       seen.users.push(messages[1]!.content);
+      const gate = messages.find((message) => message.role === "tool" && message.content.startsWith("Not accepted yet"));
+      if (gate) seen.gated.push(gate.content);
       return { message: { role: "assistant", content: "", tool_calls: steps.shift() }, usage };
     },
   } as unknown as OllamaClient;
@@ -142,16 +147,21 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     startSandbox: async () => {
       seen.started++;
       const box = new LocalBox();
+      let afterAgent = false;
       return {
         async run(command, timeoutMs, runOptions): Promise<ExecResult> {
+          if (command[0] === "cat") return box.run(["cat", command[1]!.replace(/^\/work\//, "")], timeoutMs, runOptions);
           if (command.length > 3 || !/fake-/.test(command[2]!)) return box.run(command, timeoutMs, runOptions);
           seen.commands.push(command[2]!);
           seen.harnessFiles.push(readdirSync(join(box.work, "svc")).sort());
-          const failed = Object.entries(options.exits ?? {}).find(([step]) => command[2]!.endsWith(step));
-          return { exitCode: failed?.[1] ?? 0, stdout: "out\n", stderr: "", truncated: false, timedOut: false };
+          const failed = Object.entries((afterAgent ? options.exits : options.baselineExits) ?? {}).find(([step]) => command[2]!.endsWith(step));
+          return { exitCode: failed?.[1] ?? 0, stdout: failed ? ((afterAgent ? options.stdout?.after : options.stdout?.before) ?? "out\n") : "out\n", stderr: "", truncated: false, timedOut: false };
         },
         load: (directory) => box.load(directory),
-        save: (directory) => box.save(directory),
+        save: (directory) => {
+          afterAgent = true;
+          return box.save(directory);
+        },
         stop: () => box.stop(),
       };
     },
@@ -167,7 +177,7 @@ describe("workUnit with an ecosystem behind the interface", () => {
     assert.equal(seen.images.length, 1);
     assert.match(seen.images[0]!, /^proseco\/python:3\.12-[0-9a-f]{12}$/);
     assert.match(seen.prompts[0]!, /Ecosystem notes \(fake\): resolve with fake-resolve\./);
-    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install", "cd '/work/svc' && fake-test"]);
+    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install", "cd '/work/svc' && fake-test", "cd '/work/svc' && fake-install", "cd '/work/svc' && fake-test"]);
     const [request] = seen.published;
     assert.deepEqual([...request!.commit.files].sort(), ["svc/fake.lock", "svc/fake.manifest"]);
     assert.equal(request!.draft, false);
@@ -178,12 +188,12 @@ describe("workUnit with an ecosystem behind the interface", () => {
 
   it("runs the harness on the checkout as committed, without the files the guard discarded", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem() });
-    assert.deepEqual(seen.harnessFiles[0], ["app.py", "fake.lock", "fake.manifest", "toolchain.txt"]);
+    assert.deepEqual(seen.harnessFiles.at(-1), ["app.py", "fake.lock", "fake.manifest", "toolchain.txt"]);
   });
 
   it("runs only the install when the ecosystem finds no tests", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem({}, false) });
-    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install"]);
+    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install", "cd '/work/svc' && fake-install"]);
     assert.deepEqual(seen.published[0]!.tests, { kind: "no-tests", commands: ["fake-install"], tail: "" });
     assert.equal(seen.published[0]!.draft, false);
   });
@@ -208,7 +218,7 @@ describe("workUnit with an ecosystem behind the interface", () => {
     assert.equal(result.outcome.kind, "none");
     assert.match((result.outcome as { reason: string }).reason, /lockfile check failed: pkg: installed 1\.5\.0 is below 2\.0\.0/);
     assert.deepEqual(seen.published, []);
-    assert.deepEqual(seen.commands, []);
+    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install", "cd '/work/svc' && fake-test"]);
   });
 });
 
@@ -231,6 +241,71 @@ const MAJOR_EDITS = [
   write(".github/workflows/ci.yml", "on: push\n"),
   write("svc/package.json", "{}\n"),
 ];
+
+describe("workUnit against the default branch's test results", () => {
+  const withIds = () => fakeEcosystem({ harness: () => ({ install: "fake-install", test: "fake-test", hasTests: () => true, failures: pytestFailures }) });
+
+  it("runs the harness before the agent and again after, and does not mention the baseline when tests pass both times", async () => {
+    const { seen } = await run({ ecosystem: withIds() });
+    assert.equal(seen.commands.length, 4);
+    assert.doesNotMatch(seen.users[0]!, /Measured by the host/);
+    assert.equal(seen.published[0]!.draft, false);
+  });
+
+  it("keeps a ready pull request when every failing test also fails on the default branch, and lists them", async () => {
+    const { seen } = await run({ ecosystem: withIds(), baselineExits: { "fake-test": 1 }, exits: { "fake-test": 1 }, stdout: { before: "FAILED t.py::net - boom\n", after: "FAILED t.py::net - boom\n" } });
+    const [request] = seen.published;
+    assert.equal(request!.draft, false);
+    assert.match(request!.body, /every failing test also fails on the default branch/);
+    assert.match(request!.body, /`t\.py::net`/);
+    assert.doesNotMatch(request!.body, /Draft:/);
+    assert.match(seen.users[0]!, /Measured by the host[^]*already fails with exit code 1 on the default branch[^]*t\.py::net[^]*Do not try to fix them/);
+  });
+
+  it("makes a draft naming the new failures, and lists the pre-existing ones apart", async () => {
+    const { seen } = await run({ ecosystem: withIds(), baselineExits: { "fake-test": 1 }, exits: { "fake-test": 1 }, stdout: { before: "FAILED t.py::net - boom\n", after: "FAILED t.py::net - boom\nFAILED t.py::mine - bad\n" } });
+    const [request] = seen.published;
+    assert.equal(request!.draft, true);
+    assert.match(request!.body, /Draft: `fake-test` failed with exit code 1 in the sandbox with 1 new failing test, which pass on the default branch:\n  - `t\.py::mine`/);
+    assert.match(request!.body, /1 failing test also fails on the default branch[^]*`t\.py::net`/);
+  });
+
+  it("falls back to the exit status when the failing tests cannot be listed, stays a draft and shows both outputs", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem(), baselineExits: { "fake-test": 2 }, exits: { "fake-test": 2 }, stdout: { before: "before output\n", after: "after output\n" } });
+    const [request] = seen.published;
+    assert.equal(request!.draft, true);
+    assert.match(request!.body, /Draft: `fake-test` failed with exit code 2 in the sandbox, and `fake-test` also fails with exit code 2 on the default branch[^]*after output[^]*Output on the default branch[^]*before output/);
+    assert.match(seen.users[0]!, /<output>before output/);
+  });
+
+  it("still makes a draft for a failure the default branch does not have", async () => {
+    const { seen } = await run({ ecosystem: withIds(), exits: { "fake-test": 1 }, stdout: { after: "FAILED t.py::mine - bad\n" } });
+    assert.equal(seen.published[0]!.draft, true);
+    assert.match(seen.published[0]!.body, /Draft: `fake-test` failed with exit code 1/);
+  });
+
+  it("notes when tests that fail on the default branch pass after the change", async () => {
+    const { seen } = await run({ ecosystem: withIds(), baselineExits: { "fake-test": 1 } });
+    assert.equal(seen.published[0]!.draft, false);
+    assert.match(seen.published[0]!.body, /fails on the default branch in the sandbox but passes with this change/);
+  });
+});
+
+describe("workUnit preflight", () => {
+  it("puts what the ecosystem's preflight measured in front of the agent, before the agent starts", async () => {
+    const seen: string[] = [];
+    const ecosystem = fakeEcosystem({ preflight: async (box, lockfile) => (seen.push(lockfile), ["Use `npx -y npm@8` for every resolver command."]) });
+    const { seen: ran } = await run({ ecosystem });
+    assert.deepEqual(seen, [LOCKFILE]);
+    assert.match(ran.users[0]!, /Measured by the host in the sandbox before you started:\n- Use `npx -y npm@8` for every resolver command\./);
+  });
+
+  it("carries on without it when the preflight throws", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem({ preflight: async () => { throw new Error("no network"); } }) });
+    assert.equal(result.outcome.kind, "pr");
+    assert.doesNotMatch(seen.users[0]!, /Measured by the host/);
+  });
+});
 
 describe("workUnit for a major upgrade", () => {
   it("lets the agent's code changes through, and opens a draft even though the harness passed", async () => {
@@ -259,6 +334,24 @@ describe("workUnit for a major upgrade", () => {
     const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0-alpha.6\n"), write("svc/fake.manifest", "pkg>=2\n")];
     const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits });
     assert.match(seen.published[0]!.body, /- `other` 3\.0\.0 → 4\.0\.0-alpha\.6/);
+  });
+
+  it("holds the first finish of a major unit for a review of every package that crossed a major, and accepts the second", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const ecosystem = fakeEcosystem({ reviewCommands: (pkg, directory) => [`\`grep removed ${directory}/node_modules/${pkg}\``] });
+    const { result, seen } = await run({ ecosystem, unit: MAJOR_UNIT, edits });
+    assert.equal(result.outcome.kind, "pr");
+    assert.equal(seen.gated.length, 1);
+    const review = seen.gated[0]!;
+    assert.match(review, /- pkg 1\.0\.0 → 2\.0\.0\n- other 3\.0\.0 → 4\.0\.0/);
+    assert.match(review, /pkg: `grep removed svc\/node_modules\/pkg`/);
+    assert.match(review, /every import and use of the package in the repository, including entry points/);
+    assert.match(review, /call finish again/);
+  });
+
+  it("does not hold a lockfile unit's finish", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem() });
+    assert.deepEqual(seen.gated, []);
   });
 
   it("puts the release notes and the major instructions in front of the agent", async () => {

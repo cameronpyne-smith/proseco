@@ -294,7 +294,7 @@ describe("harness", () => {
   it("runs uv sync and uv run pytest, and finds tests only when pytest is locked", () => {
     const harness = ecosystem("uv.lock").harness("uv.lock");
     assert.equal(harness.install, "uv sync --frozen --all-extras --all-groups");
-    assert.equal(harness.test, "uv run pytest -x -q");
+    assert.equal(harness.test, "uv run pytest -q -rfE");
     const locked = (name: string) => `version = 1\n[[package]]\nname = "${name}"\nversion = "8.0.0"\nsource = { registry = "https://pypi.org/simple" }\n`;
     assert.equal(harness.hasTests(reading({ "uv.lock": locked("pytest") })), true);
     assert.equal(harness.hasTests(reading({ "uv.lock": locked("pytest-cov") })), false);
@@ -305,7 +305,7 @@ describe("harness", () => {
   it("installs the requirements file from its directory, and finds tests only when pytest is pinned in it", () => {
     const harness = ecosystem("svc/requirements.txt").harness("svc/requirements.txt");
     assert.equal(harness.install, "python -m pip install -r requirements.txt");
-    assert.equal(harness.test, "python -m pytest -x -q");
+    assert.equal(harness.test, "python -m pytest -q -rfE");
     assert.equal(harness.hasTests(reading({ "svc/requirements.txt": "requests==2.31.0\nPyTest==8.3.3 ; python_version > '3'\n" })), true);
     assert.equal(harness.hasTests(reading({ "svc/requirements.txt": "requests==2.31.0\n" })), false);
     assert.equal(harness.hasTests(reading({ "requirements.txt": "pytest==8.3.3\n" })), false);

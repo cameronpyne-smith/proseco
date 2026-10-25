@@ -229,6 +229,81 @@ describe("agent loop", () => {
     });
   });
 
+  describe("repetition guard", () => {
+    const same = () => ({ tool_calls: [call("run", { command: "npm test" })] });
+
+    it("does not run the third identical call with an identical result, and says so", async () => {
+      const env = fakeEnv();
+      const model = scripted([same(), same(), same(), same(), { tool_calls: [FINISH] }]);
+      const result = await runLoop(input(model, env.env));
+      assert.equal(result.outcome, "finished");
+      assert.deepEqual(env.ran, ["npm test", "npm test"]);
+      const tools = model.seen.at(-1)!.filter((message) => message.role === "tool").map((message) => message.content);
+      assert.equal(tools.length, 4);
+      assert.match(tools[2]!, /already ran this exact call 2 times with the same result, so it was not run again/);
+      assert.match(tools[3]!, /call finish/);
+      assert.equal(result.stats.toolCalls, 4);
+    });
+
+    it("lets a repeat through when the result changed, when the arguments differ, or after the agent edited a file", async () => {
+      let n = 0;
+      const env = fakeEnv();
+      env.env.run = async (command) => {
+        env.ran.push(command[2]!);
+        return { exitCode: 0, stdout: command[2] === "flaky" ? `out ${n++}` : "ok", stderr: "", truncated: false, timedOut: false };
+      };
+      const flaky = { tool_calls: [call("run", { command: "flaky" })] };
+      const edit = { tool_calls: [call("write_file", { path: "a.txt", content: "x" })] };
+      const model = scripted([flaky, flaky, flaky, same(), same(), edit, same(), same(), { tool_calls: [FINISH] }]);
+      const result = await runLoop(input(model, env.env, { execute: (name, args) => (name === "write_file" ? Promise.resolve({ content: "wrote" }) : executeTool(env.env, name, args)) }));
+      assert.equal(result.outcome, "finished");
+      assert.equal(env.ran.filter((command) => command === "flaky").length, 3);
+      assert.equal(env.ran.filter((command) => command === "npm test").length, 4);
+    });
+
+    it("forces a final answer as stalled when the agent keeps repeating blocked calls", async () => {
+      const finish = { async chat(): Promise<ChatResult> { return { message: { role: "assistant", content: JSON.stringify({ summary: "Stuck.", changes: [{ package: "p", from: "1", to: "2", how: "override" }] }) }, usage: { promptTokens: 1, outputTokens: 1, durationMs: 1, truncated: false } }; } };
+      const model = scripted(Array.from({ length: 12 }, same));
+      const result = await runLoop(input(model, fakeEnv().env, { finaliseWith: [finish] }));
+      assert.deepEqual([result.outcome, result.forced], ["finished", "stalled"]);
+    });
+  });
+
+  describe("finish gate", () => {
+    function gated(gate: () => Promise<string | null>, steps: Step[], overrides: Partial<LoopInput> = {}) {
+      const model = scripted(steps);
+      const recorded: ChatMessage[] = [];
+      return runLoop(input(model, fakeEnv().env, { gate, record: (message) => recorded.push(message), ...overrides })).then((result) => ({ result, model, recorded }));
+    }
+
+    it("replaces the first finish with the review and accepts the second", async () => {
+      let asked = 0;
+      const { result, model, recorded } = await gated(async () => (++asked, "Not accepted yet: review."), [{ tool_calls: [FINISH] }, { tool_calls: [FINISH] }]);
+      assert.equal(result.outcome, "finished");
+      assert.equal(asked, 1);
+      assert.equal(result.stats.rounds, 2);
+      assert.ok(model.seen[1]!.some((message) => message.role === "tool" && message.content === "Not accepted yet: review."));
+      assert.ok(recorded.some((message) => message.role === "tool" && message.content === "Not accepted yet: review."));
+    });
+
+    it("accepts the finish at once when the gate has nothing to say", async () => {
+      const { result } = await gated(async () => null, [{ tool_calls: [FINISH] }]);
+      assert.equal(result.stats.rounds, 1);
+      assert.equal(result.outcome, "finished");
+    });
+
+    it("does not gate when the tool-call budget or the time is used up", async () => {
+      let asked = 0;
+      const gate = async () => (++asked, "review");
+      const spent = await gated(gate, [{ tool_calls: [call("run", { command: "a" }), FINISH] }], { maxToolCalls: 1 });
+      assert.equal(spent.result.outcome, "finished");
+      let clock = 0;
+      const late = await gated(gate, [{ tool_calls: [call("run", { command: "a" })] }, { tool_calls: [FINISH] }], { timeBudgetMs: 5000, now: () => (clock += 3000) });
+      assert.equal(asked, 0);
+      assert.equal(late.result.outcome === "finished" || late.result.outcome === "budget", true);
+    });
+  });
+
   it("limits context to 80% of numCtx, or numCtx minus the output headroom when that is smaller", () => {
     assert.equal(contextLimit(131072, 12288), 104857);
     assert.equal(contextLimit(16384, 12288), 4096);

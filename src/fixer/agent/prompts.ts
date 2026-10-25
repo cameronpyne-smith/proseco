@@ -104,6 +104,7 @@ export function userPrompt(facts: UnitFacts): string {
     "",
     ...facts.fixes.map(describeFix),
     "",
+    ...(facts.context && facts.context.length > 0 ? ["Measured by the host in the sandbox before you started:", ...facts.context.map((line) => `- ${line}`), ""] : []),
     "Begin by looking at the manifest and the lockfile's entry for each package.",
   ].join("\n");
 }

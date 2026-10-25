@@ -1,4 +1,5 @@
 import { compareVersions, isMajorUpgrade } from "../core/versions.ts";
+import { isRegression, type TestComparison } from "./baseline.ts";
 import type { PackageCheck } from "./check.ts";
 import type { ForcedMajor } from "./majors.ts";
 import { versionOf, type ReleaseNote, type ReleaseNotes } from "./releases.ts";
@@ -17,7 +18,7 @@ export interface PrFix {
 export type TestOutcome =
   | { kind: "passed"; commands: string[]; tail: string }
   | { kind: "no-tests"; commands: string[]; tail: string }
-  | { kind: "failed"; step: string; exitCode: number; timedOut: boolean; tail: string };
+  | { kind: "failed"; step: string; exitCode: number; timedOut: boolean; tail: string; failedIds?: string[] };
 
 export interface PrBodyInput {
   org: string;
@@ -28,6 +29,7 @@ export interface PrBodyInput {
   summary: string;
   checks: PackageCheck[];
   tests: TestOutcome;
+  comparison?: TestComparison | null;
   discarded: string[];
 }
 
@@ -43,6 +45,7 @@ export interface MajorPrBodyInput {
   summary: string;
   checks: PackageCheck[];
   tests: TestOutcome;
+  comparison?: TestComparison | null;
   discarded: string[];
 }
 
@@ -95,8 +98,48 @@ function packageRow(fix: PrFix, checks: PackageCheck[]): string {
   return `| \`${cell(fix.package)}\` | ${cell(changeOf(fix, checks))} | ${findings} |`;
 }
 
-function testSection(tests: TestOutcome): string[] {
+const MAX_IDS = 30;
+
+function idList(ids: string[]): string[] {
+  return [...ids.slice(0, MAX_IDS).map((id) => `  - \`${id}\``), ...(ids.length > MAX_IDS ? [`  - and ${ids.length - MAX_IDS} more`] : [])];
+}
+
+function baselineOutput(comparison: TestComparison): string[] {
+  const tail = comparison.baseline.tail.trim();
+  return tail === "" ? [] : ["", "<details>", "<summary>Output on the default branch</summary>", "", fence(tailOf(tail)), "", "</details>"];
+}
+
+function failedAgainstBaseline(tests: Extract<TestOutcome, { kind: "failed" }>, comparison: TestComparison, output: string[], draftPrefix: string): string[] {
+  const what = `\`${tests.step}\` ${tests.timedOut ? "timed out" : `failed with exit code ${tests.exitCode}`}`;
+  if (comparison.mode === "ids") {
+    const known = comparison.existing.length === 0 ? [] : [`- ${comparison.existing.length} failing test${comparison.existing.length === 1 ? "" : "s"} also fail${comparison.existing.length === 1 ? "s" : ""} on the default branch, so this change did not cause ${comparison.existing.length === 1 ? "it" : "them"}:`, ...idList(comparison.existing)];
+    if (comparison.fresh.length === 0) return [`- ${what} in the sandbox, but every failing test also fails on the default branch.`, ...known, ...output];
+    return [`- ${draftPrefix}${what} in the sandbox with ${comparison.fresh.length} new failing test${comparison.fresh.length === 1 ? "" : "s"}, which pass on the default branch:`, ...idList(comparison.fresh), ...known, ...output];
+  }
+  const before = comparison.baseline;
+  if (before.step !== tests.step) {
+    return [`- ${draftPrefix}${what} in the sandbox. On the default branch the run got as far as \`${before.step}\`, which failed with exit code ${before.exitCode}.`, ...output, ...baselineOutput(comparison)];
+  }
+  return [
+    `- ${draftPrefix}${what} in the sandbox, and \`${before.step}\` also ${before.timedOut ? "timed out" : `fails with exit code ${before.exitCode}`} on the default branch. The failing tests could not be compared one by one, so a person needs to check that this change adds no new failure.`,
+    ...output,
+    ...baselineOutput(comparison),
+  ];
+}
+
+function clearedLine(comparison: TestComparison | null | undefined): string[] {
+  return comparison?.mode === "cleared" ? [`- \`${comparison.baseline.step}\` fails on the default branch in the sandbox but passes with this change.`] : [];
+}
+
+function testSection(tests: TestOutcome, comparison?: TestComparison | null): string[] {
   const output = tests.tail.trim() === "" ? [] : ["", "<details>", "<summary>Output</summary>", "", fence(tailOf(tests.tail)), "", "</details>"];
+  if (tests.kind === "failed" && comparison && comparison.mode !== "cleared") {
+    return failedAgainstBaseline(tests, comparison, output, isRegression(tests, comparison) ? "Draft: " : "");
+  }
+  return [...clearedLine(comparison), ...testSectionPlain(tests, output)];
+}
+
+function testSectionPlain(tests: TestOutcome, output: string[]): string[] {
   switch (tests.kind) {
     case "passed":
       return [`- ${tests.commands.map((command) => `\`${command}\``).join(" and ")} passed in the sandbox.`, ...output];
@@ -126,7 +169,7 @@ export function renderPrBody(input: PrBodyInput): string {
     "### Checks",
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
-    ...testSection(input.tests),
+    ...testSection(input.tests, input.comparison),
   ];
   lines.push(...discardedSection(input.discarded, "They are outside the lockfile's manifest and lockfiles, so they were discarded and are not part of this pull request:"));
   lines.push("", `Part of ${input.org}/${input.ticketsRepo}#${input.ticket}`, "");
@@ -174,8 +217,13 @@ function forcedMajorsSection(forced: ForcedMajor[]): string[] {
   ];
 }
 
-function ranSection(tests: TestOutcome): string[] {
+function ranSection(tests: TestOutcome, comparison?: TestComparison | null): string[] {
   const output = tests.tail.trim() === "" ? [] : ["", "<details>", "<summary>Output</summary>", "", fence(tailOf(tests.tail)), "", "</details>"];
+  if (tests.kind === "failed" && comparison && comparison.mode !== "cleared") return failedAgainstBaseline(tests, comparison, output, "");
+  return [...clearedLine(comparison), ...ranSectionPlain(tests, output)];
+}
+
+function ranSectionPlain(tests: TestOutcome, output: string[]): string[] {
   const commands = tests.kind === "failed" ? "" : tests.commands.map((command) => `\`${command}\``).join(" and ");
   switch (tests.kind) {
     case "passed":
@@ -212,7 +260,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "### Checks",
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
-    ...ranSection(input.tests),
+    ...ranSection(input.tests, input.comparison),
     ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, new files that a command created rather than the agent, such as build output), so they were discarded and are not part of this pull request:"),
     "",
     "### Why this is a draft",

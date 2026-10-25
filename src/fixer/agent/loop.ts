@@ -12,6 +12,10 @@ const FINALISE = "Stop working now. Produce the finish arguments as a JSON objec
 const NOT_JSON = "That was not a valid finish object. Output only the JSON object.";
 const TRACE_CHARS = 300;
 const RESULT_SHARE = 4;
+const REPEAT_WINDOW = 10;
+const REPEAT_LIMIT = 3;
+const REPEAT_STALL_ROUNDS = 3;
+const MUTATING = new Set(["write_file", "edit_file"]);
 
 type Chat = { chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> };
 
@@ -26,6 +30,7 @@ export interface LoopInput {
   user: string;
   timeBudgetMs: number;
   maxToolCalls: number;
+  gate?(): Promise<string | null>;
   now?: () => number;
   record?(message: ChatMessage): void;
 }
@@ -53,6 +58,10 @@ export interface LoopResult {
   error?: string;
   stats: LoopStats;
   trace: TraceEntry[];
+}
+
+export function repeatNotice(times: number): string {
+  return `You already ran this exact call ${times} times with the same result, so it was not run again. Change your approach, or call finish if you cannot make further progress.`;
 }
 
 export function estimateTokens(messages: ChatMessage[]): number {
@@ -170,6 +179,9 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
     return done(reason);
   };
   let silent = 0;
+  let repeated = 0;
+  let gated = false;
+  const history: { key: string; result: string }[] = [];
   for (;;) {
     if (now() - started >= input.timeBudgetMs) return finalise("budget");
     dropOldThinking(messages);
@@ -198,17 +210,43 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       continue;
     }
     silent = 0;
+    let executed = 0;
     for (const call of calls) {
       const name = call.function.name;
       const args = argumentsOf(call);
       if (name !== "finish") {
         if (stats.toolCalls >= input.maxToolCalls) return finalise("budget");
         stats.toolCalls++;
+        const key = `${name}\n${JSON.stringify(args)}`;
+        const same = history.slice(-REPEAT_WINDOW).filter((entry) => entry.key === key);
+        const last = same.at(-1);
+        const times = last ? same.filter((entry) => entry.result === last.result).length : 0;
+        if (times >= REPEAT_LIMIT - 1) {
+          const notice = repeatNotice(times);
+          trace.push({ tool: name, args: JSON.stringify(args).slice(0, TRACE_CHARS), result: notice });
+          append({ role: "tool", tool_name: name, content: notice });
+          continue;
+        }
       }
+      executed++;
       const result = await input.execute(name, args);
+      if (name !== "finish") {
+        if (MUTATING.has(name)) history.length = 0;
+        else history.push({ key: `${name}\n${JSON.stringify(args)}`, result: result.content });
+      }
       trace.push({ tool: name, args: JSON.stringify(args).slice(0, TRACE_CHARS), result: result.content.slice(0, TRACE_CHARS) });
+      if (result.finish && input.gate && !gated && now() - started < input.timeBudgetMs && stats.toolCalls < input.maxToolCalls) {
+        gated = true;
+        const review = await input.gate();
+        if (review) {
+          append({ role: "tool", tool_name: name, content: capResult(review, limit) });
+          continue;
+        }
+      }
       append({ role: "tool", tool_name: name, content: capResult(result.content, limit) });
       if (result.finish) return done("finished", { finish: result.finish });
     }
+    repeated = executed === 0 ? repeated + 1 : 0;
+    if (repeated >= REPEAT_STALL_ROUNDS) return finalise("stalled");
   }
 }
