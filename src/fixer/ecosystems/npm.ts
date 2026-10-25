@@ -52,8 +52,10 @@ export const NPM_NOTES = [
   "- Resolve the lockfile with `npm install --package-lock-only --no-audit --no-fund`, run from the lockfile's directory. It rewrites package-lock.json from package.json without installing.",
   "- Install with `npm ci --no-audit --no-fund` and run the tests with `npm test`. Install scripts may run inside the sandbox container.",
   "- A direct dependency: change its range in package.json to the smallest version that is at or above the target, then resolve.",
-  "- A transitive dependency: prefer bumping the named parent (the direct dependency the chain starts with) to a release that pulls in a fixed version, then resolve. If no parent release does, add an `overrides` entry to package.json for the vulnerable package, then resolve.",
-  "- Never edit package-lock.json by hand. Only the resolver may write it.",
+  "- `npm install --package-lock-only` never moves a package whose locked version still satisfies its range. To move one within its range, run `npm update <package> --package-lock-only --no-audit --no-fund`.",
+  "- A transitive dependency: first check whether a fixed version is already inside the range its parent declares (`npm ls <package>` shows the chain; `npm view <parent>@<locked version> dependencies` shows the ranges). If it is, `npm update <package> --package-lock-only` is the whole fix and package.json does not change. If not, bump the named parent (the direct dependency the chain starts with) to a release whose range allows a fixed version, then resolve. Only if no parent release does, add an `overrides` entry with a caret range at the fixed version (`\"^1.2.3\"`), never an exact version, then resolve.",
+  "- When several direct dependencies must change together, for example because of peer dependencies, change them in one command: `npm install <name>@<range> <name>@<range> --package-lock-only --no-audit --no-fund`.",
+  "- Never edit package-lock.json by hand. Only the resolver may write it. Never delete it to get past a resolver error: that re-resolves every package in the project.",
   "- `npm ls <package>` shows every installed copy and which package requires it.",
 ].join("\n");
 
