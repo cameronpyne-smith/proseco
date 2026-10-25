@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
@@ -180,6 +180,18 @@ describe("search", () => {
     const lines = (await call("search", { pattern: "hit" })).content.split("\n");
     assert.equal(lines.length, 201);
     assert.match(lines[200]!, /50 more lines/);
+  });
+
+  it("cuts a very long matching line and caps the total size", async () => {
+    writeFileSync(join(fixture.root, "min.json"), `{"hit":"${"x".repeat(1_000_000)}"}\n`);
+    const cut = (await call("search", { pattern: "hit" })).content;
+    assert.ok(cut.length < 1000);
+    assert.match(cut, /\[line cut at 300 characters\]/);
+    writeFileSync(join(fixture.root, "wide.txt"), Array.from({ length: 150 }, (_, index) => `hit ${index} ${"y".repeat(250)}`).join("\n"));
+    rmSync(join(fixture.root, "min.json"));
+    const wide = (await call("search", { pattern: "hit" })).content;
+    assert.ok(wide.length <= 20_300);
+    assert.match(wide, /more lines not shown/);
   });
 
   it("explains an invalid pattern and refuses a path outside", async () => {

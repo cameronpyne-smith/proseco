@@ -50,6 +50,14 @@ describe("pull request body", () => {
     assert.match(renderPrBody(input({ fixes: [rollup], checks: [] })), /\| `rollup` \| 4\.46\.2 → 4\.59\.0 \|/);
   });
 
+  it("shows each row the copies of its own major line when a package appears twice", () => {
+    const brace1: PrFix = { package: "acme-brace", installed: "1.1.12", target: ["1.1.20"], rows: [{ cve: "CVE-2026-1", severity: "high" }] };
+    const brace2: PrFix = { package: "acme-brace", installed: "2.0.2", target: ["2.1.6"], rows: [{ cve: "CVE-2026-1", severity: "high" }] };
+    const body = renderPrBody(input({ fixes: [brace1, brace2], checks: [{ package: "acme-brace", from: "1.1.12", installed: ["1.1.21"], ok: true, reason: "x" }, { package: "acme-brace", from: "2.0.2", installed: ["2.1.7"], ok: true, reason: "y" }] }));
+    assert.match(body, /\| `acme-brace` \| 1\.1\.12 → 1\.1\.21 \(fix needs 1\.1\.20\) \|/);
+    assert.match(body, /\| `acme-brace` \| 2\.0\.2 → 2\.1\.7 \(fix needs 2\.1\.6\) \|/);
+  });
+
   it("includes the verified summary, the lockfile check and the test result, and ends with Part of", () => {
     const body = renderPrBody(input());
     assert.match(body, /Bumped minimist to 1\.2\.8\./);

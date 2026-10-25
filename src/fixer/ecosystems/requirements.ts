@@ -11,6 +11,8 @@ export const REQUIREMENTS_NOTES = [
   "- This file may belong to a script or a tool rather than the application. Change nothing but the pins in this one file: no other requirements file, no pyproject.toml, no setup files, no constraints or lock files.",
 ].join("\n");
 
+export const REQUIREMENTS_FILE = /^(?:.*[-_.])?requirements(?:[-_.].*)?\.txt$/i;
+
 const PIN = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([^\s;\\]+)/;
 
 function pins(text: string): Map<string, string[]> {

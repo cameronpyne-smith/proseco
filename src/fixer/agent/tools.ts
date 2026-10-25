@@ -33,6 +33,8 @@ const LARGE_FILE_LINES = 200;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_READ_CHARS = 60_000;
 const SEARCH_LINES = 200;
+const SEARCH_LINE_CHARS = 300;
+const SEARCH_CHARS = 20_000;
 const DEFAULT_RUN_SECONDS = 300;
 const RUN_STREAM_CHARS = 12_000;
 const NOT_EXPANDED = new Set(["node_modules", ".git"]);
@@ -212,10 +214,17 @@ async function search(env: ToolEnv, args: Record<string, unknown>): Promise<stri
   const target = confine(args["path"]);
   const result = await sh(env, SEARCH_SCRIPT, [pattern, target.relative]);
   if (result.exitCode !== 0 && result.exitCode !== 1) throw failed(result);
-  const lines = result.stdout.split("\n").filter(Boolean);
+  const lines = result.stdout.split("\n").filter(Boolean).map((line) => (line.length <= SEARCH_LINE_CHARS ? line : `${line.slice(0, SEARCH_LINE_CHARS)} [line cut at ${SEARCH_LINE_CHARS} characters]`));
   if (lines.length === 0) return "no matches";
-  if (lines.length <= SEARCH_LINES) return lines.join("\n");
-  return `${lines.slice(0, SEARCH_LINES).join("\n")}\n[${lines.length - SEARCH_LINES} more lines not shown; narrow the pattern or the path]`;
+  const shown: string[] = [];
+  let chars = 0;
+  for (const line of lines.slice(0, SEARCH_LINES)) {
+    if (chars + line.length + 1 > SEARCH_CHARS) break;
+    shown.push(line);
+    chars += line.length + 1;
+  }
+  if (shown.length === lines.length) return shown.join("\n");
+  return `${shown.join("\n")}\n[${lines.length - shown.length} more lines not shown; narrow the pattern or the path]`;
 }
 
 async function store(env: ToolEnv, target: { relative: string; operand: string }, content: string): Promise<void> {

@@ -59,7 +59,7 @@ export interface UnitContext {
   docker: Docker;
   fixer: FixerConfig;
   llm: OllamaClient;
-  advisory(cve: string, pkg: string): Promise<Advisory | null>;
+  advisory(cve: string, pkg: string, installed?: string): Promise<Advisory | null>;
   releases?(ecosystem: string, pkg: string, installed: string, target: string): Promise<ReleaseNotes>;
   publisher: Publisher;
   keepCheckout: boolean;
@@ -176,7 +176,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
 
     let checks: PackageCheck[];
     try {
-      checks = checkLockfile(ecosystem, readFileSync(join(checkout, unit.source), "utf8"), unit.fixes.map((fix) => ({ package: fix.package, target: fix.target })));
+      checks = checkLockfile(ecosystem, readFileSync(join(checkout, unit.source), "utf8"), unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target })));
     } catch (error) {
       return none(`the lockfile cannot be read after the agent's changes: ${(error as Error).message}`, extra);
     }

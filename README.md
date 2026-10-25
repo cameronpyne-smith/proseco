@@ -159,7 +159,7 @@ It is a dry run unless `PROSECO_DRY_RUN=false`, and the write token is only mint
 
 ## The fixer
 
-`npm run fixer -- run <n>` takes one ticket all the way: an agent in the sandbox, a deterministic lockfile check, a pushed branch, a pull request opened or updated, a ticket comment and a state record. Running it again does nothing. It works npm (`package-lock.json`), uv (`uv.lock`) and pinned `requirements*.txt` lockfiles. `npm run fixer -- serve` does this for every open ticket, forever; see `docs/fixer.md` for the design.
+`npm run fixer -- run <n>` takes one ticket all the way: an agent in the sandbox, a deterministic lockfile check, a pushed branch, a pull request opened or updated, a ticket comment and a state record. Running it again does nothing. It works npm (`package-lock.json`), uv (`uv.lock`) and pinned requirements files (`requirements*.txt`, `*-requirements.txt`, `*_requirements.txt`, `*.requirements.txt`, any case). `npm run fixer -- serve` does this for every open ticket, forever; see `docs/fixer.md` for the design.
 
 Commands:
 - `npm run fixer -- find`: lists every open proseco ticket except `unmapped` as `{ number, key, repo, force, ignored, commentId }`, where `key` is the marker key and `repo` the repository to fix in. `force` is true when a person has commented `@<bot> fix` since the last comment the fixer recorded for the ticket (a comment by a bot never counts); `ignored` is true after `@<bot> ignore`, until a later `@<bot> fix`. The newest command wins. For each such comment it reacts with eyes and records the comment id and the ignored flag in the state file, so a command is acted on once; `commentId` is that comment. An ignored ticket gets no attempt, fetch or comment.
@@ -208,7 +208,7 @@ On SIGTERM or SIGINT it lets the unit in progress finish and tear down (stop the
 
 ### Python
 
-- **uv.** The agent resolves with `uv lock --upgrade-package <package>`, or edits the constraint in `pyproject.toml` and locks again; it never edits `uv.lock` by hand. The harness installs with `uv sync --frozen`. It runs `uv run pytest -x -q` when `pytest` is a locked package, and no tests otherwise.
+- **uv.** The agent resolves with `uv lock --upgrade-package <package>`, or edits the constraint in `pyproject.toml` and locks again; it never edits `uv.lock` by hand. The harness installs with `uv sync --frozen --all-extras --all-groups`, so a `pytest` that lives only in an optional-dependencies extra or a dependency group is installed too. It runs `uv run pytest -x -q` when `pytest` is a locked package, and no tests otherwise.
 - **requirements.txt.** The fix is a text edit of the `==` pin, and only that file may change (the prompt says the file may belong to a script or a tool, not the application). The harness runs `python -m pip install -r <file>` from the file's directory, and `python -m pytest -x -q` when `pytest` is pinned in the same file. pip falls back to a user install because the container user cannot write the system site-packages. A file containing `--hash` is reported as unsupported for now: re-hashing needs `pip-compile`.
 - **Image.** `proseco/python:<major.minor>`, from `.python-version` or `requires-python`. `UV_LINK_MODE=copy` and `PIP_NO_INPUT=1` are set in every container, and uv's cache lands in `/tmp/home/.cache/uv` because `HOME` is a tmpfs.
 

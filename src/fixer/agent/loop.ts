@@ -11,6 +11,7 @@ const CUT_OFF_NUDGE = "Your reasoning was cut off before you acted. Decide now w
 const FINALISE = "Stop working now. Produce the finish arguments as a JSON object: summary, stating only what you changed and verified and what is still unresolved, and changes, every package version change you made. No tool calls, no prose.";
 const NOT_JSON = "That was not a valid finish object. Output only the JSON object.";
 const TRACE_CHARS = 300;
+const RESULT_SHARE = 4;
 
 type Chat = { chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> };
 
@@ -65,6 +66,11 @@ export function estimateTokens(messages: ChatMessage[]): number {
 
 export function contextLimit(numCtx: number, headroom: number): number {
   return Math.min(numCtx - headroom, Math.floor(numCtx * CONTEXT_SHARE));
+}
+
+export function capResult(content: string, limit: number): string {
+  const max = Math.floor((limit * CHARS_PER_TOKEN) / RESULT_SHARE);
+  return content.length <= max ? content : `${content.slice(0, max)}\n[output cut at ${max} characters to fit the context; narrow the request]`;
 }
 
 function shrink(messages: ChatMessage[], limit: number, scale: number, keep = KEEP_RECENT_TOOL_RESULTS): boolean {
@@ -201,7 +207,7 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       }
       const result = await input.execute(name, args);
       trace.push({ tool: name, args: JSON.stringify(args).slice(0, TRACE_CHARS), result: result.content.slice(0, TRACE_CHARS) });
-      append({ role: "tool", tool_name: name, content: result.content });
+      append({ role: "tool", tool_name: name, content: capResult(result.content, limit) });
       if (result.finish) return done("finished", { finish: result.finish });
     }
   }

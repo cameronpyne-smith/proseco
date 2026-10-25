@@ -2,6 +2,10 @@ import { isMajorUpgrade, packageKey } from "../core/versions.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 import type { ReleaseNotes } from "./releases.ts";
 
+function release(version: string): string {
+  return /^v?(\d+(?:\.\d+)*)/.exec(version.trim())?.[1] ?? version;
+}
+
 export interface ForcedMajor {
   package: string;
   from: string;
@@ -16,7 +20,7 @@ export function forcedMajors(ecosystem: Pick<Ecosystem, "directVersions" | "find
   for (const [name, to] of ecosystem.directVersions(after)) {
     const from = was.get(name);
     if (from === undefined || packageKey(ecosystem.findingEcosystem, name) === skip) continue;
-    if (isMajorUpgrade(from, [to])) found.push({ package: name, from, to, repository: null });
+    if (isMajorUpgrade(release(from), [release(to)])) found.push({ package: name, from, to, repository: null });
   }
   return found.sort((a, b) => (a.package < b.package ? -1 : 1));
 }

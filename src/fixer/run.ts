@@ -134,7 +134,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
             docker,
             fixer,
             llm,
-            advisory: (cve, pkg) => advisories.lookup(cve, pkg),
+            advisory: (cve, pkg, installed) => advisories.lookup(cve, pkg, installed),
             releases: (ecosystem, pkg, installed, target) => releases.lookup(ecosystem, pkg, installed, target),
             publisher,
             keepCheckout: local,

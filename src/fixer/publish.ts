@@ -1,6 +1,7 @@
 import { rmdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Ecosystem, ImageFamily } from "./ecosystems/ecosystem.ts";
+import { REQUIREMENTS_FILE } from "./ecosystems/requirements.ts";
 import type { GitStore } from "./git.ts";
 
 const NEVER = ".github/workflows/";
@@ -9,9 +10,11 @@ const LITERAL = "--literal-pathspecs";
 const VENDORED = new Set(["node_modules", ".venv"]);
 const PACKAGE_MANAGER_CONFIG = /^(\.npmrc|\.yarnrc|\.yarnrc\.yml|\.pnpmfile\.cjs|pip\.conf|pip\.ini|\.pypirc|uv\.toml|nuget\.config)$/i;
 
-const FAMILY_FILES: Record<ImageFamily | "dotnet", RegExp> = {
+const PYTHON_FILES = /^(pyproject\.toml|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock)$/;
+
+const FAMILY_FILES: Record<ImageFamily | "dotnet", { test(name: string): boolean }> = {
   node: /^(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/,
-  python: /^(pyproject\.toml|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock|requirements.*\.txt)$/,
+  python: { test: (name) => PYTHON_FILES.test(name) || REQUIREMENTS_FILE.test(name) },
   dotnet: /^(.+\.(cs|fs|vb)proj|packages\.lock\.json|Directory\.Packages\.props|global\.json)$/,
 };
 

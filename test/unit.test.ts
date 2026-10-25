@@ -255,6 +255,12 @@ describe("workUnit for a major upgrade", () => {
     assert.doesNotMatch(minor.seen.published[0]!.body, /Other major upgrades/);
   });
 
+  it("flags a direct dependency that jumped from a stable release to a prerelease of the next major", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0-alpha.6\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits });
+    assert.match(seen.published[0]!.body, /- `other` 3\.0\.0 → 4\.0\.0-alpha\.6/);
+  });
+
   it("puts the release notes and the major instructions in front of the agent", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES });
     assert.match(seen.prompts[0]!, /smallest working upgrade/);

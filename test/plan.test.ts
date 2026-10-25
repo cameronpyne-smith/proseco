@@ -48,6 +48,21 @@ describe("branch slugs", () => {
   });
 });
 
+describe("requirements files", () => {
+  it("merges rows whose package names differ only in case or separators into one fix and one unit", () => {
+    const units = planUnits(
+      [
+        row({ cve: "CVE-2026-0011", package: "Pillow", installed: "10.0.0", fixedIn: "10.3.0", source: "scripts/parity-requirements.txt" }),
+        row({ cve: "CVE-2026-0012", package: "pillow", installed: "10.0.0", fixedIn: "10.2.0", source: "scripts/parity-requirements.txt" }),
+      ],
+      "acme-org",
+    );
+    assert.equal(units.length, 1);
+    assert.deepEqual([units[0]!.ecosystem, units[0]!.branch, units[0]!.fixes.length], ["requirements", "proseco/scripts-parity-requirements.txt", 1]);
+    assert.equal(units[0]!.fixes[0]!.rows.length, 2);
+  });
+});
+
 describe("PR units", () => {
   const units = planUnits(MIXED, "acme-org");
 

@@ -84,7 +84,7 @@ function discardedSection(discarded: string[], reason: string): string[] {
 
 function changeOf(fix: PrFix, checks: PackageCheck[]): string {
   const target = fix.target.join(" or ");
-  const now = checks.find((check) => check.package === fix.package)?.installed ?? [];
+  const now = (checks.find((check) => check.package === fix.package && check.from === fix.installed) ?? checks.find((check) => check.package === fix.package && check.from === undefined))?.installed ?? [];
   if (now.length === 0) return `${fix.installed} → ${target}`;
   const reached = now.join(", ");
   return reached === target ? `${fix.installed} → ${reached}` : `${fix.installed} → ${reached} (fix needs ${target})`;

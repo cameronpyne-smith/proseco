@@ -174,9 +174,9 @@ describe("the commit guard for a major upgrade", () => {
   });
 
   it("refuses the lockfiles and manifests of other ecosystems but not its own", async () => {
-    const result = await major({ "uv.lock": "changed", "pyproject.toml": "[project]", "requirements-dev.txt": "x==1", "svc/Api.csproj": "<Project/>", "package.json": '{"v":2}', "src/a.js": "c" });
-    assert.deepEqual(result.discarded, ["pyproject.toml", "requirements-dev.txt", "svc/Api.csproj", "uv.lock"]);
-    assert.deepEqual(result.files, ["package.json", "src/a.js"]);
+    const result = await major({ "uv.lock": "changed", "pyproject.toml": "[project]", "requirements-dev.txt": "x==1", "scripts/parity-requirements.txt": "x==1", "notes.txt": "n", "svc/Api.csproj": "<Project/>", "package.json": '{"v":2}', "src/a.js": "c" });
+    assert.deepEqual(result.discarded, ["pyproject.toml", "requirements-dev.txt", "scripts/parity-requirements.txt", "svc/Api.csproj", "uv.lock"]);
+    assert.deepEqual(result.files, ["notes.txt", "package.json", "src/a.js"]);
   });
 
   it("refuses package-manager configuration in any directory but allows ordinary source", async () => {

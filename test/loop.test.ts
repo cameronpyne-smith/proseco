@@ -259,6 +259,18 @@ describe("agent loop", () => {
       assert.ok(result.stats.shrinks > 0);
     });
 
+    it("cuts a single tool result that alone would not fit the context, so the user message is never pushed out", async () => {
+      const steps: Step[] = [{ tool_calls: [call("run", { command: "huge" })] }, { tool_calls: [FINISH] }];
+      const model = scripted(steps);
+      const { env } = fakeEnv({ huge: "z".repeat(1_000_000) });
+      const result = await runLoop(input(model, env, { numCtx: 9000, headroom: 1000 }));
+      assert.equal(result.outcome, "finished");
+      const tool = model.seen.at(-1)!.find((message) => message.role === "tool")!;
+      const max = Math.floor((contextLimit(9000, 1000) * 3) / 4);
+      assert.ok(tool.content.length < max + 200);
+      assert.match(tool.content, /\[output cut at \d+ characters to fit the context/);
+    });
+
     it("leaves a conversation under the limit untouched", async () => {
       const { model, env } = bulky(5);
       const result = await runLoop(input(model, env));

@@ -21,6 +21,12 @@ describe("ecosystem detection", () => {
     assert.equal(ecosystemFor("services/api/uv.lock")?.name, "uv");
     assert.equal(ecosystemFor("requirements.txt")?.name, "requirements");
     assert.equal(ecosystemFor("api/requirements-dev.txt")?.name, "requirements");
+    for (const path of ["scripts/parity-requirements.txt", "dev_requirements.txt", "tools/test.requirements.txt", "requirements_test.txt", "Requirements.txt"]) {
+      assert.equal(ecosystemFor(path)?.name, "requirements", path);
+    }
+    for (const path of ["notes.txt", "robots.txt", "my-requirementsfoo.txt", "requirements.md", "requirements", "docs/prerequirements.txt"]) {
+      assert.equal(ecosystemFor(path), null, path);
+    }
   });
 
   it("returns null for a lockfile it cannot work on", () => {
@@ -287,7 +293,7 @@ describe("harness", () => {
 
   it("runs uv sync and uv run pytest, and finds tests only when pytest is locked", () => {
     const harness = ecosystem("uv.lock").harness("uv.lock");
-    assert.equal(harness.install, "uv sync --frozen");
+    assert.equal(harness.install, "uv sync --frozen --all-extras --all-groups");
     assert.equal(harness.test, "uv run pytest -x -q");
     const locked = (name: string) => `version = 1\n[[package]]\nname = "${name}"\nversion = "8.0.0"\nsource = { registry = "https://pypi.org/simple" }\n`;
     assert.equal(harness.hasTests(reading({ "uv.lock": locked("pytest") })), true);

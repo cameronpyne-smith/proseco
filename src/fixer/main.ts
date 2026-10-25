@@ -62,7 +62,7 @@ async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProv
     headSha,
     last: lastAttempt(state, number),
     readFile: (path) => store.tryShow(repo, headSha, path),
-    advisory: (cve, pkg) => advisories.lookup(cve, pkg),
+    advisory: (cve, pkg, installed) => advisories.lookup(cve, pkg, installed),
   });
   console.log(JSON.stringify(report, null, 2));
 }

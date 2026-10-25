@@ -1,5 +1,5 @@
 import { npm } from "./npm.ts";
-import { requirements } from "./requirements.ts";
+import { requirements, REQUIREMENTS_FILE } from "./requirements.ts";
 import { uv } from "./uv.ts";
 
 export type EcosystemName = "npm" | "uv" | "requirements";
@@ -31,6 +31,6 @@ export function ecosystemFor(lockfilePath: string): Ecosystem | null {
   const file = lockfilePath.split("/").pop()!;
   if (file === "package-lock.json") return npm;
   if (file === "uv.lock") return uv;
-  if (/^requirements.*\.txt$/.test(file)) return requirements;
+  if (REQUIREMENTS_FILE.test(file)) return requirements;
   return null;
 }

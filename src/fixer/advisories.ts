@@ -1,5 +1,5 @@
 import { GitHubApi, expectOk } from "../core/github.ts";
-import { packageKey } from "../core/versions.ts";
+import { compareVersions, packageKey } from "../core/versions.ts";
 
 export interface Advisory {
   id: string;
@@ -34,15 +34,51 @@ function patched(version: string | { identifier: string } | null | undefined): s
   return typeof version === "object" && version !== null ? version.identifier : (version ?? null);
 }
 
-function summarise(advisory: GlobalAdvisory, pkg: string): Advisory {
-  const vulnerability = advisory.vulnerabilities?.find((entry) => entry.package && sameName(entry.package.name, pkg));
+type Vulnerability = NonNullable<GlobalAdvisory["vulnerabilities"]>[number];
+
+function forPackage(advisory: GlobalAdvisory, pkg: string): Vulnerability[] {
+  return (advisory.vulnerabilities ?? []).filter((entry) => entry.package && sameName(entry.package.name, pkg));
+}
+
+export function inRange(version: string, range: string): boolean {
+  const clauses = range.split(",").map((clause) => clause.trim()).filter(Boolean);
+  if (clauses.length === 0) return false;
+  return clauses.every((clause) => {
+    const match = /^(<=|>=|<|>|=)?\s*(\S+)$/.exec(clause);
+    const order = match ? compareVersions(version, match[2]!) : null;
+    if (!match || order === null) return false;
+    switch (match[1] ?? "=") {
+      case "<":
+        return order < 0;
+      case "<=":
+        return order <= 0;
+      case ">":
+        return order > 0;
+      case ">=":
+        return order >= 0;
+      default:
+        return order === 0;
+    }
+  });
+}
+
+function applicable(vulnerabilities: Vulnerability[], installed: string | undefined): Vulnerability | null {
+  return (installed === undefined ? undefined : vulnerabilities.find((entry) => entry.vulnerable_version_range !== null && inRange(installed, entry.vulnerable_version_range))) ?? null;
+}
+
+function summarise(advisory: GlobalAdvisory, pkg: string, installed: string | undefined): Advisory {
+  const all = forPackage(advisory, pkg);
+  const chosen = applicable(all, installed) ?? (all.length === 1 ? all[0] : undefined);
+  const ranges = [...new Set(all.flatMap((entry) => (entry.vulnerable_version_range ? [entry.vulnerable_version_range] : [])))];
+  const fixes = [...new Set(all.flatMap((entry) => (patched(entry.first_patched_version) ? [patched(entry.first_patched_version)!] : [])))];
+  const pick = chosen ?? all[0];
   return {
     id: advisory.ghsa_id,
     summary: advisory.summary,
     severity: advisory.severity,
-    vulnerableRange: vulnerability?.vulnerable_version_range ?? null,
-    patchedVersion: patched(vulnerability?.first_patched_version),
-    affectedFunctions: vulnerability?.vulnerable_functions ?? [],
+    vulnerableRange: chosen ? (chosen.vulnerable_version_range ?? null) : ranges.length > 0 ? ranges.join(" or ") : null,
+    patchedVersion: chosen ? patched(chosen.first_patched_version) : fixes.length > 0 ? fixes.join(", ") : null,
+    affectedFunctions: pick?.vulnerable_functions ?? [],
     references: (advisory.references ?? []).map((reference) => (typeof reference === "string" ? reference : reference.url)),
   };
 }
@@ -69,9 +105,10 @@ export class Advisories extends GitHubApi {
     return (await response.json()) as GlobalAdvisory[];
   }
 
-  async lookup(id: string, pkg: string): Promise<Advisory | null> {
+  async lookup(id: string, pkg: string, installed?: string): Promise<Advisory | null> {
     const found = await this.#fetch(id);
-    const advisory = found.find((entry) => entry.vulnerabilities?.some((item) => item.package && sameName(item.package.name, pkg))) ?? found[0];
-    return advisory ? summarise(advisory, pkg) : null;
+    const named = found.filter((entry) => forPackage(entry, pkg).length > 0);
+    const advisory = named.find((entry) => applicable(forPackage(entry, pkg), installed)) ?? named[0] ?? found[0];
+    return advisory ? summarise(advisory, pkg, installed) : null;
   }
 }

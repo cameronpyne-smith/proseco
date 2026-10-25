@@ -68,6 +68,41 @@ describe("advisories", () => {
     assert.equal(found?.patchedVersion, null);
   });
 
+  describe("an advisory with one vulnerable range per major line", () => {
+    const lines = {
+      ...GLOBAL,
+      vulnerabilities: [
+        { package: { ecosystem: "npm", name: "acme-brace" }, vulnerable_version_range: "< 1.1.20", first_patched_version: "1.1.20", vulnerable_functions: null },
+        { package: { ecosystem: "npm", name: "acme-brace" }, vulnerable_version_range: ">= 2.0.0, < 2.1.6", first_patched_version: { identifier: "2.1.6" }, vulnerable_functions: null },
+        { package: { ecosystem: "npm", name: "acme-brace" }, vulnerable_version_range: ">= 4.0.0, < 5.0.8", first_patched_version: "5.0.8", vulnerable_functions: null },
+      ],
+    };
+
+    it("picks the range and patched version that contain the installed version", async () => {
+      const { advisories } = client({ [byCve]: [lines] });
+      const first = await advisories.lookup("CVE-2026-0001", "acme-brace", "1.1.12");
+      assert.deepEqual([first?.vulnerableRange, first?.patchedVersion], ["< 1.1.20", "1.1.20"]);
+      const second = await advisories.lookup("CVE-2026-0001", "acme-brace", "2.0.2");
+      assert.deepEqual([second?.vulnerableRange, second?.patchedVersion], [">= 2.0.0, < 2.1.6", "2.1.6"]);
+    });
+
+    it("lists every range when none contains the installed version, or no version is given", async () => {
+      const { advisories } = client({ [byCve]: [lines] });
+      for (const installed of [undefined, "3.0.0"]) {
+        const found = await advisories.lookup("CVE-2026-0001", "acme-brace", installed);
+        assert.equal(found?.vulnerableRange, "< 1.1.20 or >= 2.0.0, < 2.1.6 or >= 4.0.0, < 5.0.8");
+        assert.equal(found?.patchedVersion, "1.1.20, 2.1.6, 5.0.8");
+      }
+    });
+
+    it("prefers the advisory whose range contains the installed version when a CVE has several", async () => {
+      const other = { ...GLOBAL, ghsa_id: "GHSA-dddd-eeee-ffff", vulnerabilities: [{ package: { ecosystem: "npm", name: "acme-brace" }, vulnerable_version_range: ">= 6.0.0, < 6.0.3", first_patched_version: "6.0.3", vulnerable_functions: null }] };
+      const { advisories } = client({ [byCve]: [other, lines] });
+      const found = await advisories.lookup("CVE-2026-0001", "acme-brace", "1.1.12");
+      assert.deepEqual([found?.id, found?.patchedVersion], ["GHSA-aaaa-bbbb-cccc", "1.1.20"]);
+    });
+  });
+
   it("returns null when GitHub has no advisory for the CVE", async () => {
     const { advisories } = client({ [byCve]: [] });
     assert.equal(await advisories.lookup("CVE-2026-0001", "acme-parse"), null);

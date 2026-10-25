@@ -71,7 +71,7 @@ export const UV_NOTES = [
   "- A direct dependency whose constraint in pyproject.toml excludes the target (for example an exact pin below it): change the constraint to the smallest version at or above the target, then run `uv lock --upgrade-package <package>`.",
   "- A transitive dependency: first try `uv lock --upgrade-package <package>`. If the lockfile stays below the target, raise the named parent's constraint in pyproject.toml and run `uv lock --upgrade-package <parent>`. If no parent release helps, add `constraint-dependencies = [\"<package>>=<target>\"]` under `[tool.uv]` in pyproject.toml, then run `uv lock`.",
   "- Never edit uv.lock by hand. Only `uv lock` may write it.",
-  "- Install with `uv sync --frozen`; the tests run with `uv run pytest -x -q` when pytest is locked. `uv tree --invert --package <package>` shows what requires a package.",
+  "- Install with `uv sync --frozen --all-extras --all-groups`; the tests run with `uv run pytest -x -q` when pytest is locked. `uv tree --invert --package <package>` shows what requires a package.",
   "- Dependency groups such as `dev` live under `[dependency-groups]` in pyproject.toml; a workspace member has its own pyproject.toml.",
 ].join("\n");
 
@@ -148,7 +148,7 @@ export const uv: Ecosystem = {
 
   harness(lockfile) {
     return {
-      install: "uv sync --frozen",
+      install: "uv sync --frozen --all-extras --all-groups",
       test: "uv run pytest -x -q",
       hasTests(read) {
         try {

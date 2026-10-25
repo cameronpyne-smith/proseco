@@ -35,14 +35,14 @@ export async function buildFacts(
   ecosystem: Ecosystem,
   lockfileText: string,
   toolchain: string | null,
-  advisory: (cve: string, pkg: string) => Promise<Advisory | null>,
+  advisory: (cve: string, pkg: string, installed?: string) => Promise<Advisory | null>,
   releases?: (ecosystem: string, pkg: string, installed: string, target: string) => Promise<ReleaseNotes>,
 ): Promise<UnitFacts> {
   const fixes: FixFacts[] = [];
   for (const fix of unit.fixes) {
     const rows: RowFacts[] = [];
     for (const row of fix.rows) {
-      rows.push({ cve: row.cve, severity: row.severity, fixedIn: row.fixedIn, advisory: await advisory(row.cve, row.package) });
+      rows.push({ cve: row.cve, severity: row.severity, fixedIn: row.fixedIn, advisory: await advisory(row.cve, row.package, row.installed) });
     }
     fixes.push({
       package: fix.package,
