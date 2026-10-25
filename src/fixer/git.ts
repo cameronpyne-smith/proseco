@@ -159,5 +159,6 @@ export class GitStore {
     const origin = this.#origins.get(path) ?? "";
     writeFileSync(join(git, "config"), `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[remote "origin"]\n\turl = ${origin}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`);
     rmSync(join(git, "hooks"), { recursive: true, force: true });
+    rmSync(join(git, "commondir"), { force: true });
   }
 }

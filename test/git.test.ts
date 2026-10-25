@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -131,6 +131,21 @@ describe("git store", () => {
     writeFileSync(join(path, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
     await clones.inCheckout(path, ["status", "--porcelain"], "git status");
     await clones.inCheckout(path, ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-m", "x"], "git commit");
+    assert.equal(existsSync(marker), false);
+  });
+
+  it("ignores a commondir in the checkout's .git that points at configuration elsewhere", async () => {
+    const remote = origin();
+    const sha = remote.commit("a.txt", "one");
+    const { store: clones } = store(remote.dir);
+    await clones.fetch("acme-api");
+    const path = await clones.checkout("acme-api", sha);
+    const marker = join(path, "pwned");
+    const elsewhere = join(dirname(path), "elsewhere");
+    cpSync(join(path, ".git"), elsewhere, { recursive: true });
+    writeFileSync(join(elsewhere, "config"), `[core]\n\trepositoryformatversion = 0\n\tfsmonitor = touch ${marker}\n`);
+    writeFileSync(join(path, ".git", "commondir"), "../../elsewhere\n");
+    await clones.inCheckout(path, ["status", "--porcelain"], "git status");
     assert.equal(existsSync(marker), false);
   });
 
