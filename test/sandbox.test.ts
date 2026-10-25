@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { Docker, type RunSpec } from "../src/fixer/sandbox/docker.ts";
 import { Sandbox } from "../src/fixer/sandbox/sandbox.ts";
 
-function fakeDocker(rootless: boolean): { docker: Docker; runs: RunSpec[] } {
+function fakeDocker(): { docker: Docker; runs: RunSpec[] } {
   const runs: RunSpec[] = [];
   const docker = {
-    async rootless() {
-      return rootless;
-    },
     async imageExists() {
       return true;
     },
@@ -31,41 +28,38 @@ function fakeDocker(rootless: boolean): { docker: Docker; runs: RunSpec[] } {
   return { docker, runs };
 }
 
-async function startBox(rootless: boolean): Promise<RunSpec> {
-  const { docker, runs } = fakeDocker(rootless);
-  await Sandbox.start({ worktree: "/w", image: "img", attemptId: "t1", uid: 1234, gid: 5678, docker });
-  return runs.find((spec) => spec.name === "proseco-box-t1")!;
+function binary(script: string): string {
+  const path = join(mkdtempSync(join(tmpdir(), "proseco-fake-docker-")), "docker");
+  writeFileSync(path, `#!/bin/sh\n${script}\n`);
+  chmodSync(path, 0o755);
+  return path;
 }
 
-describe("Sandbox.start user", () => {
-  it("runs the repository container as 0:0 under a rootless daemon", async () => {
-    assert.equal((await startBox(true)).user, "0:0");
-  });
-
-  it("keeps the given uid and gid under a rootful daemon", async () => {
-    assert.equal((await startBox(false)).user, "1234:5678");
+describe("Sandbox.start", () => {
+  it("runs the repository container as uid 1000 with nothing from the host mounted", async () => {
+    const { docker, runs } = fakeDocker();
+    await Sandbox.start({ image: "img", attemptId: "t1", docker });
+    const box = runs.find((spec) => spec.name === "proseco-box-t1")!;
+    assert.equal(box.user, "1000:1000");
+    assert.equal(box.workdir, "/work");
+    assert.deepEqual(box.binds ?? [], []);
   });
 });
 
-describe("Docker.rootless", () => {
-  function binary(securityOptions: string): string {
-    const dir = mkdtempSync(join(tmpdir(), "proseco-fake-docker-"));
-    const path = join(dir, "docker");
-    writeFileSync(path, `#!/bin/sh\necho x >> "${dir}/calls"\necho '${securityOptions}'\n`);
-    chmodSync(path, 0o755);
-    return path;
-  }
-
-  it("is true when the security options name rootless, and false otherwise", async () => {
-    assert.equal(await new Docker(binary("[name=seccomp,profile=builtin name=rootless name=cgroupns]")).rootless(), true);
-    assert.equal(await new Docker(binary("[name=seccomp,profile=builtin name=cgroupns]")).rootless(), false);
+describe("Docker.exec", () => {
+  it("passes input on stdin, with --interactive, only when there is input", async () => {
+    const docker = new Docker(binary(`echo "$@" >&2; [ "$2" = --interactive ] && cat`));
+    const piped = await docker.exec("box", ["tar", "-xf", "-"], 1000, { input: "archive" });
+    assert.equal(piped.stdout, "archive");
+    assert.match(piped.stderr, /^exec --interactive box timeout/);
+    const plain = await docker.exec("box", ["true"], 1000);
+    assert.match(plain.stderr, /^exec box timeout/);
   });
 
-  it("asks the daemon once per instance", async () => {
-    const path = binary("[name=rootless]");
-    const docker = new Docker(path);
-    await docker.rootless();
-    await docker.rootless();
-    assert.equal(readFileSync(join(path, "..", "calls"), "utf8").trim().split("\n").length, 1);
+  it("returns stdout as bytes, and fails on a non-zero exit or output over the limit", async () => {
+    const docker = new Docker(binary(`printf '\\000\\377abc'; [ "$7" = fail ] && { echo broken >&2; exit 2; }; exit 0`));
+    assert.deepEqual(await docker.execBytes("box", ["ok"], 1000, 100), Buffer.from([0, 255, 97, 98, 99]));
+    await assert.rejects(docker.execBytes("box", ["fail"], 1000, 100), /fail in box exited with 2: broken/);
+    await assert.rejects(docker.execBytes("box", ["ok"], 1000, 3), /wrote more than 3 bytes/);
   });
 });

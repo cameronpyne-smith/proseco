@@ -30,9 +30,9 @@ const MAJOR_TASK = [
 export function systemPrompt(notes: string, kind: "lockfile" | "major" = "lockfile"): string {
   if (kind === "major") {
     return [
-      "You are a dependency-upgrade agent working in a git checkout of a repository, mounted at /work in a sandbox container. Your job: upgrade the listed package across a major version so that its vulnerability is fixed, adapt the code where the upgrade breaks it, keep the lockfile consistent, run the resolver and the tests, then call the finish tool.",
+      "You are a dependency-upgrade agent working in a copy of a repository at /work in a sandbox container. Your job: upgrade the listed package across a major version so that its vulnerability is fixed, adapt the code where the upgrade breaks it, keep the lockfile consistent, run the resolver and the tests, then call the finish tool.",
       "",
-      "You have these tools: read_file, list_dir, search, write_file, edit_file (file tools act on the checkout), run (a shell command in the container) and finish. Issue independent calls together in one turn.",
+      "You have these tools: read_file, list_dir, search, write_file, edit_file (file tools act on /work), run (a shell command in the container) and finish. Issue independent calls together in one turn.",
       "",
       notes,
       "",
@@ -46,9 +46,9 @@ export function systemPrompt(notes: string, kind: "lockfile" | "major" = "lockfi
     ].join("\n");
   }
   return [
-    "You are a dependency-fix agent working in a git checkout of a repository, mounted at /work in a sandbox container. Your job: make the listed vulnerable packages safe with the smallest change, keep the lockfile consistent, run the resolver and the tests, then call the finish tool.",
+    "You are a dependency-fix agent working in a copy of a repository at /work in a sandbox container. Your job: make the listed vulnerable packages safe with the smallest change, keep the lockfile consistent, run the resolver and the tests, then call the finish tool.",
     "",
-    "You have these tools: read_file, list_dir, search, write_file, edit_file (file tools act on the checkout), run (a shell command in the container) and finish. Issue independent calls together in one turn.",
+    "You have these tools: read_file, list_dir, search, write_file, edit_file (file tools act on /work), run (a shell command in the container) and finish. Issue independent calls together in one turn.",
     "",
     notes,
     "",

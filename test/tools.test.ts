@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
 import { executeTool, parseFinish, TOOL_DEFINITIONS, type ToolEnv } from "../src/fixer/agent/tools.ts";
 import type { RunResult } from "../src/fixer/sandbox/sandbox.ts";
+import { LocalBox } from "./local-box.ts";
 
 interface Fixture {
   root: string;
@@ -17,27 +18,16 @@ interface Fixture {
 let fixture: Fixture;
 
 function setup(runResult: Partial<RunResult> = {}): Fixture {
-  const base = mkdtempSync(join(tmpdir(), "proseco-tools-"));
-  const root = join(base, "work");
-  const outside = join(base, "outside");
-  mkdirSync(root);
-  mkdirSync(outside);
+  const box = new LocalBox();
+  const root = box.work;
+  const outside = mkdtempSync(join(tmpdir(), "proseco-tools-outside-"));
   writeFileSync(join(outside, "secret.txt"), "TOPSECRET");
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   const ran: Fixture["ran"] = [];
   const env: ToolEnv = {
-    root,
     commandTimeoutMs: 10 * 60 * 1000,
-    git: async (args, okCodes = [0]) => {
-      try {
-        return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-      } catch (error) {
-        const failure = error as { status: number; stdout: string };
-        if (okCodes.includes(failure.status)) return failure.stdout;
-        throw new Error(`git failed with ${failure.status}`);
-      }
-    },
-    run: async (command, timeoutMs) => {
+    run: async (command, timeoutMs, options) => {
+      if (command.length > 3) return box.run(command, timeoutMs, options);
       ran.push({ command, timeoutMs });
       return { exitCode: 0, stdout: "out\n", stderr: "", truncated: false, timedOut: false, ...runResult };
     },
@@ -107,6 +97,18 @@ describe("read_file", () => {
   });
 });
 
+describe("file tools", () => {
+  it("act only through the sandbox", async () => {
+    writeFileSync(join(fixture.root, "a.txt"), "one");
+    fixture.env.run = async () => ({ exitCode: 125, stdout: "", stderr: "no sandbox", truncated: false, timedOut: false });
+    for (const [name, args] of [["read_file", { path: "a.txt" }], ["list_dir", {}], ["search", { pattern: "one" }], ["write_file", { path: "b.txt", content: "x" }], ["edit_file", { path: "a.txt", old: "one", new: "two" }]] as const) {
+      assert.match((await call(name, args)).content, /^error: no sandbox/, name);
+    }
+    assert.equal(readFileSync(join(fixture.root, "a.txt"), "utf8"), "one");
+    assert.equal(existsSync(join(fixture.root, "b.txt")), false);
+  });
+});
+
 describe("path confinement", () => {
   it("refuses .. segments that leave the directory", async () => {
     const result = await call("read_file", { path: "../outside/secret.txt" });
@@ -118,24 +120,6 @@ describe("path confinement", () => {
     writeFileSync(join(fixture.root, "a.txt"), "one");
     assert.match((await call("read_file", { path: join(fixture.root, "a.txt") })).content, /^error: absolute paths are not allowed/);
     assert.match((await call("list_dir", { path: "/etc" })).content, /^error: absolute paths are not allowed/);
-  });
-
-  it("refuses a symlink that points outside, for reads, listings and writes", async () => {
-    symlinkSync(fixture.outside, join(fixture.root, "link"));
-    symlinkSync(join(fixture.outside, "secret.txt"), join(fixture.root, "file-link"));
-    assert.match((await call("read_file", { path: "link/secret.txt" })).content, /^error: .* leaves the repository directory/);
-    assert.match((await call("read_file", { path: "file-link" })).content, /^error: .* leaves the repository directory/);
-    assert.match((await call("list_dir", { path: "link" })).content, /^error: .* leaves the repository directory/);
-    assert.match((await call("write_file", { path: "link/new.txt", content: "x" })).content, /^error: .* leaves the repository directory/);
-    assert.match((await call("write_file", { path: "file-link", content: "x" })).content, /^error: .* leaves the repository directory/);
-    assert.equal(existsSync(join(fixture.outside, "new.txt")), false);
-    assert.equal(readFileSync(join(fixture.outside, "secret.txt"), "utf8"), "TOPSECRET");
-  });
-
-  it("refuses to write through a dangling symlink that points outside", async () => {
-    symlinkSync(join(fixture.outside, "missing.txt"), join(fixture.root, "dangling"));
-    assert.match((await call("write_file", { path: "dangling", content: "x" })).content, /^error: /);
-    assert.equal(existsSync(join(fixture.outside, "missing.txt")), false);
   });
 
   it("allows a symlink that stays inside", async () => {

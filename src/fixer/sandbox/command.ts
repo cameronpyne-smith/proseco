@@ -33,15 +33,13 @@ export async function runInSandbox(input: SandboxCommand): Promise<SandboxOutcom
   let sandbox: Sandbox | undefined;
   try {
     sandbox = await Sandbox.start({
-      worktree: checkout,
       image,
       allow: input.fixer.proxy.allow,
       attemptId: `manual-${Date.now().toString(36)}`,
-      uid: process.getuid!(),
-      gid: process.getgid!(),
       limits: input.fixer.sandbox,
       docker,
     });
+    await sandbox.load(checkout);
     return { image, result: await sandbox.run(input.command, COMMAND_TIMEOUT_MS) };
   } finally {
     try {

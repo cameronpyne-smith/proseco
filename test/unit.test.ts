@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -12,6 +12,7 @@ import { GitStore } from "../src/fixer/git.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
 import type { Docker, ExecResult } from "../src/fixer/sandbox/docker.ts";
 import { workUnit, type PublishRequest, type UnitContext } from "../src/fixer/unit.ts";
+import { LocalBox } from "./local-box.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", ...args], { cwd, encoding: "utf8" }).trim();
@@ -74,11 +75,12 @@ interface Run {
   started: number;
   prompts: string[];
   users: string[];
+  harnessFiles: string[][];
 }
 
 async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof write>[]; exits?: Record<string, number>; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
   const { store, head } = await origin();
-  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [] };
+  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [] };
   const steps: ChatResult["message"]["tool_calls"][] = [
     options.edits ?? [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/app.py", "changed\n"), write("svc/new.txt", "x\n")],
     [FINISH],
@@ -132,13 +134,18 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
     ecosystemFor: () => options.ecosystem,
     startSandbox: async () => {
       seen.started++;
+      const box = new LocalBox();
       return {
-        async run(command): Promise<ExecResult> {
+        async run(command, timeoutMs, runOptions): Promise<ExecResult> {
+          if (command.length > 3) return box.run(command, timeoutMs, runOptions);
           seen.commands.push(command[2]!);
+          seen.harnessFiles.push(readdirSync(join(box.work, "svc")).sort());
           const failed = Object.entries(options.exits ?? {}).find(([step]) => command[2]!.endsWith(step));
           return { exitCode: failed?.[1] ?? 0, stdout: "out\n", stderr: "", truncated: false, timedOut: false };
         },
-        async stop() {},
+        load: (directory) => box.load(directory),
+        save: (directory) => box.save(directory),
+        stop: () => box.stop(),
       };
     },
     log: () => {},
@@ -150,7 +157,8 @@ describe("workUnit with an ecosystem behind the interface", () => {
   it("uses the ecosystem's image family, notes, allowed files, check and harness, in the lockfile's directory", async () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem() });
     assert.equal(result.outcome.kind, "pr");
-    assert.deepEqual(seen.images, ["proseco/python:3.12"]);
+    assert.equal(seen.images.length, 1);
+    assert.match(seen.images[0]!, /^proseco\/python:3\.12-[0-9a-f]{12}$/);
     assert.match(seen.prompts[0]!, /Ecosystem notes \(fake\): resolve with fake-resolve\./);
     assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-install", "cd '/work/svc' && fake-test"]);
     const [request] = seen.published;
@@ -159,6 +167,11 @@ describe("workUnit with an ecosystem behind the interface", () => {
     assert.deepEqual(request!.tests, { kind: "passed", commands: ["fake-install", "fake-test"], tail: "out\n" });
     assert.match(request!.body, /`fake-install` and `fake-test` passed in the sandbox/);
     assert.match(request!.body, /`svc\/app\.py`/);
+  });
+
+  it("runs the harness on the checkout as committed, without the files the guard discarded", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem() });
+    assert.deepEqual(seen.harnessFiles[0], ["app.py", "fake.lock", "fake.manifest", "toolchain.txt"]);
   });
 
   it("runs only the install when the ecosystem finds no tests", async () => {

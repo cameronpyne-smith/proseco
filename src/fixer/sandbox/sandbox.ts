@@ -1,19 +1,28 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LIMITS, type SandboxLimits } from "../../core/config.ts";
-import { Docker, type ExecResult } from "./docker.ts";
+import { NOT_COPIED, replaceTree } from "./copy.ts";
+import { Docker, type ExecOptions, type ExecResult } from "./docker.ts";
 import { ensureProxyImage } from "./images.ts";
+import { readTar } from "./tar.ts";
+
+const exec = promisify(execFile);
 
 const PROXY_PORT = 3128;
 const PIDS_LIMIT = 2048;
 const PROXY_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_SWEEP_AGE_MS = 60 * 60 * 1000;
+export const SANDBOX_USER = "1000:1000";
+export const WORK = "/work";
+const COPY_LIMIT_BYTES = 512 * 1024 * 1024;
+const COPY_TIMEOUT_MS = 10 * 60 * 1000;
+const EXCLUDES = ["--exclude=./.git", ...NOT_COPIED.map((name) => `--exclude=${name}`)];
+const BASELINE = "git init -q -b proseco && git add -A && git -c user.name=proseco -c user.email=proseco@localhost commit -q --no-verify --allow-empty -m baseline";
 
 export interface StartOptions {
-  worktree: string;
   image: string;
   allow?: string[];
   attemptId: string;
-  uid: number;
-  gid: number;
   limits?: SandboxLimits;
   docker?: Docker;
 }
@@ -58,15 +67,14 @@ export class Sandbox {
       });
       await docker.networkConnect("bridge", sandbox.#proxy);
       await sandbox.#waitForProxy();
-      const user = (await docker.rootless()) ? "0:0" : `${options.uid}:${options.gid}`;
       const proxyUrl = `http://${sandbox.#proxy}:${PROXY_PORT}`;
       await docker.run({
         name: sandbox.#box,
         image: options.image,
         network,
         attempt: options.attemptId,
-        user,
-        workdir: "/work",
+        user: SANDBOX_USER,
+        workdir: WORK,
         env: {
           HTTP_PROXY: proxyUrl,
           HTTPS_PROXY: proxyUrl,
@@ -79,7 +87,6 @@ export class Sandbox {
           UV_LINK_MODE: "copy",
           PIP_NO_INPUT: "1",
         },
-        binds: [`${options.worktree}:/work`],
         tmpfs: ["/tmp:exec,mode=1777"],
         memory: limits.memory,
         cpus: limits.cpus,
@@ -102,8 +109,20 @@ export class Sandbox {
     throw new Error(`the proxy container ${this.#proxy} did not start listening within ${PROXY_READY_TIMEOUT_MS} ms`);
   }
 
-  run(command: string[], timeoutMs: number): Promise<RunResult> {
-    return this.#docker.exec(this.#box, command, timeoutMs);
+  run(command: string[], timeoutMs: number, options: ExecOptions = {}): Promise<RunResult> {
+    return this.#docker.exec(this.#box, command, timeoutMs, options);
+  }
+
+  async load(directory: string): Promise<void> {
+    const { stdout: archive } = await exec("tar", ["-C", directory, ...EXCLUDES, "-cf", "-", "."], { encoding: "buffer", maxBuffer: COPY_LIMIT_BYTES });
+    const script = `find ${WORK} -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar -C ${WORK} -xf - && ${BASELINE}`;
+    const result = await this.run(["sh", "-c", script], COPY_TIMEOUT_MS, { input: archive });
+    if (result.exitCode !== 0) throw new Error(`copying ${directory} into the sandbox failed with exit code ${result.exitCode}: ${result.stderr.trim()}`);
+  }
+
+  async save(directory: string): Promise<void> {
+    const archive = await this.#docker.execBytes(this.#box, ["tar", "-C", WORK, ...EXCLUDES, "-cf", "-", "."], COPY_TIMEOUT_MS, COPY_LIMIT_BYTES);
+    replaceTree(directory, readTar(archive));
   }
 
   proxyLog(): Promise<string> {

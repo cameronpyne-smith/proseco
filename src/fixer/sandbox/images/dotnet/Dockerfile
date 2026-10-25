@@ -3,4 +3,5 @@ FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+RUN install -d -o 1000 -g 1000 /work
 WORKDIR /work

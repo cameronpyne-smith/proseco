@@ -32,9 +32,7 @@ function scripted(steps: Step[]) {
 function fakeEnv(outputs: Record<string, string> = {}): { env: ToolEnv; ran: string[] } {
   const ran: string[] = [];
   const env: ToolEnv = {
-    root: "/nonexistent",
     commandTimeoutMs: 1000,
-    git: async () => "",
     run: async (command) => {
       ran.push(command[2]!);
       return { exitCode: 0, stdout: outputs[command[2]!] ?? "ok", stderr: "", truncated: false, timedOut: false };

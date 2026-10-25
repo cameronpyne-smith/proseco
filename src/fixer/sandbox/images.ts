@@ -18,8 +18,14 @@ export interface ImageSpec {
   buildArgs: Record<string, string>;
 }
 
-export function imageReference(image: Pick<ImageSpec, "name" | "tag">): string {
-  return `${image.name}:${image.tag}`;
+function contentTag(...parts: Buffer[]): string {
+  const hash = createHash("sha256");
+  for (const part of parts) hash.update(part);
+  return hash.digest("hex").slice(0, 12);
+}
+
+export async function imageReference(image: Pick<ImageSpec, "name" | "tag" | "dockerfile">): Promise<string> {
+  return `${image.name}:${image.tag}-${contentTag(await readFile(image.dockerfile))}`;
 }
 
 function nodeMajor(declared: string | null): string {
@@ -41,7 +47,7 @@ export function imageFor(family: ImageFamily, declared: string | null): ImageSpe
 }
 
 export async function ensureImage(docker: Docker, image: ImageSpec): Promise<string> {
-  const reference = imageReference(image);
+  const reference = await imageReference(image);
   if (!(await docker.imageExists(reference))) {
     await docker.build({ tag: reference, dockerfile: image.dockerfile, context: dirname(image.dockerfile), buildArgs: image.buildArgs });
   }
@@ -49,7 +55,7 @@ export async function ensureImage(docker: Docker, image: ImageSpec): Promise<str
 }
 
 export async function proxyImageTag(): Promise<string> {
-  return createHash("sha256").update(await readFile(join(SANDBOX_DIR, "proxy.ts"))).digest("hex").slice(0, 12);
+  return contentTag(await readFile(join(SANDBOX_DIR, "proxy.ts")));
 }
 
 export async function ensureProxyImage(docker: Docker): Promise<string> {

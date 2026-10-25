@@ -24,6 +24,11 @@ export interface RunSpec {
   command: string[];
 }
 
+export interface ExecOptions {
+  limit?: number;
+  input?: Buffer | string;
+}
+
 export interface BuildSpec {
   tag: string;
   dockerfile: string;
@@ -56,8 +61,8 @@ export function runArgs(spec: RunSpec): string[] {
   return [...args, spec.image, ...spec.command];
 }
 
-export function execArgs(container: string, command: string[], timeoutMs: number): string[] {
-  return ["exec", container, "timeout", "-k", String(KILL_GRACE_SECONDS), `${timeoutMs / 1000}s`, ...command];
+export function execArgs(container: string, command: string[], timeoutMs: number, input = false): string[] {
+  return ["exec", ...(input ? ["--interactive"] : []), container, "timeout", "-k", String(KILL_GRACE_SECONDS), `${timeoutMs / 1000}s`, ...command];
 }
 
 export function buildArgs(spec: BuildSpec): string[] {
@@ -85,8 +90,12 @@ class Capture {
     this.#size += kept.length;
   }
 
+  bytes(): Buffer {
+    return Buffer.concat(this.#chunks);
+  }
+
   text(): string {
-    const text = Buffer.concat(this.#chunks).toString("utf8");
+    const text = this.bytes().toString("utf8");
     return this.truncated ? `${text}\n[output truncated at ${this.#limit} bytes]` : text;
   }
 }
@@ -106,13 +115,6 @@ export class Docker {
       const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
       throw new Error(`docker ${what} failed: ${stderr || (error as Error).message}`);
     }
-  }
-
-  #rootless: Promise<boolean> | null = null;
-
-  rootless(): Promise<boolean> {
-    this.#rootless ??= this.#docker(["info", "--format", "{{.SecurityOptions}}"], "info").then((options) => options.includes("name=rootless"));
-    return this.#rootless;
   }
 
   async info(): Promise<string> {
@@ -171,19 +173,37 @@ export class Docker {
     });
   }
 
-  exec(container: string, command: string[], timeoutMs: number, limit = DEFAULT_OUTPUT_LIMIT): Promise<ExecResult> {
-    const stdout = new Capture(limit);
-    const stderr = new Capture(limit);
+  async exec(container: string, command: string[], timeoutMs: number, options: ExecOptions = {}): Promise<ExecResult> {
+    const result = await this.#exec(container, command, timeoutMs, options);
+    return { ...result, stdout: result.stdout.text(), stderr: result.stderr.text(), truncated: result.stdout.truncated || result.stderr.truncated };
+  }
+
+  async execBytes(container: string, command: string[], timeoutMs: number, limit: number): Promise<Buffer> {
+    const result = await this.#exec(container, command, timeoutMs, { limit });
+    const what = `${command.join(" ")} in ${container}`;
+    if (result.timedOut) throw new Error(`${what} timed out after ${timeoutMs / 1000} s`);
+    if (result.stdout.truncated) throw new Error(`${what} wrote more than ${limit} bytes`);
+    if (result.exitCode !== 0) throw new Error(`${what} exited with ${result.exitCode}: ${result.stderr.text().trim()}`);
+    return result.stdout.bytes();
+  }
+
+  #exec(container: string, command: string[], timeoutMs: number, options: ExecOptions): Promise<{ exitCode: number; stdout: Capture; stderr: Capture; timedOut: boolean }> {
+    const stdout = new Capture(options.limit ?? DEFAULT_OUTPUT_LIMIT);
+    const stderr = new Capture(DEFAULT_OUTPUT_LIMIT);
     const started = Date.now();
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#binary, execArgs(container, command, timeoutMs), { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(this.#binary, execArgs(container, command, timeoutMs, options.input !== undefined), { stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
       let clientTimedOut = false;
       const guard = setTimeout(() => {
         clientTimedOut = true;
         child.kill("SIGKILL");
       }, timeoutMs + CLIENT_GRACE_MS);
-      child.stdout.on("data", (chunk: Buffer) => stdout.add(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.add(chunk));
+      child.stdout!.on("data", (chunk: Buffer) => stdout.add(chunk));
+      child.stderr!.on("data", (chunk: Buffer) => stderr.add(chunk));
+      if (child.stdin) {
+        child.stdin.on("error", () => undefined);
+        child.stdin.end(options.input);
+      }
       child.on("error", (error) => {
         clearTimeout(guard);
         reject(new Error(`docker exec in ${container} failed: ${error.message}`));
@@ -192,7 +212,7 @@ export class Docker {
         clearTimeout(guard);
         const exitCode = code ?? 137;
         const timedOut = clientTimedOut || ((exitCode === 124 || exitCode === 137) && Date.now() - started >= timeoutMs);
-        resolve({ exitCode, stdout: stdout.text(), stderr: stderr.text(), truncated: stdout.truncated || stderr.truncated, timedOut });
+        resolve({ exitCode, stdout, stderr, timedOut });
       });
     });
   }

@@ -19,12 +19,14 @@ import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDi
 import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
 import type { ReleaseNotes } from "./releases.ts";
-import { Docker, type ExecResult } from "./sandbox/docker.ts";
+import { Docker, type ExecOptions, type ExecResult } from "./sandbox/docker.ts";
 import { ensureImage, imageFor } from "./sandbox/images.ts";
-import { Sandbox, type StartOptions } from "./sandbox/sandbox.ts";
+import { Sandbox, WORK, type StartOptions } from "./sandbox/sandbox.ts";
 
 export interface SandboxHandle {
-  run(command: string[], timeoutMs: number): Promise<ExecResult>;
+  run(command: string[], timeoutMs: number, options?: ExecOptions): Promise<ExecResult>;
+  load(directory: string): Promise<void>;
+  save(directory: string): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -92,7 +94,7 @@ function readIfPresent(checkout: string): (path: string) => string | null {
 async function harness(sandbox: SandboxHandle, ecosystem: Ecosystem, lockfile: string, checkout: string, commandMs: number): Promise<TestOutcome> {
   const plan = ecosystem.harness(lockfile);
   const directory = dirname(lockfile);
-  const prefix = directory === "." ? "" : `cd ${shellQuote(`/work/${directory}`)} && `;
+  const prefix = directory === "." ? "" : `cd ${shellQuote(`${WORK}/${directory}`)} && `;
   const install = await sandbox.run(["sh", "-c", `${prefix}${plan.install}`], commandMs);
   if (install.exitCode !== 0) return { kind: "failed", step: plan.install, exitCode: install.exitCode, timedOut: install.timedOut, tail: combined(install) };
   if (!plan.hasTests(readIfPresent(checkout))) return { kind: "no-tests", commands: [plan.install], tail: "" };
@@ -135,16 +137,14 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
   try {
     const start = ctx.startSandbox ?? ((options: StartOptions) => Sandbox.start(options));
     sandbox = await start({
-      worktree: checkout,
       image,
       allow: ctx.fixer.proxy.allow,
       attemptId: `t${ctx.ticket}-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
-      uid: process.getuid!(),
-      gid: process.getgid!(),
       limits: ctx.fixer.sandbox,
       docker: ctx.docker,
     });
     const box = sandbox;
+    await box.load(checkout);
     const commandMs = ctx.fixer.budget.commandMinutes * MS_PER_MINUTE;
     const transcript = transcriptPath(ctx, unit);
     ctx.log(`transcript: ${transcript}`);
@@ -156,16 +156,13 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       headroom: ctx.fixer.ollama.numPredict,
       tools: TOOL_DEFINITIONS,
       execute: (name, args) =>
-        executeTool(
-          { root: checkout, commandTimeoutMs: commandMs, git: (gitArgs, okCodes) => ctx.store.inCheckout(checkout, gitArgs, "git", okCodes), run: (command, timeoutMs) => box.run(command, timeoutMs) },
-          name,
-          args,
-        ),
+        executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options) }, name, args),
       system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),
       timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,
       maxToolCalls: ctx.fixer.budget.toolCalls,
     });
+    await box.save(checkout);
     const extra = { stats: loop.stats, trace: loop.trace, transcript, ...(ctx.keepCheckout ? { checkout } : {}) };
     ctx.log(`agent ${loop.outcome}${loop.forced ? ` (forced after ${loop.forced})` : ""} after ${loop.stats.toolCalls} tool calls in ${Math.round(loop.stats.elapsedMs / 1000)} s`);
     if (loop.outcome !== "finished" || !loop.finish) {
@@ -185,9 +182,9 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       return none(`lockfile check failed: ${checks.filter((check) => !check.ok).map((check) => `${check.package}: ${check.reason}`).join("; ")}`, extra);
     }
 
+    await box.load(checkout);
     const tests = await harness(box, ecosystem, unit.source, checkout, commandMs);
     ctx.log(`harness: ${tests.kind}`);
-    for (const path of await discardOthers(ctx.store, checkout, headSha, allowed)) discarded.add(path);
 
     const prFixes: PrFix[] = unit.fixes.map((item) => ({ package: item.package, installed: item.installed, target: item.target, rows: item.rows.map((row) => ({ cve: row.cve, severity: row.severity })) }));
     const title = major ? majorTitle(prFixes[0]!) : commitMessage(unit.source, prFixes);

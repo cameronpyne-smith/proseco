@@ -28,7 +28,8 @@ describe("sandbox", { skip: !enabled && "set PROSECO_DOCKER_TESTS=1 to run again
   before(async () => {
     cpSync(fixture, worktree, { recursive: true });
     const image = await ensureImage(new Docker(), imageFor("node", ">=24"));
-    sandbox = await Sandbox.start({ worktree, image, attemptId, uid: process.getuid!(), gid: process.getgid!() });
+    sandbox = await Sandbox.start({ image, attemptId });
+    await sandbox.load(worktree);
   });
 
   after(async () => {
@@ -36,10 +37,24 @@ describe("sandbox", { skip: !enabled && "set PROSECO_DOCKER_TESTS=1 to run again
     rmSync(workspace, { recursive: true, force: true });
   });
 
+  it("works as uid 1000 on a copy with a baseline commit, not on the host's files", async () => {
+    const result = await sandbox.run(["sh", "-c", "id -u && touch package.json created.txt && git status --porcelain"], 60_000);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, "1000\n?? created.txt\n");
+    assert.equal(existsSync(join(worktree, "created.txt")), false);
+  });
+
   it("installs a lockfile through the proxy", async () => {
     const result = await sandbox.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], 5 * 60 * 1000);
     assert.equal(result.exitCode, 0, result.stderr);
-    assert.ok(existsSync(join(worktree, "node_modules", "left-pad", "package.json")));
+    assert.equal((await sandbox.run(["test", "-f", "node_modules/left-pad/package.json"], 60_000)).exitCode, 0);
+  });
+
+  it("copies the work out without node_modules or the container's .git", async () => {
+    await sandbox.save(worktree);
+    assert.ok(existsSync(join(worktree, "created.txt")));
+    assert.equal(existsSync(join(worktree, "node_modules")), false);
+    assert.equal(existsSync(join(worktree, ".git")), false);
   });
 
   it("refuses a host that is not on the allowlist and says so in the proxy log", async () => {
