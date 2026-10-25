@@ -68,6 +68,10 @@ function write(path: string, content: string) {
   return { function: { name: "write_file", arguments: { path, content } } };
 }
 
+function shell(command: string) {
+  return { function: { name: "run", arguments: { command } } };
+}
+
 interface Run {
   published: PublishRequest[];
   commands: string[];
@@ -78,7 +82,7 @@ interface Run {
   harnessFiles: string[][];
 }
 
-async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof write>[]; exits?: Record<string, number>; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
+async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
   const { store, head } = await origin();
   const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [] };
   const steps: ChatResult["message"]["tool_calls"][] = [
@@ -137,7 +141,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: ReturnType<typeof wr
       const box = new LocalBox();
       return {
         async run(command, timeoutMs, runOptions): Promise<ExecResult> {
-          if (command.length > 3) return box.run(command, timeoutMs, runOptions);
+          if (command.length > 3 || !/fake-/.test(command[2]!)) return box.run(command, timeoutMs, runOptions);
           seen.commands.push(command[2]!);
           seen.harnessFiles.push(readdirSync(join(box.work, "svc")).sort());
           const failed = Object.entries(options.exits ?? {}).find(([step]) => command[2]!.endsWith(step));
@@ -248,12 +252,26 @@ describe("workUnit for a major upgrade", () => {
   it("writes the major body: the release tags, why it is a draft, and what was discarded", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES });
     const body = seen.published[0]!.body;
-    assert.match(body, /### Breaking changes considered\n\n- `v2\.0\.0`\n- `v1\.5\.0`/);
+    assert.match(body, /### Breaking changes considered\n\nThe agent was given the notes of 2 releases of `acme-org\/pkg` after 1\.0\.0, up to 2\.0\.0\. These start a new major version or mention breaking changes:\n\n- \[`v2\.0\.0`\]/);
+    assert.doesNotMatch(body, /`v1\.5\.0`\]/);
     assert.match(body, /### Why this is a draft/);
     assert.match(body, /`fake-install` and `fake-test` ran in the sandbox and exited 0/);
     assert.match(body, /- `\.github\/workflows\/ci\.yml`\n- `svc\/package\.json`/);
     assert.doesNotMatch(body, /Draft: /);
     assert.match(body, /Part of acme-org\/acme-tickets#12/);
+  });
+
+  it("keeps new files the agent wrote but discards the ones its commands created, and does not count them as code", async () => {
+    const { seen } = await run({
+      ecosystem: fakeEcosystem(),
+      unit: MAJOR_UNIT,
+      edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/new_module.py", "x\n"), shell("mkdir -p svc/dist && echo built > svc/dist/out.js")],
+    });
+    const [request] = seen.published;
+    assert.deepEqual([...request!.commit.files].sort(), ["svc/fake.lock", "svc/fake.manifest", "svc/new_module.py"]);
+    assert.match(request!.body, /- `svc\/dist\/out\.js`/);
+    const manifestOnly = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), shell("mkdir -p svc/dist && echo built > svc/dist/out.js")] });
+    assert.match(manifestOnly.seen.published[0]!.body, /changed only the manifest and lockfile/);
   });
 
   it("words the draft reason by whether code changed", async () => {

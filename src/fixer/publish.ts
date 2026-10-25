@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { rmdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Ecosystem, ImageFamily } from "./ecosystems/ecosystem.ts";
 import type { GitStore } from "./git.ts";
@@ -6,8 +6,6 @@ import type { GitStore } from "./git.ts";
 const NEVER = ".github/workflows/";
 const CHUNK = 200;
 const LITERAL = "--literal-pathspecs";
-const MAX_NEW_BINARY_BYTES = 256 * 1024;
-const BINARY_PROBE_BYTES = 8000;
 const VENDORED = new Set(["node_modules", ".venv"]);
 const PACKAGE_MANAGER_CONFIG = /^(\.npmrc|\.yarnrc|\.yarnrc\.yml|\.pnpmfile\.cjs|pip\.conf|pip\.ini|\.pypirc|uv\.toml|nuget\.config)$/i;
 
@@ -65,22 +63,7 @@ function permits(allowed: Allowed, entry: StatusEntry): boolean {
   return typeof allowed === "function" ? allowed(entry) : isAllowed(allowed, entry.path);
 }
 
-function isLargeBinary(file: string): boolean {
-  try {
-    if (statSync(file).size <= MAX_NEW_BINARY_BYTES) return false;
-    const probe = Buffer.alloc(BINARY_PROBE_BYTES);
-    const descriptor = openSync(file, "r");
-    try {
-      return probe.subarray(0, readSync(descriptor, probe, 0, BINARY_PROBE_BYTES, 0)).includes(0);
-    } finally {
-      closeSync(descriptor);
-    }
-  } catch {
-    return false;
-  }
-}
-
-export function majorGuard(options: { root: string; ecosystem: Pick<Ecosystem, "imageFamily"> }): Guard {
+export function majorGuard(options: { written: ReadonlySet<string>; ecosystem: Pick<Ecosystem, "imageFamily"> }): Guard {
   const foreign = (Object.keys(FAMILY_FILES) as (keyof typeof FAMILY_FILES)[]).filter((family) => family !== options.ecosystem.imageFamily).map((family) => FAMILY_FILES[family]);
   return (entry) => {
     if (entry.path.startsWith(NEVER)) return false;
@@ -88,7 +71,7 @@ export function majorGuard(options: { root: string; ecosystem: Pick<Ecosystem, "
     if (parts.some((part) => VENDORED.has(part))) return false;
     if (PACKAGE_MANAGER_CONFIG.test(basename(entry.path))) return false;
     if (foreign.some((pattern) => pattern.test(basename(entry.path)))) return false;
-    return !(entry.untracked && isLargeBinary(join(options.root, entry.path)));
+    return !entry.untracked || options.written.has(entry.path);
   };
 }
 

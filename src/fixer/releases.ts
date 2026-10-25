@@ -33,7 +33,7 @@ export function repositoryOf(value: string): string | null {
   return match ? `${match[1]}/${match[2]!.replace(/\.git$/, "")}` : null;
 }
 
-function versionOf(tag: string, pkg: string): string {
+export function versionOf(tag: string, pkg: string): string {
   let version = tag;
   for (const prefix of [`${pkg}@`, `${pkg}-`]) {
     if (version.startsWith(prefix)) {

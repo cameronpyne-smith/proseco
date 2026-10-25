@@ -1,4 +1,6 @@
+import { compareVersions, isMajorUpgrade } from "../core/versions.ts";
 import type { PackageCheck } from "./check.ts";
+import { versionOf, type ReleaseNote, type ReleaseNotes } from "./releases.ts";
 
 const MAX_DISCARDED = 20;
 const MAX_TAIL_CHARS = 4000;
@@ -34,7 +36,7 @@ export interface MajorPrBodyInput {
   ticket: number;
   lockfile: string;
   fix: PrFix;
-  releaseTags: string[];
+  releases: ReleaseNotes | null;
   codeChanged: boolean;
   summary: string;
   checks: PackageCheck[];
@@ -121,6 +123,35 @@ export function renderPrBody(input: PrBodyInput): string {
   return lines.join("\n");
 }
 
+export function breakingReleases(pkg: string, installed: string, releases: ReleaseNote[]): ReleaseNote[] {
+  const stable = releases
+    .map((release) => ({ release, version: versionOf(release.tag, pkg) }))
+    .filter(({ version }) => /^\d+(\.\d+)*$/.test(version))
+    .sort((a, b) => compareVersions(a.version, b.version) ?? 0);
+  const picked: ReleaseNote[] = [];
+  let previous = installed;
+  for (const { release, version } of stable) {
+    if (isMajorUpgrade(previous, [version]) || /breaking/i.test(`${release.name}\n${release.body}`)) picked.push(release);
+    previous = version;
+  }
+  return picked.reverse();
+}
+
+function releasesSection(fix: PrFix, notes: ReleaseNotes | null): string[] {
+  if (!notes || notes.releases.length === 0 || !notes.repository) return ["_No release notes were found for this version range._"];
+  const base = `https://github.com/${notes.repository}/releases`;
+  const picked = breakingReleases(fix.package, fix.installed, notes.releases);
+  const count = notes.releases.length;
+  return [
+    `The agent was given the notes of ${count} release${count === 1 ? "" : "s"} of \`${notes.repository}\` after ${fix.installed}, up to ${fix.target.join(" or ")}. ${
+      picked.length === 0 ? "None of them starts a new major version or mentions breaking changes." : "These start a new major version or mention breaking changes:"
+    }`,
+    ...(picked.length === 0 ? [] : ["", ...picked.map((release) => `- [\`${release.tag}\`](${base}/tag/${encodeURIComponent(release.tag)})`)]),
+    "",
+    `All release notes: ${base}`,
+  ];
+}
+
 function ranSection(tests: TestOutcome): string[] {
   const output = tests.tail.trim() === "" ? [] : ["", "<details>", "<summary>Output</summary>", "", fence(tailOf(tests.tail)), "", "</details>"];
   const commands = tests.kind === "failed" ? "" : tests.commands.map((command) => `\`${command}\``).join(" and ");
@@ -128,7 +159,11 @@ function ranSection(tests: TestOutcome): string[] {
     case "passed":
       return [`- ${commands} ran in the sandbox and exited 0.`, ...output];
     case "no-tests":
-      return [`- ${commands} ran in the sandbox and exited 0; the project has no tests the fixer can run, so nothing else ran.`, ...output];
+      return [
+        `- ${commands} ran in the sandbox and exited 0; the project has no tests the fixer can run, so nothing else ran.`,
+        "- **Untested:** nothing here shows that the upgraded code works. A build that passes can still fail when the code runs, so a person must run the project before this can merge.",
+        ...output,
+      ];
     case "failed":
       return [`- \`${tests.step}\` ${tests.timedOut ? "timed out" : `failed with exit code ${tests.exitCode}`} in the sandbox.`, ...output];
   }
@@ -145,7 +180,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "",
     "### Breaking changes considered",
     "",
-    ...(input.releaseTags.length === 0 ? ["_No release notes were found for this version range._"] : input.releaseTags.map((tag) => `- \`${tag}\``)),
+    ...releasesSection(input.fix, input.releases),
     "",
     "### Summary",
     "",
@@ -155,7 +190,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
     ...ranSection(input.tests),
-    ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, large new binaries), so they were discarded and are not part of this pull request:"),
+    ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, new files that a command created rather than the agent, such as build output), so they were discarded and are not part of this pull request:"),
     "",
     "### Why this is a draft",
     "",

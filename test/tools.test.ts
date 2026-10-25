@@ -220,6 +220,17 @@ describe("write_file and edit_file", () => {
     assert.match((await call("edit_file", { path: "nope.txt", old: "a", new: "b" })).content, /^error: nope\.txt does not exist/);
   });
 
+  it("reports each path it wrote, relative to the repository root, and nothing for a failed write", async () => {
+    const wrote: string[] = [];
+    fixture.env.wrote = (path) => wrote.push(path);
+    writeFileSync(join(fixture.root, "a.txt"), "aa");
+    await call("write_file", { path: "./src//new.js", content: "x" });
+    await call("edit_file", { path: "a.txt", old: "aa", new: "b" });
+    await call("edit_file", { path: "a.txt", old: "zz", new: "b" });
+    await call("write_file", { path: "../escape.txt", content: "x" });
+    assert.deepEqual(wrote, ["src/new.js", "a.txt"]);
+  });
+
   it("allows deleting text with an empty replacement", async () => {
     writeFileSync(join(fixture.root, "a.txt"), "abc");
     await call("edit_file", { path: "a.txt", old: "b", new: "" });

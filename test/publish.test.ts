@@ -152,12 +152,10 @@ describe("commit guard", () => {
 });
 
 describe("the commit guard for a major upgrade", () => {
-  const big = (bytes: number) => Buffer.alloc(bytes, 0).toString("latin1");
-
-  async function major(edits: Record<string, string>, files: Record<string, string> = {}) {
-    const work = await checkout({ "uv.lock": "x", "docs/notes.md": "old", ...files });
+  async function major(edits: Record<string, string>, written: string[] = Object.keys(edits)) {
+    const work = await checkout({ "uv.lock": "x", "docs/notes.md": "old" });
     for (const [file, content] of Object.entries(edits)) work.write(file, content);
-    const guard = majorGuard({ root: work.path, ecosystem: npm });
+    const guard = majorGuard({ written: new Set(written), ecosystem: npm });
     const discarded = await discardOthers(work.store, work.path, work.base, guard);
     const commit = await commitAllowed(work.store, work.path, { bot: "acme-proseco", message: "Upgrade", allowed: guard });
     return { discarded: discarded.sort(), files: commit ? commit.files.sort() : null };
@@ -187,13 +185,10 @@ describe("the commit guard for a major upgrade", () => {
     assert.deepEqual(result.files, ["src/index.js"]);
   });
 
-  it("refuses a new binary over 256 KB but allows a small one, a large text file and an existing binary", async () => {
-    const result = await major(
-      { "assets/huge.bin": big(256 * 1024 + 1), "assets/small.bin": big(1024), "docs/large.txt": "a".repeat(300_000), "assets/old.bin": big(300_000) + "x" },
-      { "assets/old.bin": big(300_000) },
-    );
-    assert.deepEqual(result.discarded, ["assets/huge.bin"]);
-    assert.deepEqual(result.files, ["assets/old.bin", "assets/small.bin", "docs/large.txt"]);
+  it("keeps a new file only when the agent wrote it with the file tools, and keeps any change to a tracked file", async () => {
+    const result = await major({ "src/a.js": "changed by a codemod", "src/new.mjs": "export {}", "dist/index.html": "<html>", "dist/assets/app.js": "built" }, ["src/new.mjs"]);
+    assert.deepEqual(result.discarded, ["dist/assets/app.js", "dist/index.html"]);
+    assert.deepEqual(result.files, ["src/a.js", "src/new.mjs"]);
   });
 
   it("commits nothing when only refused paths changed", async () => {

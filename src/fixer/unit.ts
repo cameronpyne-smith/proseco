@@ -148,6 +148,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const commandMs = ctx.fixer.budget.commandMinutes * MS_PER_MINUTE;
     const transcript = transcriptPath(ctx, unit);
     ctx.log(`transcript: ${transcript}`);
+    const written = new Set<string>();
     const loop = await runLoop({
       llm: ctx.llm,
       finaliseWith: [ctx.llm.withLowThink(), ctx.llm.withThink(false)],
@@ -156,7 +157,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       headroom: ctx.fixer.ollama.numPredict,
       tools: TOOL_DEFINITIONS,
       execute: (name, args) =>
-        executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options) }, name, args),
+        executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options), wrote: (path) => written.add(path) }, name, args),
       system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),
       timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,
@@ -169,7 +170,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       return none(`the agent gave up (${loop.outcome}${loop.error ? `: ${loop.error}` : ""})`, extra);
     }
     const manifests = allowedFiles(ecosystem, unit.source, lockfileText);
-    const allowed: Allowed = major ? majorGuard({ root: checkout, ecosystem }) : manifests;
+    const allowed: Allowed = major ? majorGuard({ written, ecosystem }) : manifests;
     const discarded = new Set(await discardOthers(ctx.store, checkout, headSha, allowed));
 
     let checks: PackageCheck[];
@@ -196,7 +197,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const draft = major || tests.kind === "failed" || loop.forced !== undefined;
     const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, discarded: summariseDiscarded([...discarded]) };
     const body = major
-      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releaseTags: facts.fixes[0]?.releases?.releases.map((release) => release.tag) ?? [], codeChanged: commit.files.some((file) => !manifests.has(file)) })
+      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)) })
       : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
     if (!published) return none("not published (local run)", extra);

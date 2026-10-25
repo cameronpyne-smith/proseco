@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PackageCheck } from "../src/fixer/check.ts";
-import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type MajorPrBodyInput, type PrBodyInput, type PrFix } from "../src/fixer/pr.ts";
+import { breakingReleases, commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type MajorPrBodyInput, type PrBodyInput, type PrFix } from "../src/fixer/pr.ts";
+import type { ReleaseNotes } from "../src/fixer/releases.ts";
 
 const minimist: PrFix = { package: "minimist", installed: "1.2.5", target: ["1.2.6"], rows: [{ cve: "CVE-2021-44906", severity: "critical" }, { cve: "CVE-2020-7598", severity: "medium" }] };
 const leftPad: PrFix = { package: "left-pad", installed: "1.0.0", target: ["1.3.0", "2.0.1"], rows: [{ cve: "CVE-2026-1", severity: "high" }] };
@@ -103,6 +104,18 @@ describe("discarded changes summary", () => {
 
 describe("major upgrade pull request", () => {
   const nodeFetch: PrFix = { package: "node-fetch", installed: "2.6.1", target: ["3.1.1"], rows: [{ cve: "CVE-2022-0235", severity: "high" }] };
+  const RELEASES: ReleaseNotes = {
+    repository: "acme-org/node-fetch",
+    note: null,
+    releases: [
+      { tag: "v3.1.1", name: "v3.1.1", body: "Fixes a header bug." },
+      { tag: "v3.1.0", name: "v3.1.0", body: "Adds a feature." },
+      { tag: "v3.0.0", name: "v3.0.0", body: "Now ESM only." },
+      { tag: "v3.0.0-beta.9", name: "v3.0.0-beta.9", body: "BREAKING: drops CommonJS." },
+      { tag: "v2.7.0", name: "v2.7.0", body: "Breaking change in how headers are joined." },
+      { tag: "v2.6.2", name: "v2.6.2", body: "Fixes a typo." },
+    ],
+  };
 
   function major(overrides: Partial<MajorPrBodyInput> = {}): MajorPrBodyInput {
     return {
@@ -111,7 +124,7 @@ describe("major upgrade pull request", () => {
       ticket: 12,
       lockfile: "package-lock.json",
       fix: nodeFetch,
-      releaseTags: ["v3.0.0", "v2.7.0"],
+      releases: RELEASES,
       codeChanged: true,
       summary: "Changed index.js to import node-fetch dynamically because version 3 is ESM only.",
       checks: [{ package: "node-fetch", installed: ["3.3.2"], ok: true, reason: "installed 3.3.2 is at or above 3.1.1" }],
@@ -130,7 +143,7 @@ describe("major upgrade pull request", () => {
     const body = renderMajorPrBody(major());
     const positions = [
       /\| `node-fetch` \| 2\.6\.1 → 3\.1\.1 \| CVE-2022-0235 \(high\) \|/,
-      /### Breaking changes considered\n\n- `v3\.0\.0`\n- `v2\.7\.0`/,
+      /### Breaking changes considered\n\nThe agent was given the notes of 6 releases of `acme-org\/node-fetch` after 2\.6\.1, up to 3\.1\.1\. These start a new major version or mention breaking changes:\n\n- \[`v3\.0\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v3\.0\.0\)\n- \[`v2\.7\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v2\.7\.0\)\n\nAll release notes: https:\/\/github\.com\/acme-org\/node-fetch\/releases\n/,
       /### Summary[^]*dynamically/,
       /### Checks[^]*node-fetch: installed 3\.3\.2/,
       /### Why this is a draft[^]*crosses a major version[^]*person must confirm/,
@@ -163,7 +176,9 @@ describe("major upgrade pull request", () => {
   it("reports what ran: commands that passed, the one that failed with its output, and that nothing else ran without tests", () => {
     assert.match(renderMajorPrBody(major()), /`npm ci --no-audit --no-fund` and `npm test` ran in the sandbox and exited 0/);
     assert.match(renderMajorPrBody(major()), /ok 1/);
-    assert.match(renderMajorPrBody(major({ tests: { kind: "no-tests", commands: ["npm ci"], tail: "" } })), /`npm ci` ran in the sandbox and exited 0; the project has no tests the fixer can run, so nothing else ran/);
+    const untested = renderMajorPrBody(major({ tests: { kind: "no-tests", commands: ["npm ci"], tail: "" } }));
+    assert.match(untested, /`npm ci` ran in the sandbox and exited 0; the project has no tests the fixer can run, so nothing else ran\.\n- \*\*Untested:\*\* nothing here shows that the upgraded code works\. A build that passes can still fail when the code runs, so a person must run the project before this can merge\./);
+    assert.doesNotMatch(renderMajorPrBody(major()), /Untested/);
     const failed = renderMajorPrBody(major({ tests: { kind: "failed", step: "npm test", exitCode: 1, timedOut: false, tail: "AssertionError: boom" } }));
     assert.match(failed, /`npm test` failed with exit code 1 in the sandbox/);
     assert.match(failed, /AssertionError: boom/);
@@ -171,7 +186,20 @@ describe("major upgrade pull request", () => {
   });
 
   it("says so when no release notes were found", () => {
-    assert.match(renderMajorPrBody(major({ releaseTags: [] })), /### Breaking changes considered\n\n_No release notes were found for this version range\._/);
+    for (const releases of [null, { ...RELEASES, releases: [] }, { ...RELEASES, repository: null }]) {
+      assert.match(renderMajorPrBody(major({ releases })), /### Breaking changes considered\n\n_No release notes were found for this version range\._/);
+    }
+  });
+
+  it("says when no release starts a major version or mentions breaking changes", () => {
+    const body = renderMajorPrBody(major({ releases: { ...RELEASES, releases: [RELEASES.releases[5]!] } }));
+    assert.match(body, /notes of 1 release of `acme-org\/node-fetch` after 2\.6\.1, up to 3\.1\.1\. None of them starts a new major version or mentions breaking changes\.\n\nAll release notes:/);
+  });
+
+  it("picks stable releases that start a major version, including from 0.x and with package-prefixed tags, or that mention breaking changes", () => {
+    const tags = (pkg: string, installed: string, list: [string, string][]) => breakingReleases(pkg, installed, list.map(([tag, body]) => ({ tag, name: "", body }))).map((release) => release.tag);
+    assert.deepEqual(tags("vite", "5.4.19", [["vite@6.0.1", ""], ["vite@6.0.0", "see CHANGELOG"], ["vite@6.0.0-beta.1", "breaking"], ["vite@5.4.20", ""]]), ["vite@6.0.0"]);
+    assert.deepEqual(tags("x", "0.3.1", [["0.4.1", ""], ["0.4.0", ""], ["0.3.2", "BREAKING CHANGES: none really"]]), ["0.4.0", "0.3.2"]);
   });
 
   it("notes a summary with nothing the diff supports", () => {

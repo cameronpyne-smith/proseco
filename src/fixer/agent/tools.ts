@@ -20,6 +20,7 @@ export interface FinishArgs {
 export interface ToolEnv {
   commandTimeoutMs: number;
   run(command: string[], timeoutMs: number, options?: ExecOptions): Promise<RunResult>;
+  wrote?(path: string): void;
 }
 
 export interface ToolResult {
@@ -217,15 +218,16 @@ async function search(env: ToolEnv, args: Record<string, unknown>): Promise<stri
   return `${lines.slice(0, SEARCH_LINES).join("\n")}\n[${lines.length - SEARCH_LINES} more lines not shown; narrow the pattern or the path]`;
 }
 
-async function store(env: ToolEnv, operand: string, content: string): Promise<void> {
-  const result = await sh(env, WRITE_SCRIPT, [operand], { input: content });
+async function store(env: ToolEnv, target: { relative: string; operand: string }, content: string): Promise<void> {
+  const result = await sh(env, WRITE_SCRIPT, [target.operand], { input: content });
   if (result.exitCode !== 0) throw failed(result);
+  env.wrote?.(target.relative);
 }
 
 async function writeFile(env: ToolEnv, args: Record<string, unknown>): Promise<string> {
   const path = text(args["path"], "path");
   const content = text(args["content"], "content", true);
-  await store(env, confine(path, { write: true }).operand, content);
+  await store(env, confine(path, { write: true }), content);
   return `wrote ${Buffer.byteLength(content)} bytes to ${path}`;
 }
 
@@ -233,13 +235,13 @@ async function editFile(env: ToolEnv, args: Record<string, unknown>): Promise<st
   const path = text(args["path"], "path");
   const old = text(args["old"], "old");
   const replacement = text(args["new"], "new", true);
-  confine(path, { write: true });
-  const { operand, content } = await contents(env, path);
+  const target = confine(path, { write: true });
+  const { content } = await contents(env, path);
   const count = content.split(old).length - 1;
   if (count !== 1) {
     throw new ToolError(`old text occurs ${count} times in ${path}; it must occur exactly once${count > 1 ? ": include surrounding lines to make it unique" : ""}`);
   }
-  await store(env, operand, content.replace(old, () => replacement));
+  await store(env, target, content.replace(old, () => replacement));
   return `edited ${path}`;
 }
 
