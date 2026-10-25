@@ -44,6 +44,15 @@ describe("Sandbox.start", () => {
     assert.equal(box.workdir, "/work");
     assert.deepEqual(box.binds ?? [], []);
   });
+
+  it("keeps loopback out of the proxy", async () => {
+    const { docker, runs } = fakeDocker();
+    await Sandbox.start({ image: "img", attemptId: "t1", docker });
+    const env = runs.find((spec) => spec.name === "proseco-box-t1")!.env!;
+    assert.equal(env["NO_PROXY"], "localhost,127.0.0.1,::1");
+    assert.equal(env["no_proxy"], "localhost,127.0.0.1,::1");
+    assert.match(env["HTTPS_PROXY"]!, /^http:\/\/proseco-proxy-t1:/);
+  });
 });
 
 describe("Docker.exec", () => {

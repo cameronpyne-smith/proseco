@@ -19,6 +19,7 @@ export interface Ecosystem {
   imageFamily: ImageFamily;
   notes: string;
   installedVersions(lockfileText: string): Map<string, string[]>;
+  directVersions(lockfileText: string): Map<string, string>;
   parentChain(lockfileText: string, pkg: string, version: string): string[] | null;
   toolchainVersion(files: Record<string, string>): string | null;
   allowedFiles(lockfile: string, lockfileText: string): string[];

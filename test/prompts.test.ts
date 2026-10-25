@@ -41,6 +41,8 @@ describe("prompts", () => {
     assert.match(NPM_NOTES, /npm install --package-lock-only --no-audit --no-fund/);
     assert.match(NPM_NOTES, /npm ci --no-audit --no-fund/);
     assert.match(NPM_NOTES, /overrides/);
+    assert.match(NPM_NOTES, /ERESOLVE[^]*previous major[^]*same command[^]*--package-lock-only/);
+    assert.match(NPM_NOTES, /--force[^]*last resort[^]*npm ls --all/);
     assert.match(NPM_NOTES, /Never edit package-lock\.json by hand/);
     assert.match(RULES, /\.github\//);
     assert.match(RULES, /Never add a dependency/);

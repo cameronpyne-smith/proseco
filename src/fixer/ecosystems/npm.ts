@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path/posix";
+import { highestVersion } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
 
@@ -55,6 +56,7 @@ export const NPM_NOTES = [
   "- `npm install --package-lock-only` never moves a package whose locked version still satisfies its range. To move one within its range, run `npm update <package> --package-lock-only --no-audit --no-fund`.",
   "- A transitive dependency: first check whether a fixed version is already inside the range its parent declares (`npm ls <package>` shows the chain; `npm view <parent>@<locked version> dependencies` shows the ranges). If it is, `npm update <package> --package-lock-only` is the whole fix and package.json does not change. If not, bump the named parent (the direct dependency the chain starts with) to a release whose range allows a fixed version, then resolve. Only if no parent release does, add an `overrides` entry with a caret range at the fixed version (`\"^1.2.3\"`), never an exact version, then resolve.",
   "- When several direct dependencies must change together, for example because of peer dependencies, change them in one command: `npm install <name>@<range> <name>@<range> --package-lock-only --no-audit --no-fund`.",
+  "- If the resolver stops with ERESOLVE and names a package already in the lockfile that still requires the previous major of what you are upgrading (often an old nested plugin or helper), upgrade that package too in the same command: `npm install <name>@<range> <other>@<range> --package-lock-only --no-audit --no-fund`. Use `--force` or `--legacy-peer-deps` only as a last resort; afterwards run `npm ls --all` and confirm it reports no `invalid` or `ERESOLVE` peer dependency problems.",
   "- Never edit package-lock.json by hand. Only the resolver may write it. Never delete it to get past a resolver error: that re-resolves every package in the project.",
   "- `npm ls <package>` shows every installed copy and which package requires it.",
 ].join("\n");
@@ -74,6 +76,21 @@ export const npm: Ecosystem = {
       installed.set(name, [...new Set([...(installed.get(name) ?? []), entry.version])].sort());
     }
     return installed;
+  },
+
+  directVersions(text) {
+    const packages = packagesOf(text);
+    const direct = new Map<string, string>();
+    for (const root of ["", ...workspaceMembers(text)]) {
+      const entry = packages[root]!;
+      const names = [entry.dependencies, entry.optionalDependencies, entry.peerDependencies, entry.devDependencies].flatMap((group) => Object.keys(group ?? {}));
+      for (const name of names) {
+        const path = resolve(packages, root, name);
+        const version = path === null ? undefined : packages[path]!.version;
+        if (version) direct.set(name, highestVersion([version, ...(direct.has(name) ? [direct.get(name)!] : [])])[0]!);
+      }
+    }
+    return direct;
   },
 
   parentChain(text, pkg, version) {

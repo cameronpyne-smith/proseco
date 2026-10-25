@@ -62,6 +62,21 @@ describe("npm", () => {
     assert.equal(npm.parentChain(lock, "absent", "1.0.0"), null);
   });
 
+  it("lists the version each direct dependency resolves to", () => {
+    const text = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { dependencies: { "acme-a": "^2.0.0" }, devDependencies: { "acme-b": "^1.0.0" }, workspaces: ["packages/app"] },
+        "packages/app": { dependencies: { "acme-c": "^1.0.0" } },
+        "node_modules/acme-a": { version: "2.1.0" },
+        "node_modules/acme-b": { version: "1.0.0" },
+        "node_modules/acme-d": { version: "9.0.0" },
+        "packages/app/node_modules/acme-c": { version: "1.4.0" },
+      },
+    });
+    assert.deepEqual([...npm.directVersions(text)].sort(), [["acme-a", "2.1.0"], ["acme-b", "1.0.0"], ["acme-c", "1.4.0"]]);
+  });
+
   it("lists every installed version of each package, including nested copies", () => {
     const installed = npm.installedVersions(lock);
     assert.deepEqual(installed.get("acme-parse"), ["0.9.1", "1.0.2"]);
@@ -105,6 +120,14 @@ describe("uv", () => {
 
   it("returns null when the version is not locked", () => {
     assert.equal(uv.parentChain(lock, "acme-urllib", "1.0.0"), null);
+  });
+
+  it("lists the locked version of each direct dependency and dev dependency", () => {
+    const direct = uv.directVersions(lock);
+    assert.equal(direct.get("acme-client"), "1.5.0");
+    assert.equal(direct.get("acme-pytest"), "8.0.0");
+    assert.equal(direct.has("acme-urllib"), false);
+    assert.equal(direct.has("acme-api"), false);
   });
 
   it("lists installed versions by normalised name", () => {

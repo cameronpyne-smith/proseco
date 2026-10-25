@@ -30,6 +30,9 @@ function fakeEcosystem(overrides: Partial<Ecosystem> = {}, tests = true): Ecosys
     installedVersions(text) {
       return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, [line.split("==")[1]!]]));
     },
+    directVersions(text) {
+      return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, line.split("==")[1]!]));
+    },
     parentChain: () => null,
     toolchainVersion: (files) => files["toolchain.txt"]?.trim() ?? null,
     allowedFiles: (lockfile) => [lockfile, join(dirname(lockfile), "fake.manifest")],
@@ -240,6 +243,16 @@ describe("workUnit for a major upgrade", () => {
     assert.equal(request!.tests.kind, "passed");
     assert.deepEqual([...request!.commit.files].sort(), ["svc/app.py", "svc/fake.lock", "svc/fake.manifest", "svc/new_module.py"]);
     assert.equal(result.outcome.kind === "pr" && result.outcome.draft, true);
+  });
+
+  it("lists the other direct dependencies that crossed a major version, and not the upgraded one or a minor bump", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits, releases: RELEASES });
+    const body = seen.published[0]!.body;
+    assert.match(body, /### Other major upgrades[^]*- `other` 3\.0\.0 → 4\.0\.0 \(\[releases\]\(https:\/\/github\.com\/acme-org\/pkg\/releases\)\)/);
+    assert.doesNotMatch(body, /- `pkg` 1\.0\.0/);
+    const minor = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.1.0\n"), write("svc/fake.manifest", "pkg>=2\n")] });
+    assert.doesNotMatch(minor.seen.published[0]!.body, /Other major upgrades/);
   });
 
   it("puts the release notes and the major instructions in front of the agent", async () => {

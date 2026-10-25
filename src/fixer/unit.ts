@@ -14,6 +14,7 @@ import { runLoop } from "./agent/loop.ts";
 import type { OllamaClient } from "./agent/ollama.ts";
 import { systemPrompt, userPrompt } from "./agent/prompts.ts";
 import { executeTool, TOOL_DEFINITIONS } from "./agent/tools.ts";
+import { forcedMajors, withRepositories } from "./majors.ts";
 import { verifySummary, type DiffFile } from "./agent/verify.ts";
 import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
@@ -195,9 +196,11 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const diff = diffFiles.map((file) => file.text).join("\n");
     const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, major ? diffFiles : diff);
     const draft = major || tests.kind === "failed" || loop.forced !== undefined;
+    const afterText = readFileSync(join(checkout, unit.source), "utf8");
+    const forced = major ? await withRepositories(ecosystem.findingEcosystem, forcedMajors(ecosystem, lockfileText, afterText, unit.fixes[0]!.package), ctx.releases) : [];
     const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, discarded: summariseDiscarded([...discarded]) };
     const body = major
-      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)) })
+      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)), forcedMajors: forced })
       : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
     if (!published) return none("not published (local run)", extra);

@@ -1,5 +1,6 @@
 import { compareVersions, isMajorUpgrade } from "../core/versions.ts";
 import type { PackageCheck } from "./check.ts";
+import type { ForcedMajor } from "./majors.ts";
 import { versionOf, type ReleaseNote, type ReleaseNotes } from "./releases.ts";
 
 const MAX_DISCARDED = 20;
@@ -38,6 +39,7 @@ export interface MajorPrBodyInput {
   fix: PrFix;
   releases: ReleaseNotes | null;
   codeChanged: boolean;
+  forcedMajors: ForcedMajor[];
   summary: string;
   checks: PackageCheck[];
   tests: TestOutcome;
@@ -80,9 +82,17 @@ function discardedSection(discarded: string[], reason: string): string[] {
   return lines;
 }
 
-function packageRow(fix: PrFix): string {
+function changeOf(fix: PrFix, checks: PackageCheck[]): string {
+  const target = fix.target.join(" or ");
+  const now = checks.find((check) => check.package === fix.package)?.installed ?? [];
+  if (now.length === 0) return `${fix.installed} → ${target}`;
+  const reached = now.join(", ");
+  return reached === target ? `${fix.installed} → ${reached}` : `${fix.installed} → ${reached} (fix needs ${target})`;
+}
+
+function packageRow(fix: PrFix, checks: PackageCheck[]): string {
   const findings = fix.rows.map((row) => `${row.cve} (${row.severity})`).join("<br>");
-  return `| \`${cell(fix.package)}\` | ${cell(`${fix.installed} → ${fix.target.join(" or ")}`)} | ${findings} |`;
+  return `| \`${cell(fix.package)}\` | ${cell(changeOf(fix, checks))} | ${findings} |`;
 }
 
 function testSection(tests: TestOutcome): string[] {
@@ -101,7 +111,7 @@ function testSection(tests: TestOutcome): string[] {
 }
 
 export function renderPrBody(input: PrBodyInput): string {
-  const rows = input.fixes.map(packageRow);
+  const rows = input.fixes.map((fix) => packageRow(fix, input.checks));
   const lines = [
     `Updates vulnerable packages in \`${input.lockfile}\`.`,
     "",
@@ -152,6 +162,18 @@ function releasesSection(fix: PrFix, notes: ReleaseNotes | null): string[] {
   ];
 }
 
+function forcedMajorsSection(forced: ForcedMajor[]): string[] {
+  if (forced.length === 0) return [];
+  return [
+    "### Other major upgrades",
+    "",
+    "These direct dependencies also crossed a major version because of this upgrade. Their breaking changes must be checked too, not only those of the upgraded package:",
+    "",
+    ...forced.map((item) => `- \`${item.package}\` ${item.from} → ${item.to}${item.repository ? ` ([releases](https://github.com/${item.repository}/releases))` : ""}`),
+    "",
+  ];
+}
+
 function ranSection(tests: TestOutcome): string[] {
   const output = tests.tail.trim() === "" ? [] : ["", "<details>", "<summary>Output</summary>", "", fence(tailOf(tests.tail)), "", "</details>"];
   const commands = tests.kind === "failed" ? "" : tests.commands.map((command) => `\`${command}\``).join(" and ");
@@ -176,12 +198,13 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "",
     "| Package | Change | Findings |",
     "| --- | --- | --- |",
-    packageRow(input.fix),
+    packageRow(input.fix, input.checks),
     "",
     "### Breaking changes considered",
     "",
     ...releasesSection(input.fix, input.releases),
     "",
+    ...forcedMajorsSection(input.forcedMajors),
     "### Summary",
     "",
     input.summary.trim() === "" ? "_No claim in the agent's summary is supported by the diff._" : input.summary.trim(),

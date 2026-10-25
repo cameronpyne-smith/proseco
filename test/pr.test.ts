@@ -38,8 +38,16 @@ describe("pull request body", () => {
   it("has a table of packages with installed to target and CVEs with severity", () => {
     const body = renderPrBody(input({ fixes: [minimist, leftPad] }));
     assert.match(body, /\| Package \| Change \| Findings \|/);
-    assert.match(body, /\| `minimist` \| 1\.2\.5 → 1\.2\.6 \| CVE-2021-44906 \(critical\)<br>CVE-2020-7598 \(medium\) \|/);
+    assert.match(body, /\| `minimist` \| 1\.2\.5 → 1\.2\.8 \(fix needs 1\.2\.6\) \| CVE-2021-44906 \(critical\)<br>CVE-2020-7598 \(medium\) \|/);
     assert.match(body, /\| `left-pad` \| 1\.0\.0 → 1\.3\.0 or 2\.0\.1 \| CVE-2026-1 \(high\) \|/);
+  });
+
+  it("shows the version the lockfile ended up with, and the target only when it differs", () => {
+    const rollup: PrFix = { package: "rollup", installed: "4.46.2", target: ["4.59.0"], rows: [{ cve: "CVE-2026-9", severity: "high" }] };
+    const body = renderPrBody(input({ fixes: [rollup, minimist], checks: [{ package: "rollup", installed: ["4.65.0"], ok: true, reason: "installed 4.65.0 is at or above 4.59.0" }, { package: "minimist", installed: ["1.2.6"], ok: true, reason: "ok" }] }));
+    assert.match(body, /\| `rollup` \| 4\.46\.2 → 4\.65\.0 \(fix needs 4\.59\.0\) \|/);
+    assert.match(body, /\| `minimist` \| 1\.2\.5 → 1\.2\.6 \|/);
+    assert.match(renderPrBody(input({ fixes: [rollup], checks: [] })), /\| `rollup` \| 4\.46\.2 → 4\.59\.0 \|/);
   });
 
   it("includes the verified summary, the lockfile check and the test result, and ends with Part of", () => {
@@ -126,6 +134,7 @@ describe("major upgrade pull request", () => {
       fix: nodeFetch,
       releases: RELEASES,
       codeChanged: true,
+      forcedMajors: [],
       summary: "Changed index.js to import node-fetch dynamically because version 3 is ESM only.",
       checks: [{ package: "node-fetch", installed: ["3.3.2"], ok: true, reason: "installed 3.3.2 is at or above 3.1.1" }],
       tests: { kind: "passed", commands: ["npm ci --no-audit --no-fund", "npm test"], tail: "ok 1" },
@@ -142,7 +151,7 @@ describe("major upgrade pull request", () => {
   it("has the package row, the release tags, the summary, the harness result, why it is a draft and Part of, in that order", () => {
     const body = renderMajorPrBody(major());
     const positions = [
-      /\| `node-fetch` \| 2\.6\.1 → 3\.1\.1 \| CVE-2022-0235 \(high\) \|/,
+      /\| `node-fetch` \| 2\.6\.1 → 3\.3\.2 \(fix needs 3\.1\.1\) \| CVE-2022-0235 \(high\) \|/,
       /### Breaking changes considered\n\nThe agent was given the notes of 6 releases of `acme-org\/node-fetch` after 2\.6\.1, up to 3\.1\.1\. These start a new major version or mention breaking changes:\n\n- \[`v3\.0\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v3\.0\.0\)\n- \[`v2\.7\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v2\.7\.0\)\n\nAll release notes: https:\/\/github\.com\/acme-org\/node-fetch\/releases\n/,
       /### Summary[^]*dynamically/,
       /### Checks[^]*node-fetch: installed 3\.3\.2/,
@@ -211,5 +220,16 @@ describe("major upgrade pull request", () => {
     const body = renderMajorPrBody(major({ discarded: Array.from({ length: 22 }, (_, index) => `f${index}.js`) }));
     assert.match(body, /### Changes not committed/);
     assert.match(body, /- `f19\.js`\n\nand 2 more/);
+  });
+
+  it("shows the installed version in the major body's package row", () => {
+    assert.match(renderMajorPrBody(major()), /\| `node-fetch` \| 2\.6\.1 → 3\.3\.2 \(fix needs 3\.1\.1\) \|/);
+  });
+
+  it("lists the other direct dependencies that crossed a major version, with release links when known", () => {
+    const body = renderMajorPrBody(major({ forcedMajors: [{ package: "svelte", from: "4.2.0", to: "5.1.0", repository: "acme-org/svelte" }, { package: "acme-plugin", from: "3.0.1", to: "5.0.0", repository: null }] }));
+    assert.match(body, /### Other major upgrades\n\nThese direct dependencies also crossed a major version[^\n]*breaking changes must be checked too[^\n]*\n\n- `svelte` 4\.2\.0 → 5\.1\.0 \(\[releases\]\(https:\/\/github\.com\/acme-org\/svelte\/releases\)\)\n- `acme-plugin` 3\.0\.1 → 5\.0\.0\n/);
+    assert.ok(body.indexOf("### Other major upgrades") < body.indexOf("### Summary"));
+    assert.doesNotMatch(renderMajorPrBody(major()), /Other major upgrades/);
   });
 });

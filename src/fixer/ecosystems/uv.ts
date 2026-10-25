@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path/posix";
-import { packageKey } from "../../core/versions.ts";
+import { highestVersion, packageKey } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
 import { parseToml, type TomlValue } from "./toml.ts";
@@ -105,6 +105,18 @@ export const uv: Ecosystem = {
       installed.set(locked.name, [...new Set([...(installed.get(locked.name) ?? []), locked.version])].sort());
     }
     return installed;
+  },
+
+  directVersions(text) {
+    const packages = packagesOf(text);
+    const direct = new Map<string, string>();
+    for (const root of packages.filter((locked) => locked.root)) {
+      for (const dependency of root.dependencies) {
+        const versions = packages.filter((locked) => !locked.root && locked.name === dependency.name && (dependency.version === null || locked.version === dependency.version)).map((locked) => locked.version);
+        if (versions.length > 0) direct.set(dependency.name, highestVersion([...versions, ...(direct.has(dependency.name) ? [direct.get(dependency.name)!] : [])])[0]!);
+      }
+    }
+    return direct;
   },
 
   parentChain(text, pkg, version) {

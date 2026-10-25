@@ -34,6 +34,7 @@ export const requirements: Ecosystem = {
   imageFamily: "python",
   notes: REQUIREMENTS_NOTES,
   installedVersions: pins,
+  directVersions: () => new Map(),
   parentChain(text, pkg, version) {
     const name = packageKey("pip", pkg);
     return pins(text).get(name)?.includes(version) ? [name] : null;
