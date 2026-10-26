@@ -131,6 +131,9 @@ describe("prompts for a major upgrade", () => {
     assert.match(system, /say exactly what still fails/);
     assert.match(system, /list, in words, each code change and why/);
     assert.match(MAJOR_RULES, /Never downgrade or remove the package/);
+    assert.match(MAJOR_RULES, /Move as few packages across a major version as possible[^]*override or constraint[^]*fixes every copy/);
+    assert.match(systemPrompt(NPM_NOTES, "major"), /Prefer the fewest major moves[^]*check whether that alone fixes every copy[^]*only when that is the only way[^]*lockfile units, where a parent is bumped within its own major before an override/);
+    assert.doesNotMatch(systemPrompt(NPM_NOTES), /fewest major moves/);
     assert.match(MAJOR_RULES, /Never disable, skip or delete tests/);
     assert.match(MAJOR_RULES, /\.github\//);
   });
