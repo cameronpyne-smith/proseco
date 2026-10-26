@@ -1,10 +1,11 @@
-import { compareVersions, isMajorUpgrade, packageKey } from "../core/versions.ts";
+import { compareVersions, inRange, isMajorUpgrade, packageKey } from "../core/versions.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 
 export interface CheckedFix {
   package: string;
   target: string[];
   installed?: string;
+  vulnerable?: string[] | null;
 }
 
 export interface PackageCheck {
@@ -66,19 +67,28 @@ function judge(copy: string, targets: string[], ceiling: string | null): string 
   return `installed ${copy} is below ${wanted ?? ceiling ?? "the target"}`;
 }
 
-function checkOne(installedVersions: Map<string, string[]>, ecosystemName: string, fix: CheckedFix, siblings: CheckedFix[]): PackageCheck {
+function neverVulnerable(copy: string, siblings: CheckedFix[]): boolean {
+  if (siblings.length === 0 || siblings.some((sibling) => !sibling.vulnerable || sibling.vulnerable.length === 0)) return false;
+  return !siblings.some((sibling) => sibling.vulnerable!.some((range) => inRange(copy, range)));
+}
+
+function checkOne(installedVersions: Map<string, string[]>, ecosystemName: string, absentIsFixed: boolean, fix: CheckedFix, siblings: CheckedFix[]): PackageCheck {
   const copies = installedVersions.get(packageKey(ecosystemName, fix.package)) ?? [];
   const from = fix.installed === undefined ? {} : { from: fix.installed };
   const fail = (installed: string[], reason: string): PackageCheck => ({ package: fix.package, ...from, installed, ok: false, reason });
   if (fix.target.length === 0) return fail(copies, "the ticket names no target version");
   const target = lowest(fix.target);
   if (target === null) return fail(copies, `cannot compare the target versions ${fix.target.join(", ")}`);
-  if (copies.length === 0) return { package: fix.package, ...from, installed: copies, ok: true, reason: "absent from the lockfile" };
+  if (copies.length === 0) {
+    if (!absentIsFixed) return fail(copies, `the pin for ${fix.package} is gone: this file must keep the package pinned with ==`);
+    return { package: fix.package, ...from, installed: copies, ok: true, reason: "absent from the lockfile" };
+  }
   const claimed = (copy: string) => siblings.some((other) => belongs(copy, other));
   const mine = copies.filter((copy) => belongs(copy, fix) || !claimed(copy));
   const targets = siblings.flatMap((other) => other.target);
   const ceiling = highest(targets);
   for (const copy of mine) {
+    if (neverVulnerable(copy, siblings)) continue;
     const problem = judge(copy, targets, ceiling);
     if (problem) return fail(mine, problem);
   }
@@ -87,9 +97,9 @@ function checkOne(installedVersions: Map<string, string[]>, ecosystemName: strin
   return { package: fix.package, ...from, installed: shown, ok: true, reason: `installed ${shown.join(", ")} is at or above ${wanted}` };
 }
 
-export function checkLockfile(ecosystem: Pick<Ecosystem, "installedVersions" | "findingEcosystem">, lockfileText: string, fixes: CheckedFix[]): PackageCheck[] {
+export function checkLockfile(ecosystem: Pick<Ecosystem, "installedVersions" | "findingEcosystem"> & { absentIsFixed?: boolean }, lockfileText: string, fixes: CheckedFix[]): PackageCheck[] {
   const installed = ecosystem.installedVersions(lockfileText);
-  return fixes.map((fix) => checkOne(installed, ecosystem.findingEcosystem, fix, fixes.filter((other) => packageKey(ecosystem.findingEcosystem, other.package) === packageKey(ecosystem.findingEcosystem, fix.package))));
+  return fixes.map((fix) => checkOne(installed, ecosystem.findingEcosystem, ecosystem.absentIsFixed ?? true, fix, fixes.filter((other) => packageKey(ecosystem.findingEcosystem, other.package) === packageKey(ecosystem.findingEcosystem, fix.package))));
 }
 
 export function checkPassed(results: PackageCheck[]): boolean {

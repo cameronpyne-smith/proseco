@@ -49,6 +49,13 @@ export interface BudgetConfig {
 export const DEFAULT_OLLAMA: OllamaConfig = { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 131072, numPredict: 12288, think: "medium", temperature: 0.2, timeoutMinutes: 20 };
 export const DEFAULT_BUDGET: BudgetConfig = { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 };
 
+export interface TranscriptLimits {
+  maxAgeDays: number;
+  maxMegabytes: number;
+}
+
+export const DEFAULT_TRANSCRIPTS: TranscriptLimits = { maxAgeDays: 14, maxMegabytes: 500 };
+
 export const DEFAULT_POLL_MINUTES = 1;
 
 export interface AppConfig {
@@ -70,6 +77,7 @@ export interface FixerConfig {
   sandbox: SandboxLimits;
   ollama: OllamaConfig;
   budget: BudgetConfig;
+  transcripts: TranscriptLimits;
 }
 
 export interface Config {
@@ -213,11 +221,12 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   }
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget"]);
+    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "temperature", "timeoutMinutes"]);
     const budget = raw["budget"] === undefined ? {} : object(raw["budget"], "fixer.budget", ["minutes", "majorMinutes", "toolCalls", "commandMinutes"]);
+    const transcripts = raw["transcripts"] === undefined ? {} : object(raw["transcripts"], "fixer.transcripts", ["maxAgeDays", "maxMegabytes"]);
     const allow = proxy["allow"] === undefined ? DEFAULT_PROXY_ALLOW : list(proxy["allow"], "fixer.proxy.allow", ALLOWED_HOST);
     if (allow.length === 0) throw new ConfigError("fixer.proxy.allow must list at least one host, or the container could install nothing");
     fixer = {
@@ -243,6 +252,10 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
         majorMinutes: option(budget, "majorMinutes", "fixer.budget", DEFAULT_BUDGET.majorMinutes, positiveNumber),
         toolCalls: option(budget, "toolCalls", "fixer.budget", DEFAULT_BUDGET.toolCalls, positiveInteger),
         commandMinutes: option(budget, "commandMinutes", "fixer.budget", DEFAULT_BUDGET.commandMinutes, positiveNumber),
+      },
+      transcripts: {
+        maxAgeDays: option(transcripts, "maxAgeDays", "fixer.transcripts", DEFAULT_TRANSCRIPTS.maxAgeDays, positiveNumber),
+        maxMegabytes: option(transcripts, "maxMegabytes", "fixer.transcripts", DEFAULT_TRANSCRIPTS.maxMegabytes, positiveNumber),
       },
     };
   }

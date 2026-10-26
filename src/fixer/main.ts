@@ -2,6 +2,7 @@ import { tokenProvider, type TokenProvider } from "../core/app.ts";
 import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
 import { TicketRepo } from "../core/github.ts";
 import { isProsecoTicket, markerKey, markerRepo, parseRawTable } from "../core/ticket.ts";
+import { pruneTranscripts } from "./transcripts.ts";
 import { Advisories } from "./advisories.ts";
 import { runDaemon } from "./daemon.ts";
 import { dryRunReport } from "./dryrun.ts";
@@ -141,6 +142,8 @@ async function serve(): Promise<void> {
   const swept = await Sandbox.sweep(0);
   stamped(`removed ${swept.containers} containers and ${swept.networks} networks left by an earlier process`);
   const fixer = config.fixer;
+  const pruned = pruneTranscripts(fixer.cloneDir, fixer.transcripts);
+  stamped(`removed ${pruned.removed} old transcripts (${Math.round(pruned.freedBytes / 1024 / 1024)} MiB)`);
   const stop = new AbortController();
   const ticketRepo = async () => new TicketRepo(await tokens({ repositories: [config.tickets.repo], permissions: { issues: "write" } }), config.org, config.tickets.repo);
   for (const signal of ["SIGTERM", "SIGINT"] as const) {

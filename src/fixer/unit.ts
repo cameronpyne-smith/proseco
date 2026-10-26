@@ -1,29 +1,29 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { dirname } from "node:path/posix";
+import { basename, dirname } from "node:path/posix";
 import type { FixerConfig } from "../core/config.ts";
 import type { Advisory } from "./advisories.ts";
 import type { UnitResult } from "./attempt.ts";
-import { checkLockfile, checkPassed, type PackageCheck } from "./check.ts";
+import { checkLockfile, checkPassed, type CheckedFix, type PackageCheck } from "./check.ts";
 import { declaredToolchain } from "./dryrun.ts";
-import { ecosystemFor, type Ecosystem } from "./ecosystems/ecosystem.ts";
-import { buildFacts } from "./facts.ts";
+import { ecosystemFor, type Ecosystem, type ManifestPair, type ResolverReference, type Verification } from "./ecosystems/ecosystem.ts";
+import { buildFacts, type UnitFacts } from "./facts.ts";
 import type { GitStore } from "./git.ts";
 import { runLoop } from "./agent/loop.ts";
 import type { OllamaClient } from "./agent/ollama.ts";
 import { systemPrompt, userPrompt } from "./agent/prompts.ts";
-import { executeTool, TOOL_DEFINITIONS } from "./agent/tools.ts";
+import { executeTool, MAX_FILE_BYTES, TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { lockfileStatus } from "./status.ts";
 import { forcedMajors, withRepositories } from "./majors.ts";
 import { verifySummary, type DiffFile } from "./agent/verify.ts";
 import { compareTests, isRegression, type FailedOutcome } from "./baseline.ts";
 import { failureExcerpt } from "./excerpt.ts";
 import { contextLimit } from "./agent/loop.ts";
-import { crossedMajors, gatherReview, lockfileMajorMessage, minimalityMessage, refusedChecksMessage, reviewMessage } from "./review.ts";
+import { crossedMajors, gatherReview, lockfileMajorMessage, minimalityMessage, refusedChecksMessage, reviewMessage, unreadableMessage } from "./review.ts";
 import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
-import { allowedFiles, commitAllowed, discardOthers, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
+import { allowedFiles, commitAllowed, discardOthers, highRiskPaths, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
 import type { ReleaseNotes } from "./releases.ts";
 import { Docker, type ExecOptions, type ExecResult } from "./sandbox/docker.ts";
 import { ensureImage, imageFor } from "./sandbox/images.ts";
@@ -75,6 +75,7 @@ export interface UnitContext {
 
 const MS_PER_MINUTE = 60_000;
 const FILE_READ_MS = 60_000;
+const HARNESS_OUTPUT = { limit: 4 * 1024 * 1024, keep: "headtail" } as const;
 
 function none(reason: string, extra: Partial<UnitResult> = {}): UnitResult {
   return { outcome: { kind: "none", reason }, ...extra };
@@ -102,10 +103,10 @@ async function harness(sandbox: SandboxHandle, ecosystem: Ecosystem, lockfile: s
   const plan = ecosystem.harness(lockfile, tool);
   const directory = dirname(lockfile);
   const prefix = directory === "." ? "" : `cd ${shellQuote(`${WORK}/${directory}`)} && `;
-  const install = await sandbox.run(["sh", "-c", `${prefix}${plan.install}`], commandMs);
+  const install = await sandbox.run(["sh", "-c", `${prefix}${plan.install}`], commandMs, HARNESS_OUTPUT);
   if (install.exitCode !== 0) return { kind: "failed", step: plan.install, exitCode: install.exitCode, timedOut: install.timedOut, tail: combined(install) };
   if (!plan.hasTests(readIfPresent(checkout))) return { kind: "no-tests", commands: [plan.install], tail: "" };
-  const test = await sandbox.run(["sh", "-c", `${prefix}${plan.test}`], commandMs);
+  const test = await sandbox.run(["sh", "-c", `${prefix}${plan.test}`], commandMs, HARNESS_OUTPUT);
   if (test.exitCode !== 0) {
     const failedIds = plan.failures?.(combined(test)) ?? null;
     return { kind: "failed", step: plan.test, exitCode: test.exitCode, timedOut: test.timedOut, tail: combined(test), ...(failedIds ? { failedIds } : {}) };
@@ -142,17 +143,41 @@ const GATE_SHARE = 8;
 
 const MAX_REFUSALS = 2;
 
-function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, before: string, ctx: UnitContext, commandMs: number, tool: string | undefined): () => Promise<string | null> {
+function checkedFixes(unit: PrUnit, facts: UnitFacts): CheckedFix[] {
+  return unit.fixes.map((fix, index) => {
+    const ranges = (facts.fixes[index]?.rows ?? []).map((row) => row.advisory?.vulnerableRange ?? null);
+    const known = ranges.length > 0 && ranges.every((range) => range !== null);
+    return { package: fix.package, installed: fix.installed, target: fix.target, vulnerable: known ? ranges.flatMap((range) => range!.split(" or ")) : null };
+  });
+}
+
+async function readWorkFile(box: SandboxHandle, path: string): Promise<string> {
+  const read = await box.run(["cat", `${WORK}/${path}`], FILE_READ_MS, { limit: MAX_FILE_BYTES });
+  if (read.truncated) throw new Error(`${path} is larger than ${MAX_FILE_BYTES} bytes`);
+  if (read.exitCode !== 0) throw new Error(`cannot read ${path}: ${read.stderr.trim()}`);
+  return read.stdout;
+}
+
+function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, checked: CheckedFix[], before: string, headManifest: string | null, ctx: UnitContext, commandMs: number, tool: string | undefined): () => Promise<string | null> {
   let refusals = 0;
   let reviewed = false;
   let minimal = false;
+  const unreadable = (error: unknown): string | null => {
+    if (refusals >= MAX_REFUSALS) return null;
+    refusals++;
+    ctx.log(`finish refused: the host cannot read the lockfile: ${(error as Error).message}`);
+    return unreadableMessage(unit.source, (error as Error).message);
+  };
   return async () => {
+    let after: string;
     try {
-      const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
-      if (read.exitCode !== 0) return null;
-      const after = read.stdout;
-      if (refusals < MAX_REFUSALS) {
-        const fixes = unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target }));
+      after = await readWorkFile(box, unit.source);
+    } catch (error) {
+      return unreadable(error);
+    }
+    if (refusals < MAX_REFUSALS) {
+      try {
+        const fixes = checked;
         const checks = checkLockfile(ecosystem, after, fixes);
         if (!checkPassed(checks)) {
           refusals++;
@@ -162,9 +187,14 @@ function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, befo
         }
         if (unit.kind === "major" && !minimal && ecosystem.overridesPackage && ecosystem.manifestFile) {
           const directory = dirname(unit.source);
-          const manifest = await box.run(["cat", `${WORK}/${directory === "." ? "" : `${directory}/`}${ecosystem.manifestFile}`], FILE_READ_MS);
           const pkg = unit.fixes[0]!.package;
-          if (manifest.exitCode === 0 && ecosystem.overridesPackage(manifest.stdout, pkg)) {
+          let manifest: string | null = null;
+          try {
+            manifest = await readWorkFile(box, directory === "." ? ecosystem.manifestFile : `${directory}/${ecosystem.manifestFile}`);
+          } catch {
+            manifest = null;
+          }
+          if (manifest !== null && ecosystem.overridesPackage(manifest, pkg) && !(headManifest !== null && ecosystem.overridesPackage(headManifest, pkg))) {
             const others = forcedMajors(ecosystem, before, after, pkg);
             if (others.length > 0) {
               refusals++;
@@ -182,8 +212,12 @@ function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, befo
             return lockfileMajorMessage(forced);
           }
         }
+      } catch (error) {
+        return unreadable(error);
       }
-      if (unit.kind !== "major" || reviewed) return null;
+    }
+    if (unit.kind !== "major" || reviewed) return null;
+    try {
       const crossed = crossedMajors(ecosystem, before, after, { package: unit.fixes[0]!.package, installed: unit.fixes[0]!.installed });
       if (crossed.length === 0) return null;
       reviewed = true;
@@ -202,6 +236,25 @@ function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, befo
   };
 }
 
+async function highRiskOf(ctx: UnitContext, ecosystem: Ecosystem, checkout: string, headSha: string, files: string[]): Promise<string[]> {
+  const risky = new Set(highRiskPaths(files));
+  const notes = new Map<string, string>();
+  if (ecosystem.riskyManifestChanges && ecosystem.manifestFile) {
+    for (const file of files) {
+      if (basename(file) !== ecosystem.manifestFile) continue;
+      const head = await ctx.store.tryShow(ctx.repo, headSha, file);
+      const now = readIfPresent(checkout)(file);
+      if (head === null || now === null) continue;
+      const changed = ecosystem.riskyManifestChanges(head, now);
+      if (changed.length > 0) {
+        risky.add(file);
+        notes.set(file, changed.join(", "));
+      }
+    }
+  }
+  return [...risky].sort().map((file) => (notes.has(file) ? `${file} (${notes.get(file)} changed)` : file));
+}
+
 function transcriptPath(ctx: UnitContext, unit: PrUnit): string {
   const directory = join(ctx.fixer.cloneDir, "transcripts");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -217,8 +270,10 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
   const unsupported = ecosystem.unsupported(lockfileText);
   if (unsupported) return none(unsupported);
   const toolchain = await declaredToolchain(ecosystem, unit.source, readFile);
+  const headManifest = ecosystem.manifestFile ? await readFile(dirname(unit.source) === "." ? ecosystem.manifestFile : `${dirname(unit.source)}/${ecosystem.manifestFile}`) : null;
   const major = unit.kind === "major";
   const facts = await buildFacts(unit, ecosystem, lockfileText, toolchain, ctx.advisory, ctx.releases);
+  const checked = checkedFixes(unit, facts);
   const image = await ensureImage(ctx.docker, imageFor(ecosystem.imageFamily, toolchain));
   const checkout = await ctx.store.checkout(ctx.repo, headSha);
   let sandbox: SandboxHandle | undefined;
@@ -236,11 +291,13 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const commandMs = ctx.fixer.budget.commandMinutes * MS_PER_MINUTE;
     const context: string[] = [];
     let tool: string | undefined;
+    let reference: ResolverReference | undefined;
     if (ecosystem.preflight) {
       try {
         const preflight = await ecosystem.preflight(box, unit.source, commandMs);
         context.push(...preflight.notes);
         tool = preflight.tool;
+        reference = preflight.reference;
         if (preflight.summary) ctx.log(`preflight: ${preflight.summary}`);
       } catch (error) {
         ctx.log(`preflight failed: ${(error as Error).message}`);
@@ -255,9 +312,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     ctx.log(`transcript: ${transcript}`);
     const written = new Set<string>();
     const lockfileStatusOf = async (filter?: string): Promise<string> => {
-      const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
-      if (read.exitCode !== 0) throw new Error(`cannot read ${unit.source}: ${read.stderr.trim()}`);
-      return lockfileStatus(ecosystem, unit.source, unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target })), lockfileText, read.stdout, filter);
+      const current = await readWorkFile(box, unit.source);
+      return lockfileStatus(ecosystem, unit.source, checked, lockfileText, current, filter);
     };
     const loop = await runLoop({
       llm: ctx.llm,
@@ -269,7 +325,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       execute: (name, args) =>
         executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options), wrote: (path) => written.add(path), lockfileStatus: lockfileStatusOf }, name, args),
       status: lockfileStatusOf,
-      gate: finishGate(box, ecosystem, unit, lockfileText, ctx, commandMs, tool),
+      gate: finishGate(box, ecosystem, unit, checked, lockfileText, headManifest, ctx, commandMs, tool),
       system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),
       timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,
@@ -285,9 +341,20 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const allowed: Allowed = major ? majorGuard({ written, ecosystem }) : manifests;
     const discarded = new Set(await discardOthers(ctx.store, checkout, headSha, allowed));
 
+    if (!major && ecosystem.manifestViolations && ecosystem.manifestFile) {
+      for (const path of manifests) {
+        if (basename(path) !== ecosystem.manifestFile) continue;
+        const head = await readFile(path);
+        const now = readIfPresent(checkout)(path);
+        if (head === null || now === null || head === now) continue;
+        const violations = ecosystem.manifestViolations(head, now);
+        if (violations.length > 0) return none(`the agent changed ${violations.join(", ")} in ${path}; a lockfile unit may only change dependency versions and overrides`, extra);
+      }
+    }
+
     let checks: PackageCheck[];
     try {
-      checks = checkLockfile(ecosystem, readFileSync(join(checkout, unit.source), "utf8"), unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target })));
+      checks = checkLockfile(ecosystem, readFileSync(join(checkout, unit.source), "utf8"), checked);
     } catch (error) {
       return none(`the lockfile cannot be read after the agent's changes: ${(error as Error).message}`, extra);
     }
@@ -295,7 +362,27 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       return none(`lockfile check failed: ${checks.filter((check) => !check.ok).map((check) => `${check.package}: ${check.reason}`).join("; ")}`, extra);
     }
 
+    const afterLockfile = readFileSync(join(checkout, unit.source), "utf8");
+    if (ecosystem.lockfileProblems) {
+      const pairs: ManifestPair[] = [];
+      for (const path of manifests) {
+        if (ecosystem.manifestFile && basename(path) === ecosystem.manifestFile) pairs.push({ path, before: await readFile(path), after: readIfPresent(checkout)(path) });
+      }
+      const problems = ecosystem.lockfileProblems(lockfileText, afterLockfile, pairs);
+      if (problems.length > 0) return none(`the committed lockfile does not look like registry packages: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? `; and ${problems.length - 5} more` : ""}`, extra);
+    }
+
     await box.load(checkout);
+    let verification: Verification | null = null;
+    if (ecosystem.verify) {
+      try {
+        verification = await ecosystem.verify(box, unit.source, commandMs, reference);
+      } catch (error) {
+        verification = { outcome: "unknown", text: `the committed lockfile could not be checked against the resolver (${(error as Error).message})` };
+      }
+      ctx.log(`lockfile verification: ${verification.outcome}`);
+      if (verification.outcome === "tampered") return none(`the committed lockfile is not what the resolver produces from the manifest: ${verification.text}`, extra);
+    }
     const tests = await harness(box, ecosystem, unit.source, checkout, commandMs, tool);
     const comparison = compareTests(baseline, tests);
     ctx.log(`harness: ${tests.kind}${comparison ? ` (default branch: ${comparison.mode})` : ""}`);
@@ -307,12 +394,13 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const diffFiles = await diffFilesOf(ctx, checkout, headSha, commit, unit.source, major ? manifests : null);
     const diff = diffFiles.map((file) => file.text).join("\n");
     const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, major ? diffFiles : diff);
-    const draft = major || isRegression(tests, comparison) || loop.forced !== undefined;
+    const draft = major || isRegression(tests, comparison) || loop.forced !== undefined || (verification !== null && verification.outcome !== "ok");
     const afterText = readFileSync(join(checkout, unit.source), "utf8");
+    const highRisk = major ? await highRiskOf(ctx, ecosystem, checkout, headSha, commit.files) : [];
     const forced = major ? await withRepositories(ecosystem.findingEcosystem, forcedMajors(ecosystem, lockfileText, afterText, unit.fixes[0]!.package), ctx.releases) : [];
-    const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, tests, comparison, discarded: summariseDiscarded([...discarded]) };
+    const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, verification, tests, comparison, discarded: summariseDiscarded([...discarded]) };
     const body = major
-      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)), forcedMajors: forced })
+      ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)), forcedMajors: forced, highRisk })
       : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
     if (!published) return none("not published (local run)", extra);

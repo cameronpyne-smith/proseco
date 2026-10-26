@@ -31,7 +31,7 @@ export interface ToolResult {
 
 const LARGE_FILE_BYTES = 24 * 1024;
 const LARGE_FILE_LINES = 200;
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_READ_CHARS = 60_000;
 const SEARCH_LINES = 200;
 const SEARCH_LINE_CHARS = 300;

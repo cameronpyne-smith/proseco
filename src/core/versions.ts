@@ -99,3 +99,25 @@ export function compareVersions(a: string, b: string): number | null {
   ];
   return steps.find((step) => step !== 0) ?? 0;
 }
+
+export function inRange(version: string, range: string): boolean {
+  const clauses = range.split(",").map((clause) => clause.trim()).filter(Boolean);
+  if (clauses.length === 0) return false;
+  return clauses.every((clause) => {
+    const match = /^(<=|>=|<|>|=)?\s*(\S+)$/.exec(clause);
+    const order = match ? compareVersions(version, match[2]!) : null;
+    if (!match || order === null) return false;
+    switch (match[1] ?? "=") {
+      case "<":
+        return order < 0;
+      case "<=":
+        return order <= 0;
+      case ">":
+        return order > 0;
+      case ">=":
+        return order >= 0;
+      default:
+        return order === 0;
+    }
+  });
+}

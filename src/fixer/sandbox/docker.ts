@@ -26,6 +26,7 @@ export interface RunSpec {
 
 export interface ExecOptions {
   limit?: number;
+  keep?: "head" | "headtail";
   input?: Buffer | string;
 }
 
@@ -73,30 +74,61 @@ export function buildArgs(spec: BuildSpec): string[] {
 
 class Capture {
   readonly #limit: number;
+  readonly #keepTail: boolean;
   #chunks: Buffer[] = [];
   #size = 0;
+  #tail: Buffer[] = [];
+  #tailSize = 0;
+  #omitted = 0;
   truncated = false;
 
-  constructor(limit: number) {
+  constructor(limit: number, keep: "head" | "headtail" = "head") {
     this.#limit = limit;
+    this.#keepTail = keep === "headtail";
+  }
+
+  get #headLimit(): number {
+    return this.#keepTail ? Math.ceil(this.#limit / 2) : this.#limit;
   }
 
   add(chunk: Buffer): void {
-    const room = this.#limit - this.#size;
-    if (chunk.length > room) this.truncated = true;
-    if (room <= 0) return;
-    const kept = chunk.subarray(0, room);
-    this.#chunks.push(kept);
-    this.#size += kept.length;
+    const room = this.#headLimit - this.#size;
+    let rest = chunk;
+    if (room > 0) {
+      const kept = chunk.subarray(0, room);
+      this.#chunks.push(kept);
+      this.#size += kept.length;
+      rest = chunk.subarray(kept.length);
+    }
+    if (rest.length === 0) return;
+    this.truncated = true;
+    if (!this.#keepTail) return;
+    const tailLimit = this.#limit - this.#headLimit;
+    this.#tail.push(rest);
+    this.#tailSize += rest.length;
+    while (this.#tailSize > tailLimit && this.#tail.length > 0) {
+      const first = this.#tail[0]!;
+      const excess = this.#tailSize - tailLimit;
+      if (first.length <= excess) {
+        this.#tail.shift();
+        this.#tailSize -= first.length;
+        this.#omitted += first.length;
+      } else {
+        this.#tail[0] = first.subarray(excess);
+        this.#tailSize -= excess;
+        this.#omitted += excess;
+      }
+    }
   }
 
   bytes(): Buffer {
-    return Buffer.concat(this.#chunks);
+    return this.#keepTail ? Buffer.concat([...this.#chunks, ...this.#tail]) : Buffer.concat(this.#chunks);
   }
 
   text(): string {
-    const text = this.bytes().toString("utf8");
-    return this.truncated ? `${text}\n[output truncated at ${this.#limit} bytes]` : text;
+    if (!this.truncated) return Buffer.concat(this.#chunks).toString("utf8");
+    if (!this.#keepTail) return `${Buffer.concat(this.#chunks).toString("utf8")}\n[output truncated at ${this.#limit} bytes]`;
+    return `${Buffer.concat(this.#chunks).toString("utf8")}\n[${this.#omitted} bytes omitted from the middle of the output]\n${Buffer.concat(this.#tail).toString("utf8")}`;
   }
 }
 
@@ -188,8 +220,8 @@ export class Docker {
   }
 
   #exec(container: string, command: string[], timeoutMs: number, options: ExecOptions): Promise<{ exitCode: number; stdout: Capture; stderr: Capture; timedOut: boolean }> {
-    const stdout = new Capture(options.limit ?? DEFAULT_OUTPUT_LIMIT);
-    const stderr = new Capture(DEFAULT_OUTPUT_LIMIT);
+    const stdout = new Capture(options.limit ?? DEFAULT_OUTPUT_LIMIT, options.keep);
+    const stderr = new Capture(options.keep === "headtail" ? (options.limit ?? DEFAULT_OUTPUT_LIMIT) : DEFAULT_OUTPUT_LIMIT, options.keep);
     const started = Date.now();
     return new Promise((resolve, reject) => {
       const child = spawn(this.#binary, execArgs(container, command, timeoutMs, options.input !== undefined), { stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });

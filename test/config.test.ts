@@ -54,6 +54,7 @@ describe("config", () => {
       sandbox: { memory: "8g", cpus: 4 },
       ollama: { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 131072, numPredict: 12288, think: "medium", temperature: 0.2, timeoutMinutes: 20 },
       budget: { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 },
+      transcripts: { maxAgeDays: 14, maxMegabytes: 500 },
     });
   });
 
@@ -81,6 +82,7 @@ describe("config", () => {
     assert.deepEqual(config.fixer!.ollama, { url: "http://gpu.example.test:11434", model: "m:1b", numCtx: 8192, numPredict: 1024, think: false, temperature: 0, timeoutMinutes: 5 });
     assert.equal(parseConfig(set({ ollama: { think: "low" } }), mapping).fixer!.ollama.think, "low");
     assert.deepEqual(config.fixer!.budget, { minutes: 10, majorMinutes: 45, toolCalls: 20, commandMinutes: 2 });
+    assert.deepEqual(parseConfig(set({ transcripts: { maxAgeDays: 3, maxMegabytes: 20 } }), mapping).fixer!.transcripts, { maxAgeDays: 3, maxMegabytes: 20 });
     const bad = (patch: Record<string, unknown>, message: RegExp) => assert.throws(() => parseConfig(set(patch), mapping), message);
     bad({ ollama: { url: "gpu" } }, /fixer.ollama.url must be an http or https URL/);
     bad({ ollama: { url: "ftp://gpu" } }, /fixer.ollama.url must be an http or https URL/);
@@ -96,6 +98,9 @@ describe("config", () => {
     bad({ budget: { toolCalls: 0 } }, /fixer.budget.toolCalls must be a positive integer/);
     bad({ budget: { commandMinutes: 0 } }, /fixer.budget.commandMinutes must be a positive number/);
     bad({ budget: { time: 1 } }, /fixer.budget has unknown keys: time/);
+    bad({ transcripts: { maxAgeDays: 0 } }, /fixer.transcripts.maxAgeDays must be a positive number/);
+    bad({ transcripts: { maxMegabytes: -1 } }, /fixer.transcripts.maxMegabytes must be a positive number/);
+    bad({ transcripts: { keep: 1 } }, /fixer.transcripts has unknown keys: keep/);
   });
 
   it("replaces the default proxy allowlist with a configured one and overrides the sandbox limits", () => {

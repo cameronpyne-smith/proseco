@@ -1,10 +1,14 @@
 import { rmdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Ecosystem, ImageFamily } from "./ecosystems/ecosystem.ts";
-import { REQUIREMENTS_FILE } from "./ecosystems/requirements.ts";
+import { isRequirementsPath } from "./ecosystems/requirements.ts";
 import type { GitStore } from "./git.ts";
 
-const NEVER = ".github/workflows/";
+const NEVER = ".github/";
+const TOOLING_DIRS = new Set([".github", ".husky", ".githooks", ".vscode", ".devcontainer", ".idea"]);
+const TOOLING_FILES = /^(lefthook\.ya?ml|\.pre-commit-config\.ya?ml)$/i;
+const HIGH_RISK_FILES = /^(Dockerfile.*|.*\.Dockerfile|docker-compose.*\.ya?ml|compose\.ya?ml|Makefile|GNUmakefile|.*\.sh|\.gitlab-ci\.ya?ml|azure-pipelines.*\.ya?ml|Jenkinsfile|bitbucket-pipelines\.ya?ml|\.travis\.ya?ml|appveyor\.ya?ml|cloudbuild\.ya?ml)$/i;
+const HIGH_RISK_DIRS = new Set([".circleci", ".buildkite", ".azure-pipelines"]);
 const CHUNK = 200;
 const LITERAL = "--literal-pathspecs";
 const VENDORED = new Set(["node_modules", ".venv"]);
@@ -12,10 +16,14 @@ const PACKAGE_MANAGER_CONFIG = /^(\.npmrc|\.yarnrc|\.yarnrc\.yml|\.pnpmfile\.cjs
 
 const PYTHON_FILES = /^(pyproject\.toml|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock)$/;
 
-const FAMILY_FILES: Record<ImageFamily | "dotnet", { test(name: string): boolean }> = {
-  node: /^(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/,
-  python: { test: (name) => PYTHON_FILES.test(name) || REQUIREMENTS_FILE.test(name) },
-  dotnet: /^(.+\.(cs|fs|vb)proj|packages\.lock\.json|Directory\.Packages\.props|global\.json)$/,
+function byName(pattern: RegExp): { test(path: string): boolean } {
+  return { test: (path) => pattern.test(basename(path)) };
+}
+
+const FAMILY_FILES: Record<ImageFamily | "dotnet", { test(path: string): boolean }> = {
+  node: byName(/^(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/),
+  python: { test: (path) => PYTHON_FILES.test(basename(path)) || isRequirementsPath(path) },
+  dotnet: byName(/^(.+\.(cs|fs|vb)proj|packages\.lock\.json|Directory\.Packages\.props|global\.json)$/),
 };
 
 type CheckoutGit = Pick<GitStore, "inCheckout">;
@@ -72,8 +80,9 @@ export function majorGuard(options: { written: ReadonlySet<string>; ecosystem: P
     if (entry.path.startsWith(NEVER)) return false;
     const parts = entry.path.split("/");
     if (parts.some((part) => VENDORED.has(part))) return false;
+    if (parts.slice(0, -1).some((part) => TOOLING_DIRS.has(part)) || TOOLING_FILES.test(basename(entry.path))) return false;
     if (PACKAGE_MANAGER_CONFIG.test(basename(entry.path))) return false;
-    if (foreign.some((pattern) => pattern.test(basename(entry.path)))) return false;
+    if (foreign.some((pattern) => pattern.test(entry.path))) return false;
     return !entry.untracked || options.written.has(entry.path);
   };
 }
@@ -124,4 +133,8 @@ export async function commitAllowed(git: CheckoutGit, path: string, options: { b
   const sha = (await git.inCheckout(path, ["rev-parse", "HEAD"], "git rev-parse")).trim();
   const files = (await git.inCheckout(path, ["show", "--name-only", "--format=", "HEAD"], "git show")).split("\n").filter(Boolean);
   return { sha, files };
+}
+
+export function highRiskPaths(files: string[]): string[] {
+  return files.filter((file) => HIGH_RISK_FILES.test(basename(file)) || file.split("/").slice(0, -1).some((part) => HIGH_RISK_DIRS.has(part)));
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { promisify } from "node:util";
-import { DEFAULT_BUDGET, DEFAULT_OLLAMA, DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LIMITS, type FixerConfig } from "../src/core/config.ts";
+import { DEFAULT_BUDGET, DEFAULT_OLLAMA, DEFAULT_TRANSCRIPTS, DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LIMITS, type FixerConfig } from "../src/core/config.ts";
 import { compareVersions } from "../src/core/versions.ts";
 import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
@@ -171,6 +171,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
     proxy: { allow: DEFAULT_PROXY_ALLOW },
     sandbox: DEFAULT_SANDBOX_LIMITS,
     ollama: DEFAULT_OLLAMA,
+    transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...scenario.budget },
   };
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: () => bare });

@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
 import { dirname, join } from "node:path/posix";
 import { highestVersion, packageKey } from "../../core/versions.ts";
-import type { Ecosystem } from "./ecosystem.ts";
+import type { Ecosystem, ManifestPair, PreflightBox, ResolverReference, Verification } from "./ecosystem.ts";
+import { shellQuote } from "../shell.ts";
+import { failureExcerpt } from "../excerpt.ts";
 import { shortestChain } from "./graph.ts";
 import { pytestFailures, pythonSources } from "./pytest.ts";
 import { parseToml, type TomlValue } from "./toml.ts";
@@ -93,11 +96,106 @@ function workspaceMembers(text: string): string[] {
   return paths;
 }
 
+const ALLOWED_PATHS = [
+  ["project", "dependencies"],
+  ["project", "optional-dependencies"],
+  ["dependency-groups"],
+  ["tool", "uv", "constraint-dependencies"],
+  ["tool", "uv", "override-dependencies"],
+  ["tool", "uv", "dev-dependencies"],
+];
+const RISKY_PATHS = [["project", "scripts"], ["project", "gui-scripts"], ["project", "entry-points"], ["build-system"]];
+
+function without(document: Table, paths: string[][]): Table {
+  const copy = structuredClone(document) as Table;
+  for (const path of paths) {
+    let at: Table = copy;
+    for (const key of path.slice(0, -1)) {
+      const next = at[key];
+      if (typeof next !== "object" || next === null || Array.isArray(next)) {
+        at = {};
+        break;
+      }
+      at = next;
+    }
+    delete at[path.at(-1)!];
+  }
+  return copy;
+}
+
+function valueAt(document: Table, path: string[]): TomlValue | undefined {
+  let at: TomlValue | undefined = document;
+  for (const key of path) {
+    if (typeof at !== "object" || at === null || Array.isArray(at)) return undefined;
+    at = at[key];
+  }
+  return at;
+}
+
+function differences(a: TomlValue | undefined, b: TomlValue | undefined, prefix: string[], depth: number): string[] {
+  if (isDeepStrictEqual(a, b)) return [];
+  const left = typeof a === "object" && a !== null && !Array.isArray(a) ? a : null;
+  const right = typeof b === "object" && b !== null && !Array.isArray(b) ? b : null;
+  if (!left || !right || depth >= 3) return [prefix.join(".") || "(file)"];
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].sort().flatMap((key) => differences(left[key], right[key], [...prefix, key], depth + 1));
+}
+
+function tomlOf(text: string): Table | null {
+  try {
+    return parseToml(text);
+  } catch {
+    return null;
+  }
+}
+
+interface Sourced {
+  name: string;
+  version: string;
+  source: TomlValue | undefined;
+}
+
+function sourcedOf(text: string): Sourced[] {
+  const parsed = parseToml(text)["package"];
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((raw) => {
+    const entry = table(raw);
+    return typeof entry["name"] === "string" ? [{ name: packageKey("pip", entry["name"]), version: typeof entry["version"] === "string" ? entry["version"] : "", source: entry["source"] }] : [];
+  });
+}
+
+export function uvLockfileProblems(before: string, after: string): string[] {
+  const was = sourcedOf(before);
+  const registries = new Set(was.flatMap((item) => (typeof table(item.source)["registry"] === "string" ? [table(item.source)["registry"] as string] : [])));
+  const problems: string[] = [];
+  for (const item of sourcedOf(after)) {
+    const known = was.filter((other) => other.name === item.name);
+    if (known.some((other) => other.version === item.version && isDeepStrictEqual(other.source, item.source))) continue;
+    const source = table(item.source);
+    if (source["virtual"] !== undefined || source["editable"] !== undefined) {
+      if (!known.some((other) => isDeepStrictEqual(other.source, item.source))) problems.push(`${item.name} is a local package that the default branch's lockfile does not have`);
+      continue;
+    }
+    const registry = source["registry"];
+    if (typeof registry !== "string") problems.push(`${item.name} ${item.version} does not come from a registry (${Object.keys(source).join(", ") || "no source"})`);
+    else if (!registries.has(registry)) problems.push(`${item.name} ${item.version} comes from ${registry}, which no package of the default branch's lockfile uses`);
+    else if (known.length > 0 && !known.some((other) => table(other.source)["registry"] === registry)) problems.push(`${item.name} ${item.version} comes from ${registry}, not the registry it came from before`);
+  }
+  return problems;
+}
+
+async function lockCheck(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<{ exitCode: number; output: string; timedOut: boolean }> {
+  const directory = dirname(lockfile);
+  const prefix = directory === "." ? "" : `cd ${shellQuote(`/work/${directory}`)} && `;
+  const result = await box.run(["sh", "-c", `${prefix}uv lock --check`], timeoutMs);
+  return { exitCode: result.exitCode, output: `${result.stdout}${result.stderr}`, timedOut: result.timedOut };
+}
+
 export const uv: Ecosystem = {
   name: "uv",
   findingEcosystem: "pip",
   toolchainFiles: [".python-version", "pyproject.toml"],
   imageFamily: "python",
+  absentIsFixed: true,
   notes: UV_NOTES,
 
   installedVersions(text) {
@@ -110,6 +208,40 @@ export const uv: Ecosystem = {
   },
 
   manifestFile: "pyproject.toml",
+
+  async preflight(box, lockfile, timeoutMs) {
+    const check = await lockCheck(box, lockfile, timeoutMs);
+    const reference: ResolverReference | undefined = check.timedOut ? undefined : { exact: check.exitCode === 0, removed: 0, added: 0, changed: 0, swapped: 0 };
+    return { notes: [], summary: `uv lock --check on the default branch: ${check.timedOut ? "timed out" : check.exitCode === 0 ? "exact" : `exit ${check.exitCode}`}`, ...(reference ? { reference } : {}) };
+  },
+
+  async verify(box, lockfile, timeoutMs, reference): Promise<Verification> {
+    const check = await lockCheck(box, lockfile, timeoutMs);
+    if (check.timedOut) return { outcome: "unknown", text: "`uv lock --check` timed out, so the committed lockfile could not be checked against pyproject.toml" };
+    if (check.exitCode === 0) return { outcome: "ok", text: "`uv lock --check` finds the committed uv.lock up to date with pyproject.toml" };
+    const reason = failureExcerpt(check.output, 400);
+    if (reference?.exact) return { outcome: "tampered", text: `\`uv lock --check\` fails on the committed uv.lock although it passes on the default branch: ${reason}` };
+    return { outcome: "drift", text: `\`uv lock --check\` fails on the committed uv.lock (it already failed on the default branch, or could not be run there): ${reason}` };
+  },
+
+  lockfileProblems(before, after, _manifests: ManifestPair[]) {
+    return uvLockfileProblems(before, after);
+  },
+
+  manifestViolations(before, after) {
+    const was = tomlOf(before);
+    const now = tomlOf(after);
+    if (!now) return ["the file is not valid TOML"];
+    if (!was) return [];
+    return differences(without(was, ALLOWED_PATHS), without(now, ALLOWED_PATHS), [], 0);
+  },
+
+  riskyManifestChanges(before, after) {
+    const was = tomlOf(before);
+    const now = tomlOf(after);
+    if (!was || !now) return [];
+    return RISKY_PATHS.filter((path) => !isDeepStrictEqual(valueAt(was, path), valueAt(now, path))).map((path) => path.join("."));
+  },
 
   overridesPackage(manifestText, pkg) {
     try {

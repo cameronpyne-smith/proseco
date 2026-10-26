@@ -1,5 +1,7 @@
 import { GitHubApi, expectOk } from "../core/github.ts";
-import { compareVersions, packageKey } from "../core/versions.ts";
+import { inRange, packageKey } from "../core/versions.ts";
+
+export { inRange };
 
 export interface Advisory {
   id: string;
@@ -38,28 +40,6 @@ type Vulnerability = NonNullable<GlobalAdvisory["vulnerabilities"]>[number];
 
 function forPackage(advisory: GlobalAdvisory, pkg: string): Vulnerability[] {
   return (advisory.vulnerabilities ?? []).filter((entry) => entry.package && sameName(entry.package.name, pkg));
-}
-
-export function inRange(version: string, range: string): boolean {
-  const clauses = range.split(",").map((clause) => clause.trim()).filter(Boolean);
-  if (clauses.length === 0) return false;
-  return clauses.every((clause) => {
-    const match = /^(<=|>=|<|>|=)?\s*(\S+)$/.exec(clause);
-    const order = match ? compareVersions(version, match[2]!) : null;
-    if (!match || order === null) return false;
-    switch (match[1] ?? "=") {
-      case "<":
-        return order < 0;
-      case "<=":
-        return order <= 0;
-      case ">":
-        return order > 0;
-      case ">=":
-        return order >= 0;
-      default:
-        return order === 0;
-    }
-  });
 }
 
 function applicable(vulnerabilities: Vulnerability[], installed: string | undefined): Vulnerability | null {

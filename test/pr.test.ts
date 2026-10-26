@@ -230,6 +230,13 @@ describe("major upgrade pull request", () => {
     assert.match(body, /- `f19\.js`\n\nand 2 more/);
   });
 
+  it("lists high-risk paths first, capped, and omits the section when there are none", () => {
+    const body = renderMajorPrBody(major({ highRisk: ["Dockerfile", "package.json (scripts changed)"] }));
+    assert.match(body, /^Upgrades `node-fetch`[^\n]*\n\n### High-risk paths changed\n\n[^\n]*Read these changes first:\n\n- `Dockerfile`\n- `package\.json \(scripts changed\)`\n\n\| Package/);
+    assert.match(renderMajorPrBody(major({ highRisk: Array.from({ length: 25 }, (_, index) => `s${index}.sh`) })), /- and 5 more/);
+    assert.doesNotMatch(renderMajorPrBody(major()), /High-risk/);
+  });
+
   it("shows the installed version in the major body's package row", () => {
     assert.match(renderMajorPrBody(major()), /\| `node-fetch` \| 2\.6\.1 → 3\.3\.2 \(fix needs 3\.1\.1\) \|/);
   });

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { npm } from "../src/fixer/ecosystems/npm.ts";
 import { GitStore } from "../src/fixer/git.ts";
-import { allowedFiles, commitAllowed, discardOthers, isAllowed, majorGuard, parseStatus, splitPaths } from "../src/fixer/publish.ts";
+import { allowedFiles, commitAllowed, discardOthers, highRiskPaths, isAllowed, majorGuard, parseStatus, splitPaths } from "../src/fixer/publish.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", ...args], { cwd, encoding: "utf8" }).trim();
@@ -177,6 +177,16 @@ describe("the commit guard for a major upgrade", () => {
     const result = await major({ "uv.lock": "changed", "pyproject.toml": "[project]", "requirements-dev.txt": "x==1", "scripts/parity-requirements.txt": "x==1", "notes.txt": "n", "svc/Api.csproj": "<Project/>", "package.json": '{"v":2}', "src/a.js": "c" });
     assert.deepEqual(result.discarded, ["pyproject.toml", "requirements-dev.txt", "scripts/parity-requirements.txt", "svc/Api.csproj", "uv.lock"]);
     assert.deepEqual(result.files, ["notes.txt", "package.json", "src/a.js"]);
+  });
+
+  it("never commits any of .github, git hooks or editor and container tooling, wherever they are", async () => {
+    const result = await major({ "src/a.js": "c", ".github/CODEOWNERS": "x", ".github/actions/x/action.yml": "x", ".husky/pre-commit": "x", ".githooks/pre-push": "x", ".vscode/tasks.json": "{}", ".devcontainer/devcontainer.json": "{}", ".idea/x.xml": "x", "svc/.husky/pre-commit": "x", "lefthook.yml": "x", ".pre-commit-config.yaml": "x", "svc/lefthook.yaml": "x" });
+    assert.deepEqual(result.files, ["src/a.js"]);
+    assert.equal(result.discarded.length, 11);
+  });
+
+  it("lists high-risk paths among the committed files", () => {
+    assert.deepEqual(highRiskPaths(["src/a.js", "Dockerfile", "svc/Dockerfile.dev", "docker-compose.yml", "Makefile", "scripts/run.sh", ".gitlab-ci.yml", "azure-pipelines.yml", ".circleci/config.yml", "package.json", "README.md"]), ["Dockerfile", "svc/Dockerfile.dev", "docker-compose.yml", "Makefile", "scripts/run.sh", ".gitlab-ci.yml", "azure-pipelines.yml", ".circleci/config.yml"]);
   });
 
   it("refuses package-manager configuration in any directory but allows ordinary source", async () => {

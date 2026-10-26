@@ -251,6 +251,13 @@ export function cvesInBody(body: string): Set<string> {
   return new Set(rawCells(body).map((cells) => cells[0]!));
 }
 
+const PACKAGE_NAME = /^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*\/)?[A-Za-z0-9][A-Za-z0-9._+~:-]*$/;
+
+function validSource(source: string): boolean {
+  if (source === "" || source.startsWith("/") || /[\s\0\\]/.test(source)) return false;
+  return source.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
 export function parseRawTable(body: string): TicketRow[] {
   return rawCells(body).map((cells, index) => {
     const [cve, severityText, pkg, installed, fixedIn, source, epss, kev] = cells;
@@ -258,6 +265,10 @@ export function parseRawTable(body: string): TicketRow[] {
     if (cells.length !== 8 || !cve || !severity || (kev !== "yes" && kev !== "no")) {
       throw new Error(`raw findings row ${index + 1} does not match the ticket format: ${cells.join(" | ")}`);
     }
+    const packageName = uncode(pkg!);
+    const sourcePath = uncode(source!);
+    if (!PACKAGE_NAME.test(packageName)) throw new Error(`raw findings row ${index + 1} has an invalid package name: ${JSON.stringify(packageName)}`);
+    if (!validSource(sourcePath)) throw new Error(`raw findings row ${index + 1} has an invalid source path: ${JSON.stringify(sourcePath)}`);
     const score = epss === "n/a" ? null : Number(epss!.replace(/%$/, ""));
     if (score !== null && !Number.isFinite(score)) {
       throw new Error(`raw findings row ${index + 1} has an unreadable EPSS value: ${epss}`);
@@ -265,10 +276,10 @@ export function parseRawTable(body: string): TicketRow[] {
     return {
       cve,
       severity,
-      package: uncode(pkg!),
+      package: packageName,
       installed: installed!,
       fixedIn: fixedIn || null,
-      source: uncode(source!),
+      source: sourcePath,
       epssPercent: score,
       kev: kev === "yes",
     };

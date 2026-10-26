@@ -116,5 +116,10 @@ describe("readTar and replaceTree", () => {
 
   it("refuses an entry that runs past the end of the archive", () => {
     assert.throws(() => readTar(Buffer.concat([header("./x", "0", 4096), Buffer.alloc(512)])), /runs past the end/);
+    for (const size of ["-5", "1.5", "abc", "1e3"]) {
+      const record = ` size=${size}\n`;
+      const pax = `${String(record.length + String(record.length + 2).length).padStart(2, "0")}${record}`;
+      assert.throws(() => readTar(crafted({ name: "./pax", type: "x", data: pax }, { name: "./x", data: "data" })), /invalid pax size/, size);
+    }
   });
 });

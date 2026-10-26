@@ -52,9 +52,11 @@ export function readTar(archive: Buffer): TarEntry[] {
     if (header.every((byte) => byte === 0)) break;
     if (!checksumOk(header)) throw new Error(`tar header at byte ${position} has a bad checksum`);
     const type = String.fromCharCode(header[156]!);
-    const size = Number(pax.get("size") ?? octal(header, 124, 12, "size"));
+    const paxSize = pax.get("size");
+    if (paxSize !== undefined && !/^\d+$/.test(paxSize)) throw new Error(`tar entry at byte ${position} has an invalid pax size: ${JSON.stringify(paxSize)}`);
+    const size = paxSize !== undefined ? Number(paxSize) : octal(header, 124, 12, "size");
     const start = position + BLOCK;
-    if (!Number.isSafeInteger(size) || start + size > archive.length) throw new Error(`tar entry at byte ${position} runs past the end of the archive`);
+    if (!Number.isSafeInteger(size) || size < 0 || start + size > archive.length) throw new Error(`tar entry at byte ${position} runs past the end of the archive`);
     const data = archive.subarray(start, start + size);
     position = start + Math.ceil(size / BLOCK) * BLOCK;
     if (type === "x") {

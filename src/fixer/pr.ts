@@ -2,6 +2,7 @@ import { compareVersions, isMajorUpgrade } from "../core/versions.ts";
 import { failureExcerpt } from "./excerpt.ts";
 import { isRegression, type TestComparison } from "./baseline.ts";
 import type { PackageCheck } from "./check.ts";
+import type { Verification } from "./ecosystems/ecosystem.ts";
 import type { ForcedMajor } from "./majors.ts";
 import { versionOf, type ReleaseNote, type ReleaseNotes } from "./releases.ts";
 
@@ -31,6 +32,7 @@ export interface PrBodyInput {
   checks: PackageCheck[];
   tests: TestOutcome;
   comparison?: TestComparison | null;
+  verification?: Verification | null;
   discarded: string[];
 }
 
@@ -43,10 +45,12 @@ export interface MajorPrBodyInput {
   releases: ReleaseNotes | null;
   codeChanged: boolean;
   forcedMajors: ForcedMajor[];
+  highRisk?: string[];
   summary: string;
   checks: PackageCheck[];
   tests: TestOutcome;
   comparison?: TestComparison | null;
+  verification?: Verification | null;
   discarded: string[];
 }
 
@@ -169,6 +173,7 @@ export function renderPrBody(input: PrBodyInput): string {
     "### Checks",
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
+    ...verificationLines(input.verification),
     ...testSection(input.tests, input.comparison),
   ];
   lines.push(...discardedSection(input.discarded, "They are outside the lockfile's manifest and lockfiles, so they were discarded and are not part of this pull request:"));
@@ -202,6 +207,24 @@ function releasesSection(fix: PrFix, notes: ReleaseNotes | null): string[] {
     ...(picked.length === 0 ? [] : ["", ...picked.map((release) => `- [\`${release.tag}\`](${base}/tag/${encodeURIComponent(release.tag)})`)]),
     "",
     `All release notes: ${base}`,
+  ];
+}
+
+function verificationLines(verification: Verification | null | undefined): string[] {
+  if (!verification) return [];
+  return [verification.outcome === "ok" ? `- Resolver check: ${verification.text}.` : `- Draft: the lockfile was not verified against the resolver: ${verification.text}. A person needs to check it before this can merge.`];
+}
+
+function highRiskSection(paths: string[]): string[] {
+  if (paths.length === 0) return [];
+  return [
+    "### High-risk paths changed",
+    "",
+    "The agent changed files that run code outside the dependency upgrade itself (build, container, CI or script files, or `scripts` in a manifest). Read these changes first:",
+    "",
+    ...paths.slice(0, MAX_DISCARDED).map((path) => `- \`${path}\``),
+    ...(paths.length > MAX_DISCARDED ? [`- and ${paths.length - MAX_DISCARDED} more`] : []),
+    "",
   ];
 }
 
@@ -244,6 +267,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
   const lines = [
     `Upgrades \`${input.fix.package}\` across a major version in \`${input.lockfile}\`.`,
     "",
+    ...highRiskSection(input.highRisk ?? []),
     "| Package | Change | Findings |",
     "| --- | --- | --- |",
     packageRow(input.fix, input.checks),
@@ -260,6 +284,7 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     "### Checks",
     "",
     ...input.checks.map((check) => `- Lockfile: ${check.package}: ${check.reason}.`),
+    ...verificationLines(input.verification),
     ...ranSection(input.tests, input.comparison),
     ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, new files that a command created rather than the agent, such as build output), so they were discarded and are not part of this pull request:"),
     "",

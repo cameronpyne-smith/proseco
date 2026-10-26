@@ -20,6 +20,8 @@ describe("ecosystem detection", () => {
     assert.equal(ecosystemFor("web/package-lock.json")?.name, "npm");
     assert.equal(ecosystemFor("services/api/uv.lock")?.name, "uv");
     assert.equal(ecosystemFor("requirements.txt")?.name, "requirements");
+    for (const path of ["requirements/base.txt", "svc/Requirements/dev/test.txt"]) assert.equal(ecosystemFor(path)?.name, "requirements", path);
+    for (const path of ["docs/notes.txt", "requirements/README.md", "requirement/base.txt"]) assert.equal(ecosystemFor(path), null, path);
     assert.equal(ecosystemFor("api/requirements-dev.txt")?.name, "requirements");
     for (const path of ["scripts/parity-requirements.txt", "dev_requirements.txt", "tools/test.requirements.txt", "requirements_test.txt", "Requirements.txt"]) {
       assert.equal(ecosystemFor(path)?.name, "requirements", path);
@@ -99,6 +101,9 @@ describe("npm", () => {
     assert.equal(npm.toolchainVersion({ ".nvmrc": "v20.11.0\n", "package.json": '{"engines":{"node":">=18"}}' }), "v20.11.0");
     assert.equal(npm.toolchainVersion({ "package.json": '{"engines":{"node":">=18"}}' }), ">=18");
     assert.equal(npm.toolchainVersion({ "package.json": "{}" }), null);
+    assert.equal(npm.toolchainVersion({ "package.json": "not json" }), null);
+    assert.equal(npm.toolchainVersion({ ".nvmrc": "20\n", "package.json": "not json" }), "20");
+    assert.equal(npm.toolchainVersion({ "package.json": '{"engines":{"node":">=20"}}' }), ">=20");
     assert.equal(npm.toolchainVersion({}), null);
   });
 });
@@ -319,6 +324,9 @@ describe("unsupported files", () => {
     assert.match(requirements.unsupported("requests==2.31.0 --hash=sha256:abc\n")!, /hash-pinned/);
     assert.equal(requirements.unsupported("requests==2.31.0\npytest==8.3.3\n"), null);
     assert.equal(ecosystem("uv.lock").unsupported("x"), null);
-    assert.equal(ecosystem("package-lock.json").unsupported("x"), null);
+    const npmLock = ecosystem("package-lock.json");
+    assert.equal(npmLock.unsupported(JSON.stringify({ lockfileVersion: 3, packages: {} })), null);
+    assert.match(npmLock.unsupported(JSON.stringify({ lockfileVersion: 1, dependencies: {} }))!, /lockfileVersion 1 and no packages map: only lockfileVersion 2 and 3 are supported/);
+    assert.match(npmLock.unsupported("not json")!, /not valid JSON/);
   });
 });

@@ -4,14 +4,14 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { DEFAULT_BUDGET, DEFAULT_OLLAMA, DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LIMITS, type FixerConfig } from "../src/core/config.ts";
+import { DEFAULT_BUDGET, DEFAULT_OLLAMA, DEFAULT_TRANSCRIPTS, DEFAULT_PROXY_ALLOW, DEFAULT_SANDBOX_LIMITS, type FixerConfig } from "../src/core/config.ts";
 import type { ChatMessage, ChatResult, OllamaClient, ToolDefinition } from "../src/fixer/agent/ollama.ts";
 import type { ReleaseNotes } from "../src/fixer/releases.ts";
 import type { Ecosystem } from "../src/fixer/ecosystems/ecosystem.ts";
 import { pytestFailures } from "../src/fixer/ecosystems/pytest.ts";
 import { GitStore } from "../src/fixer/git.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
-import type { Docker, ExecResult } from "../src/fixer/sandbox/docker.ts";
+import type { Docker, ExecOptions, ExecResult } from "../src/fixer/sandbox/docker.ts";
 import { workUnit, type PublishRequest, type UnitContext } from "../src/fixer/unit.ts";
 import { LocalBox } from "./local-box.ts";
 
@@ -33,6 +33,7 @@ function fakeEcosystem(overrides: Partial<Ecosystem> = {}, tests = true): Ecosys
     findingEcosystem: "fake",
     toolchainFiles: ["toolchain.txt"],
     imageFamily: "python",
+    absentIsFixed: true,
     notes: "Ecosystem notes (fake): resolve with fake-resolve.",
     installedVersions(text) {
       return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, [line.split("==")[1]!]]));
@@ -47,10 +48,10 @@ function fakeEcosystem(overrides: Partial<Ecosystem> = {}, tests = true): Ecosys
   };
 }
 
-async function origin(): Promise<{ store: GitStore; head: string }> {
+async function origin(manifest = "pkg>=1\n"): Promise<{ store: GitStore; head: string }> {
   const remote = mkdtempSync(join(tmpdir(), "proseco-unit-origin-"));
   git(remote, "init", "-q", "-b", "main");
-  const files = { [LOCKFILE]: "pkg==1.0.0\nother==3.0.0\n", "svc/fake.manifest": "pkg>=1\n", "svc/toolchain.txt": "3.12\n", "svc/app.py": "print()\n" };
+  const files = { [LOCKFILE]: "pkg==1.0.0\nother==3.0.0\n", "svc/fake.manifest": manifest, "svc/toolchain.txt": "3.12\n", "svc/app.py": "print()\n" };
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(dirname(join(remote, file)), { recursive: true });
     writeFileSync(join(remote, file), content);
@@ -92,8 +93,8 @@ interface Run {
   lastMessages: ChatMessage[];
 }
 
-async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; baselineExits?: Record<string, number>; stdout?: { before?: string; after?: string }; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
-  const { store, head } = await origin();
+async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; baselineExits?: Record<string, number>; headManifest?: string; truncateReads?: boolean; onRun?: (command: string[], options?: ExecOptions) => unknown; stdout?: { before?: string; after?: string }; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
+  const { store, head } = await origin(options.headManifest);
   const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [], gated: [], lastMessages: [] };
   const steps: ChatResult["message"]["tool_calls"][] = [
     options.edits ?? [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/app.py", "changed\n"), write("svc/new.txt", "x\n")],
@@ -130,6 +131,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     proxy: { allow: DEFAULT_PROXY_ALLOW },
     sandbox: DEFAULT_SANDBOX_LIMITS,
     ollama: DEFAULT_OLLAMA,
+    transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...options.budget },
   };
   const ctx: UnitContext = {
@@ -158,6 +160,8 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
       let afterAgent = false;
       return {
         async run(command, timeoutMs, runOptions): Promise<ExecResult> {
+          options.onRun?.(command, runOptions);
+          if (command[0] === "cat" && options.truncateReads) return { exitCode: 0, stdout: "{ half a lockfile\n[output truncated at 1048576 bytes]", stderr: "", truncated: true, timedOut: false };
           if (command[0] === "cat") return box.run(["cat", command[1]!.replace(/^\/work\//, "")], timeoutMs, runOptions);
           if (command.length > 3 || !/fake-/.test(command[2]!)) return box.run(command, timeoutMs, runOptions);
           seen.commands.push(command[2]!);
@@ -343,9 +347,15 @@ describe("workUnit minimality check", () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits: bump("pkg>=2\noverride pkg\n") });
     assert.equal(result.outcome.kind, "pr");
     assert.equal(seen.gated.length, 2);
-    assert.match(seen.gated[0]!, /^Not accepted yet: an override of pkg is already in place in your manifest[^]*- other 3\.0\.0 → 4\.0\.0\n[^]*revert these major bumps[^]*lockfile_status that every copy of pkg is still fixed[^]*Keep a bump only if the override alone leaves a copy unfixed, and say so in the summary/);
+    assert.match(seen.gated[0]!, /^Not accepted yet: an override of pkg is already in place in your manifest[^]*- other 3\.0\.0 → 4\.0\.0\n[^]*revert these major bumps[^]*lockfile_status that every copy of pkg is still fixed[^]*Keep a bump only if the override alone leaves a copy unfixed, or if a peer dependency of another package needs the new major to resolve, and say which in the summary/);
     assert.doesNotMatch(seen.gated[0]!, /- pkg 1\.0\.0/);
     assert.match(seen.gated[1]!, /^Not accepted yet: review before you finish/);
+  });
+
+  it("does not fire when the override was already in the manifest at the default branch head", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits: bump("pkg>=2\noverride pkg\n"), headManifest: "pkg>=1\noverride pkg\n" });
+    assert.equal(seen.gated.length, 1);
+    assert.match(seen.gated[0]!, /^Not accepted yet: review/);
   });
 
   it("does not fire without an override, or when only the upgraded package crossed a major", async () => {
@@ -366,6 +376,106 @@ describe("workUnit minimality check", () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits });
     assert.equal(result.outcome.kind, "pr");
     assert.match(seen.gated[0]!, /override of pkg is already in place/);
+  });
+});
+
+describe("workUnit manifest and risk guards", () => {
+  const GUARDED: Partial<Ecosystem> = { manifestFile: "fake.manifest", manifestViolations: (_before, after) => (after.includes("scripts") ? ["scripts"] : []), riskyManifestChanges: (_before, after) => (after.includes("scripts") ? ["scripts"] : []) };
+  const lockfileEdits = (manifest: string) => [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", manifest)];
+
+  it("makes no pull request when a lockfile unit changed something in the manifest other than dependencies", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(GUARDED), edits: lockfileEdits("pkg>=2\nscripts: x\n") });
+    assert.equal(result.outcome.kind, "none");
+    assert.match((result.outcome as { reason: string }).reason, /the agent changed scripts in svc\/fake\.manifest; a lockfile unit may only change dependency versions and overrides/);
+    assert.deepEqual(seen.published, []);
+  });
+
+  it("lets a lockfile unit change dependencies in the manifest", async () => {
+    const { result } = await run({ ecosystem: fakeEcosystem(GUARDED), edits: lockfileEdits("pkg>=2\n") });
+    assert.equal(result.outcome.kind, "pr");
+  });
+
+  it("puts the high-risk paths a major unit changed at the top of its body", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\nscripts: build\n"), write("svc/Dockerfile", "FROM x\n"), write("svc/run.sh", "echo\n"), write("svc/app.py", "ok\n")];
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(GUARDED), unit: MAJOR_UNIT, edits });
+    assert.equal(result.outcome.kind, "pr");
+    const body = seen.published[0]!.body;
+    assert.match(body, /^Upgrades `pkg` across a major version in `svc\/fake\.lock`\.\n\n### High-risk paths changed\n\n[^]*\n- `svc\/Dockerfile`\n- `svc\/fake\.manifest \(scripts changed\)`|### High-risk paths changed[^]*- `svc\/Dockerfile`\n- `svc\/fake\.manifest \(scripts changed\)`\n- `svc\/run\.sh`/);
+    assert.ok(body.indexOf("### High-risk paths changed") < body.indexOf("| Package |"));
+    assert.doesNotMatch(body, /app\.py` \(/);
+  });
+
+  it("has no such section when nothing risky changed", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem(GUARDED), unit: MAJOR_UNIT, edits: lockfileEdits("pkg>=2\n") });
+    assert.doesNotMatch(seen.published[0]!.body, /High-risk/);
+  });
+});
+
+describe("workUnit lockfile verification", () => {
+  const verifying = (outcome: "ok" | "tampered" | "drift" | "unknown", extra: Partial<Ecosystem> = {}) =>
+    fakeEcosystem({ preflight: async () => ({ notes: [], reference: { exact: true, removed: 0, added: 0, changed: 0, swapped: 0 } }), verify: async (_box, _lockfile, _timeout, reference) => ({ outcome, text: `reference exact=${reference?.exact}` }), ...extra });
+
+  it("opens a ready pull request, with the resolver check in its body, when the verification passes", async () => {
+    const { result, seen } = await run({ ecosystem: verifying("ok") });
+    assert.equal(result.outcome.kind, "pr");
+    assert.equal(seen.published[0]!.draft, false);
+    assert.match(seen.published[0]!.body, /- Resolver check: reference exact=true\./);
+  });
+
+  it("makes no pull request when the committed lockfile is not what the resolver produces", async () => {
+    const { result, seen } = await run({ ecosystem: verifying("tampered") });
+    assert.equal(result.outcome.kind, "none");
+    assert.match((result.outcome as { reason: string }).reason, /the committed lockfile is not what the resolver produces from the manifest: reference exact=true/);
+    assert.deepEqual(seen.published, []);
+  });
+
+  it("opens a draft that says so when the lockfile cannot be verified or drifts", async () => {
+    for (const outcome of ["drift", "unknown"] as const) {
+      const { seen } = await run({ ecosystem: verifying(outcome) });
+      assert.equal(seen.published[0]!.draft, true, outcome);
+      assert.match(seen.published[0]!.body, /- Draft: the lockfile was not verified against the resolver: reference exact=true\. A person needs to check it/, outcome);
+    }
+  });
+
+  it("treats a verification that throws as unknown, and still runs without a verify hook", async () => {
+    const { seen } = await run({ ecosystem: verifying("ok", { verify: async () => { throw new Error("docker went away"); } }) });
+    assert.equal(seen.published[0]!.draft, true);
+    assert.match(seen.published[0]!.body, /could not be checked against the resolver \(docker went away\)/);
+    const plain = await run({ ecosystem: fakeEcosystem() });
+    assert.doesNotMatch(plain.seen.published[0]!.body, /Resolver check|not verified/);
+  });
+
+  it("makes no pull request when the lockfile's entries do not look like registry packages", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem({ lockfileProblems: () => ["node_modules/a is an alias for evil, not a"] }) });
+    assert.equal(result.outcome.kind, "none");
+    assert.match((result.outcome as { reason: string }).reason, /the committed lockfile does not look like registry packages: node_modules\/a is an alias for evil, not a/);
+    assert.deepEqual(seen.published, []);
+  });
+
+  it("passes the manifest before and after to the lockfile check", async () => {
+    const pairs: { path: string; before: string | null; after: string | null }[] = [];
+    await run({ ecosystem: fakeEcosystem({ manifestFile: "fake.manifest", lockfileProblems: (_before, _after, manifests) => (pairs.push(...manifests), []) }) });
+    assert.deepEqual(pairs, [{ path: "svc/fake.manifest", before: "pkg>=1\n", after: "pkg>=2\n" }]);
+  });
+});
+
+describe("workUnit harness output", () => {
+  it("captures the head and the tail of the install and test output", async () => {
+    const seen: (ExecOptions | undefined)[] = [];
+    await run({ ecosystem: fakeEcosystem(), onRun: (command, options) => /fake-/.test(command[2] ?? "") && seen.push(options) });
+    assert.equal(seen.length, 4);
+    assert.ok(seen.every((options) => options?.keep === "headtail" && options.limit === 4 * 1024 * 1024));
+  });
+});
+
+describe("workUnit reading the lockfile from the sandbox", () => {
+  it("asks for the whole file, not the default 1 MiB, and refuses a finish it cannot read instead of accepting it, within the cap", async () => {
+    const limits: (number | undefined)[] = [];
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(), truncateReads: true, onRun: (command, options) => command[0] === "cat" && limits.push(options?.limit) });
+    assert.equal(seen.gated.length, 2);
+    assert.match(seen.gated[0]!, /^Not accepted yet: the host could not read or parse svc\/fake\.lock in the sandbox to check it \(svc\/fake\.lock is larger than 20971520 bytes\)/);
+    assert.ok(limits.length > 0 && limits.every((limit) => limit === 20 * 1024 * 1024));
+    assert.equal(result.outcome.kind, "pr");
   });
 });
 

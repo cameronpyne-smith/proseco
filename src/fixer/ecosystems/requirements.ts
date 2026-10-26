@@ -1,4 +1,5 @@
 import { basename } from "node:path/posix";
+import { shellWord } from "../shell.ts";
 import { packageKey } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
 import { pytestFailures, pythonSources } from "./pytest.ts";
@@ -14,6 +15,12 @@ export const REQUIREMENTS_NOTES = [
 ].join("\n");
 
 export const REQUIREMENTS_FILE = /^(?:.*[-_.])?requirements(?:[-_.].*)?\.txt$/i;
+
+export function isRequirementsPath(path: string): boolean {
+  const parts = path.split("/");
+  const file = parts.pop()!;
+  return REQUIREMENTS_FILE.test(file) || (/\.txt$/i.test(file) && parts.some((part) => part.toLowerCase() === "requirements"));
+}
 
 const PIN = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([^\s;\\]+)/;
 
@@ -36,6 +43,7 @@ export const requirements: Ecosystem = {
   findingEcosystem: "pip",
   toolchainFiles: [".python-version", "pyproject.toml"],
   imageFamily: "python",
+  absentIsFixed: false,
   notes: REQUIREMENTS_NOTES,
   installedVersions: pins,
   directVersions: () => new Map(),
@@ -51,7 +59,7 @@ export const requirements: Ecosystem = {
   },
   harness(lockfile) {
     return {
-      install: `python -m pip install -r ${basename(lockfile)}`,
+      install: `python -m pip install -r ${shellWord(basename(lockfile))}`,
       test: "python -m pytest -q -rfE",
       failures: pytestFailures,
       hasTests(read) {

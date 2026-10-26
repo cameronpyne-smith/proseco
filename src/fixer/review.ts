@@ -168,6 +168,10 @@ export function minimalityMessage(pkg: string, forced: ForcedMajor[]): string {
   return [
     `Not accepted yet: an override of ${pkg} is already in place in your manifest, and these other direct dependencies also crossed a major version:`,
     ...forced.map((item) => `- ${item.package} ${item.from} → ${item.to}`),
-    `The override of ${pkg} is already in place, so revert these major bumps (restore their ranges in the manifest), re-resolve, and check with lockfile_status that every copy of ${pkg} is still fixed. Keep a bump only if the override alone leaves a copy unfixed, and say so in the summary. Then call finish again.`,
+    `The override of ${pkg} is already in place, so revert these major bumps (restore their ranges in the manifest), re-resolve, and check with lockfile_status that every copy of ${pkg} is still fixed. Keep a bump only if the override alone leaves a copy unfixed, or if a peer dependency of another package needs the new major to resolve, and say which in the summary. Then call finish again.`,
   ].join("\n");
+}
+
+export function unreadableMessage(path: string, reason: string): string {
+  return `Not accepted yet: the host could not read or parse ${path} in the sandbox to check it (${reason}). Make sure the file exists and is valid, re-run the resolver if needed, then call finish again.`;
 }

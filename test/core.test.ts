@@ -272,7 +272,7 @@ describe("reading a ticket back", () => {
   it("returns every raw finding as it was rendered", () => {
     const findings = [
       finding({ cve: "CVE-1", package: "@babel/core", severity: "critical" }),
-      finding({ cve: "GHSA-aaaa-bbbb-cccc", package: "a|b", installed: "1.0.0", fixedIn: "1.0.1", source: "web/package-lock.json" }),
+      finding({ cve: "GHSA-aaaa-bbbb-cccc", package: "acme-pipe", installed: "1.0.0|b", fixedIn: "1.0.1", source: "web/package-lock.json" }),
       finding({ cve: "CVE-3", package: "Pillow", ecosystem: "pip", installed: "12.3.0", fixedIn: "13.0.0", source: "uv.lock" }),
     ];
     const rows = parseRawTable(render("acme-docs", findings, enrichment({ "CVE-1": 0.0123 }, ["CVE-3"])));
@@ -281,7 +281,7 @@ describe("reading a ticket back", () => {
       [
         { cve: "CVE-1", severity: "critical", package: "@babel/core", installed: "4.17.0", fixedIn: "4.17.21", source: "package-lock.json", epssPercent: 1.2, kev: false },
         { cve: "CVE-3", severity: "high", package: "Pillow", installed: "12.3.0", fixedIn: "13.0.0", source: "uv.lock", epssPercent: null, kev: true },
-        { cve: "GHSA-aaaa-bbbb-cccc", severity: "high", package: "a|b", installed: "1.0.0", fixedIn: "1.0.1", source: "web/package-lock.json", epssPercent: null, kev: false },
+        { cve: "GHSA-aaaa-bbbb-cccc", severity: "high", package: "acme-pipe", installed: "1.0.0|b", fixedIn: "1.0.1", source: "web/package-lock.json", epssPercent: null, kev: false },
       ],
     );
   });
@@ -303,6 +303,14 @@ describe("reading a ticket back", () => {
   it("refuses a raw row that does not match the format instead of guessing", () => {
     const edited = render("acme-docs", [finding()], enrichment()).replace("| high | `lodash`", "| severe | `lodash`");
     assert.throws(() => parseRawTable(edited), /row 1 does not match the ticket format/);
+  });
+
+  it("refuses a raw row whose package or source could reach outside the repository or a shell", () => {
+    const body = (pkg: string, source: string) => render("acme-docs", [finding({ package: pkg, source })], enrichment());
+    for (const pkg of ["a b", "x;rm", "$(id)", "../x", "a/b", "@scope", "-x"]) assert.throws(() => parseRawTable(body(pkg, "package-lock.json")), /invalid package name/, pkg);
+    for (const source of ["../package-lock.json", "/etc/x", "a//b", "a/./b", "a/../b", "a b/uv.lock", "a\\b"]) assert.throws(() => parseRawTable(body("lodash", source)), /invalid source path/, source);
+    for (const pkg of ["@babel/core", "Pillow", "zope.interface", "Newtonsoft.Json", "libstdc++6", "libssl1.1", "python3.11-minimal", "gcc-12-base"]) assert.equal(parseRawTable(body(pkg, "web/package-lock.json"))[0]!.package, pkg);
+    assert.equal(parseRawTable(body("lodash", "ghcr.io/acme/app:1.2"))[0]!.source, "ghcr.io/acme/app:1.2");
   });
 
   it("recognises a proseco ticket by its marker on the first line and an author it trusts", () => {

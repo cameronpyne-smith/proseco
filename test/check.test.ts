@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { checkLockfile, checkPassed } from "../src/fixer/check.ts";
+import { requirements } from "../src/fixer/ecosystems/requirements.ts";
 import { npm } from "../src/fixer/ecosystems/npm.ts";
 import { uv } from "../src/fixer/ecosystems/uv.ts";
 
@@ -114,5 +115,48 @@ describe("lockfile check", () => {
     const [result] = checkLockfile(uv, text, [{ package: "zope.interface", target: ["5.0.1"] }]);
     assert.equal(result!.ok, false);
     assert.deepEqual(result!.installed, ["5.0.0"]);
+  });
+
+  describe("copies the advisory says were never vulnerable", () => {
+    const text = lock({ "node_modules/acme-brace": "1.1.20", "node_modules/a/node_modules/acme-brace": "1.0.5" });
+    const fix = { package: "acme-brace", installed: "1.1.12", target: ["1.1.20"] };
+
+    it("passes a copy outside every known vulnerable range, whatever its line", () => {
+      const [result] = checkLockfile(npm, text, [{ ...fix, vulnerable: [">= 1.1.0, < 1.1.20"] }]);
+      assert.equal(result!.ok, true);
+      assert.deepEqual(result!.installed, ["1.0.5", "1.1.20"]);
+    });
+
+    it("still fails a copy inside a vulnerable range", () => {
+      const [result] = checkLockfile(npm, text, [{ ...fix, vulnerable: ["< 1.1.20"] }]);
+      assert.equal(result!.ok, false);
+      assert.match(result!.reason, /1\.0\.5 is below 1\.1\.20/);
+    });
+
+    it("falls back to the line rule when no range is known, or when any fix of the package lacks one", () => {
+      assert.equal(checkLockfile(npm, text, [fix])[0]!.ok, false);
+      assert.equal(checkLockfile(npm, text, [{ ...fix, vulnerable: null }])[0]!.ok, false);
+      assert.equal(checkLockfile(npm, text, [{ ...fix, vulnerable: [">= 1.1.0, < 1.1.20"] }, { package: "acme-brace", installed: "2.0.2", target: ["2.1.6"], vulnerable: null }])[0]!.ok, false);
+    });
+
+    it("uses the ranges of every fix of the package together", () => {
+      const both = lock({ "node_modules/acme-brace": "1.1.20", "node_modules/a/node_modules/acme-brace": "2.0.5" });
+      const results = checkLockfile(npm, both, [{ ...fix, vulnerable: [">= 1.1.0, < 1.1.20"] }, { package: "acme-brace", installed: "2.0.2", target: ["2.1.6"], vulnerable: [">= 2.0.0, < 2.1.6"] }]);
+      assert.deepEqual(results.map((result) => result.ok), [true, false]);
+    });
+  });
+
+  describe("a file that must keep the package pinned", () => {
+    it("fails when the pin is gone or no longer ==, but a lockfile may drop the package", () => {
+      const pinned = { ...requirements, absentIsFixed: false };
+      const [gone] = checkLockfile(pinned, "other==1.0\n", [{ package: "requests", target: ["2.32.0"] }]);
+      assert.equal(gone!.ok, false);
+      assert.match(gone!.reason, /the pin for requests is gone/);
+      assert.equal(checkLockfile(pinned, "requests>=2.32\n", [{ package: "requests", target: ["2.32.0"] }])[0]!.ok, false);
+      assert.equal(checkLockfile(pinned, "requests==2.32.0\n", [{ package: "requests", target: ["2.32.0"] }])[0]!.ok, true);
+      assert.equal(requirements.absentIsFixed, false);
+      assert.equal(npm.absentIsFixed && uv.absentIsFixed, true);
+      assert.equal(checkLockfile(npm, lock({}), [{ package: "requests", target: ["2.32.0"] }])[0]!.ok, true);
+    });
   });
 });
