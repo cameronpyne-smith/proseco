@@ -109,6 +109,21 @@ export const uv: Ecosystem = {
     return installed;
   },
 
+  manifestFile: "pyproject.toml",
+
+  overridesPackage(manifestText, pkg) {
+    try {
+      const tool = table(table(parseToml(manifestText)["tool"])["uv"]);
+      const wanted = packageKey("pip", pkg);
+      return ["constraint-dependencies", "override-dependencies"].some((key) => {
+        const list = tool[key];
+        return Array.isArray(list) && list.some((item) => typeof item === "string" && packageKey("pip", /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(item)?.[1] ?? "") === wanted);
+      });
+    } catch {
+      return false;
+    }
+  },
+
   directVersions(text) {
     const packages = packagesOf(text);
     const direct = new Map<string, string>();

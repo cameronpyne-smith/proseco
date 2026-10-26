@@ -364,3 +364,29 @@ describe("lockfileStatus", () => {
     assert.match(npm.notes, /instead of parsing `git diff package-lock\.json`/);
   });
 });
+
+describe("overridesPackage", () => {
+  it("finds an npm override at any nesting level and with a version in the key", () => {
+    const manifest = (overrides: unknown) => JSON.stringify({ name: "x", overrides });
+    assert.equal(npm.overridesPackage!(manifest({ "acme-ser": "^7.0.3" }), "acme-ser"), true);
+    assert.equal(npm.overridesPackage!(manifest({ "acme-ser@^6": "^7.0.3" }), "acme-ser"), true);
+    assert.equal(npm.overridesPackage!(manifest({ "acme-mocha": { "acme-ser": "^7.0.3" } }), "acme-ser"), true);
+    assert.equal(npm.overridesPackage!(manifest({ "@acme/ser": "^7" }), "@acme/ser"), true);
+    assert.equal(npm.overridesPackage!(manifest({ "@acme/ser@1": "^7" }), "@acme/ser"), true);
+    assert.equal(npm.overridesPackage!(manifest({ "acme-other": "^1" }), "acme-ser"), false);
+    assert.equal(npm.overridesPackage!(JSON.stringify({ dependencies: { "acme-ser": "^7" } }), "acme-ser"), false);
+    assert.equal(npm.overridesPackage!("not json", "acme-ser"), false);
+    assert.equal(npm.manifestFile, "package.json");
+  });
+
+  it("finds a uv constraint or override by normalised name, and says nothing for requirements", () => {
+    const toml = (body: string) => `[project]\nname = "x"\n[tool.uv]\n${body}\n`;
+    assert.equal(uv.overridesPackage!(toml('constraint-dependencies = ["Acme_Ser>=7.0.3"]'), "acme.ser"), true);
+    assert.equal(uv.overridesPackage!(toml('override-dependencies = ["acme-ser==7.1"]'), "acme-ser"), true);
+    assert.equal(uv.overridesPackage!(toml('constraint-dependencies = ["other>=1"]'), "acme-ser"), false);
+    assert.equal(uv.overridesPackage!('[project]\ndependencies = ["acme-ser>=7"]\n', "acme-ser"), false);
+    assert.equal(uv.overridesPackage!("garbage = [", "acme-ser"), false);
+    assert.equal(uv.manifestFile, "pyproject.toml");
+    assert.equal(requirements.overridesPackage, undefined);
+  });
+});

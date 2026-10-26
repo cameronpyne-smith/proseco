@@ -163,3 +163,11 @@ export function lockfileMajorMessage(forced: ForcedMajor[]): string {
     "A lockfile unit must not move a direct dependency across a major version; a package that can only be fixed that way is handled in a separate pull request. Undo these bumps (restore their ranges in package.json and the lockfile) and fix the vulnerable packages with an in-range update, a parent bump within its major, or an override. Then run the resolver and the tests again and call finish again.",
   ].join("\n");
 }
+
+export function minimalityMessage(pkg: string, forced: ForcedMajor[]): string {
+  return [
+    `Not accepted yet: an override of ${pkg} is already in place in your manifest, and these other direct dependencies also crossed a major version:`,
+    ...forced.map((item) => `- ${item.package} ${item.from} → ${item.to}`),
+    `The override of ${pkg} is already in place, so revert these major bumps (restore their ranges in the manifest), re-resolve, and check with lockfile_status that every copy of ${pkg} is still fixed. Keep a bump only if the override alone leaves a copy unfixed, and say so in the summary. Then call finish again.`,
+  ].join("\n");
+}

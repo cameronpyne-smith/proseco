@@ -20,7 +20,7 @@ import { verifySummary, type DiffFile } from "./agent/verify.ts";
 import { compareTests, isRegression, type FailedOutcome } from "./baseline.ts";
 import { failureExcerpt } from "./excerpt.ts";
 import { contextLimit } from "./agent/loop.ts";
-import { crossedMajors, gatherReview, lockfileMajorMessage, refusedChecksMessage, reviewMessage } from "./review.ts";
+import { crossedMajors, gatherReview, lockfileMajorMessage, minimalityMessage, refusedChecksMessage, reviewMessage } from "./review.ts";
 import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
@@ -145,6 +145,7 @@ const MAX_REFUSALS = 2;
 function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, before: string, ctx: UnitContext, commandMs: number, tool: string | undefined): () => Promise<string | null> {
   let refusals = 0;
   let reviewed = false;
+  let minimal = false;
   return async () => {
     try {
       const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
@@ -158,6 +159,20 @@ function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, befo
           ctx.log(`finish refused: lockfile check fails for ${checks.filter((check) => !check.ok).map((check) => check.package).join(", ")}`);
           const target = (check: PackageCheck) => fixes.find((fix) => fix.package === check.package && (check.from === undefined || fix.installed === check.from))?.target.join(" or ") ?? "unknown";
           return refusedChecksMessage(checks, target, (pkg) => ecosystem.copiesOf?.(after, pkg) ?? []);
+        }
+        if (unit.kind === "major" && !minimal && ecosystem.overridesPackage && ecosystem.manifestFile) {
+          const directory = dirname(unit.source);
+          const manifest = await box.run(["cat", `${WORK}/${directory === "." ? "" : `${directory}/`}${ecosystem.manifestFile}`], FILE_READ_MS);
+          const pkg = unit.fixes[0]!.package;
+          if (manifest.exitCode === 0 && ecosystem.overridesPackage(manifest.stdout, pkg)) {
+            const others = forcedMajors(ecosystem, before, after, pkg);
+            if (others.length > 0) {
+              refusals++;
+              minimal = true;
+              ctx.log(`finish refused: an override of ${pkg} is in place but other direct dependencies crossed a major: ${others.map((item) => item.package).join(", ")}`);
+              return minimalityMessage(pkg, others);
+            }
+          }
         }
         if (unit.kind === "lockfile") {
           const forced = forcedMajors(ecosystem, before, after, "");

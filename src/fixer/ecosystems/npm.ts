@@ -123,6 +123,15 @@ export const NPM_NOTES = [
   "- Call `lockfile_status` to see which lockfile entries changed against the default branch and whether every target is met, with the path of every copy. Use it instead of parsing `git diff package-lock.json`: the `\"node_modules/x\": {` key lines are unchanged context there.",
 ].join("\n");
 
+function overridesName(overrides: unknown, pkg: string): boolean {
+  if (typeof overrides !== "object" || overrides === null) return false;
+  return Object.entries(overrides).some(([key, value]) => {
+    const at = key.lastIndexOf("@");
+    const name = at > 0 ? key.slice(0, at) : key;
+    return name === pkg || overridesName(value, pkg);
+  });
+}
+
 export const npm: Ecosystem = {
   name: "npm",
   findingEcosystem: "npm",
@@ -203,6 +212,16 @@ export const npm: Ecosystem = {
         `No npm available in the sandbox reproduces this lockfile exactly (the ones that rewrite lockfileVersion were not considered). ${bundled ? "The sandbox's npm is the closest" : `\`${best.command}\` is the closest`}: on the untouched lockfile it ${size(best.drift) === 0 ? "changes only the file's formatting or other top-level fields" : `changes ${size(best.drift)} packages unrelated to the task (${describeDrift(best.drift)})`}. Expect about that much unrelated change after every resolver run; keep it as small as you can and look at the lockfile diff for removed packages after each run.${bundled ? "" : ` Use \`${best.command}\` in place of \`npm\` for every npm command, \`ci\` and \`test\` included; the host's own install and test runs use it too.`}`,
       ],
     };
+  },
+
+  manifestFile: "package.json",
+
+  overridesPackage(manifestText, pkg) {
+    try {
+      return overridesName((JSON.parse(manifestText) as { overrides?: unknown }).overrides, pkg);
+    } catch {
+      return false;
+    }
   },
 
   changes(before, after) {

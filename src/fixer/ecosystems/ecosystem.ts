@@ -49,6 +49,8 @@ export interface Ecosystem {
   harness(lockfile: string, tool?: string): Harness;
   unsupported(lockfileText: string): string | null;
   preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<Preflight>;
+  manifestFile?: string;
+  overridesPackage?(manifestText: string, pkg: string): boolean;
   changes?(before: string, after: string): LockfileChange[];
   copiesOf?(lockfileText: string, pkg: string): { version: string; where: string }[];
   reviewSources?(pkg: string, directory: string): ReviewSources | null;

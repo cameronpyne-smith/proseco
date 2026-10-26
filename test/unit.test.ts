@@ -335,6 +335,40 @@ describe("workUnit preflight", () => {
   });
 });
 
+describe("workUnit minimality check", () => {
+  const OVERRIDING: Partial<Ecosystem> = { ...DIRECT, manifestFile: "fake.manifest", overridesPackage: (text, pkg) => text.includes(`override ${pkg}`), reviewSources: () => ({ search: "true", files: "true" }) };
+  const bump = (manifest: string) => [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", manifest)];
+
+  it("refuses a major finish once when an override of the vulnerable package is in place and another direct dependency crossed a major, then runs the review", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits: bump("pkg>=2\noverride pkg\n") });
+    assert.equal(result.outcome.kind, "pr");
+    assert.equal(seen.gated.length, 2);
+    assert.match(seen.gated[0]!, /^Not accepted yet: an override of pkg is already in place in your manifest[^]*- other 3\.0\.0 → 4\.0\.0\n[^]*revert these major bumps[^]*lockfile_status that every copy of pkg is still fixed[^]*Keep a bump only if the override alone leaves a copy unfixed, and say so in the summary/);
+    assert.doesNotMatch(seen.gated[0]!, /- pkg 1\.0\.0/);
+    assert.match(seen.gated[1]!, /^Not accepted yet: review before you finish/);
+  });
+
+  it("does not fire without an override, or when only the upgraded package crossed a major", async () => {
+    const without = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits: bump("pkg>=2\n") });
+    assert.equal(without.seen.gated.length, 1);
+    assert.match(without.seen.gated[0]!, /^Not accepted yet: review/);
+    const alone = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\noverride pkg\n")] });
+    assert.equal(alone.seen.gated.length, 1);
+  });
+
+  it("is not part of a lockfile unit's finish", async () => {
+    const { seen } = await run({ ecosystem: fakeEcosystem({ ...OVERRIDING, directVersions: () => new Map() }), edits: bump("pkg>=2\noverride pkg\n") });
+    assert.deepEqual(seen.gated, []);
+  });
+
+  it("counts in the two-refusal cap, so a stubborn agent is accepted on the third finish", async () => {
+    const edits = [write(LOCKFILE, "pkg==1.5.0\n"), write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\noverride pkg\n")];
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(OVERRIDING), unit: MAJOR_UNIT, edits });
+    assert.equal(result.outcome.kind, "pr");
+    assert.match(seen.gated[0]!, /override of pkg is already in place/);
+  });
+});
+
 describe("workUnit lockfile_status", () => {
   it("is answered by the host from the agent's current lockfile and the head lockfile", async () => {
     const status = { function: { name: "lockfile_status", arguments: {} } };
