@@ -17,6 +17,16 @@ export interface PreflightBox {
   run(command: string[], timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
 }
 
+export interface Preflight {
+  notes: string[];
+  tool?: string;
+}
+
+export interface ReviewSources {
+  search: string;
+  files: string;
+}
+
 export interface Ecosystem {
   name: EcosystemName;
   findingEcosystem: string;
@@ -28,10 +38,10 @@ export interface Ecosystem {
   parentChain(lockfileText: string, pkg: string, version: string): string[] | null;
   toolchainVersion(files: Record<string, string>): string | null;
   allowedFiles(lockfile: string, lockfileText: string): string[];
-  harness(lockfile: string): Harness;
+  harness(lockfile: string, tool?: string): Harness;
   unsupported(lockfileText: string): string | null;
-  preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<string[]>;
-  reviewCommands?(pkg: string, directory: string): string[];
+  preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<Preflight>;
+  reviewSources?(pkg: string, directory: string): ReviewSources | null;
 }
 
 export function ecosystemFor(lockfilePath: string): Ecosystem | null {

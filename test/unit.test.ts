@@ -278,6 +278,14 @@ describe("workUnit against the default branch's test results", () => {
     assert.match(seen.users[0]!, /<output>before output/);
   });
 
+  it("shows the error line, not only the tail, when output has a long dump after the error", async () => {
+    const dump = Array.from({ length: 300 }, (_, index) => `usage line ${index}`).join("\n");
+    const output = `npm error Missing: fsevents@2.3.3 from lock file\n${dump}\n`;
+    const { seen } = await run({ ecosystem: fakeEcosystem(), baselineExits: { "fake-install": 1 }, exits: { "fake-install": 1 }, stdout: { before: output, after: output } });
+    assert.match(seen.users[0]!, /<output>npm error Missing: fsevents@2\.3\.3 from lock file[^]*usage line 299/);
+    assert.match(seen.published[0]!.body, /npm error Missing: fsevents@2\.3\.3 from lock file/);
+  });
+
   it("still makes a draft for a failure the default branch does not have", async () => {
     const { seen } = await run({ ecosystem: withIds(), exits: { "fake-test": 1 }, stdout: { after: "FAILED t.py::mine - bad\n" } });
     assert.equal(seen.published[0]!.draft, true);
@@ -294,10 +302,22 @@ describe("workUnit against the default branch's test results", () => {
 describe("workUnit preflight", () => {
   it("puts what the ecosystem's preflight measured in front of the agent, before the agent starts", async () => {
     const seen: string[] = [];
-    const ecosystem = fakeEcosystem({ preflight: async (box, lockfile) => (seen.push(lockfile), ["Use `npx -y npm@8` for every resolver command."]) });
+    const ecosystem = fakeEcosystem({ preflight: async (box, lockfile) => (seen.push(lockfile), { notes: ["Use `npx -y npm@8` for every resolver command."] }) });
     const { seen: ran } = await run({ ecosystem });
     assert.deepEqual(seen, [LOCKFILE]);
     assert.match(ran.users[0]!, /Measured by the host in the sandbox before you started:\n- Use `npx -y npm@8` for every resolver command\./);
+  });
+
+  it("runs the preflight before the baseline and uses the tool it chose for the baseline and the harness after", async () => {
+    const order: string[] = [];
+    const ecosystem = fakeEcosystem({
+      preflight: async () => (order.push("preflight"), { notes: [], tool: "fake-v8" }),
+      harness: (_lockfile, tool) => ({ install: `${tool ?? "fake"}-install`, test: `${tool ?? "fake"}-test`, hasTests: () => true }),
+    });
+    const { seen } = await run({ ecosystem });
+    assert.deepEqual(order, ["preflight"]);
+    assert.deepEqual(seen.commands, ["cd '/work/svc' && fake-v8-install", "cd '/work/svc' && fake-v8-test", "cd '/work/svc' && fake-v8-install", "cd '/work/svc' && fake-v8-test"]);
+    assert.deepEqual(seen.published[0]!.tests, { kind: "passed", commands: ["fake-v8-install", "fake-v8-test"], tail: "out\n" });
   });
 
   it("carries on without it when the preflight throws", async () => {
@@ -336,17 +356,31 @@ describe("workUnit for a major upgrade", () => {
     assert.match(seen.published[0]!.body, /- `other` 3\.0\.0 → 4\.0\.0-alpha\.6/);
   });
 
-  it("holds the first finish of a major unit for a review of every package that crossed a major, and accepts the second", async () => {
+  it("holds the first finish of a major unit and puts the host's own search of every crossed package in the review", async () => {
     const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
-    const ecosystem = fakeEcosystem({ reviewCommands: (pkg, directory) => [`\`grep removed ${directory}/node_modules/${pkg}\``] });
+    const ecosystem = fakeEcosystem({
+      preflight: async () => ({ notes: [], tool: "fake-v8" }),
+      harness: (_lockfile, tool) => ({ install: `${tool ?? "fake"}-install`, test: `${tool ?? "fake"}-test`, hasTests: () => true }),
+      reviewSources: (pkg) => ({
+        search: `printf '%s\\n' 'unrelated thing was removed here' '${pkg} ${pkg === "pkg" ? "2" : "4"} components are no longer classes'`,
+        files: `printf '%s\\n' 'node_modules/${pkg}/MIGRATION.md'`,
+      }),
+    });
     const { result, seen } = await run({ ecosystem, unit: MAJOR_UNIT, edits });
     assert.equal(result.outcome.kind, "pr");
     assert.equal(seen.gated.length, 1);
     const review = seen.gated[0]!;
-    assert.match(review, /- pkg 1\.0\.0 → 2\.0\.0\n- other 3\.0\.0 → 4\.0\.0/);
-    assert.match(review, /pkg: `grep removed svc\/node_modules\/pkg`/);
-    assert.match(review, /every import and use of the package in the repository, including entry points/);
-    assert.match(review, /call finish again/);
+    assert.match(review, /### pkg 1\.0\.0 → 2\.0\.0\n<messages package="pkg">\npkg 2 components are no longer classes\nunrelated thing was removed here\n<\/messages>/);
+    assert.match(review, /### other 3\.0\.0 → 4\.0\.0\n<messages package="other">\nother 4 components are no longer classes/);
+    assert.match(review, /Files to read: node_modules\/pkg\/MIGRATION\.md/);
+    assert.match(review, /for each package above, say which of these messages apply to code in this repository/);
+    assert.equal(seen.commands.filter((command) => command.endsWith("fake-v8-install")).length, 3);
+  });
+
+  it("says the install failed in the review when the host's install does not succeed", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const { seen } = await run({ ecosystem: fakeEcosystem({ reviewSources: () => ({ search: "true", files: "true" }) }), unit: MAJOR_UNIT, edits, baselineExits: { "fake-install": 1 }, stdout: { before: "npm error Missing: x@1 from lock file\n" } });
+    assert.match(seen.gated[0]!, /install step failed[^]*fake-install` failed with exit code 1: npm error Missing: x@1 from lock file/);
   });
 
   it("does not hold a lockfile unit's finish", async () => {

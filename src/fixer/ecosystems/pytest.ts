@@ -1,3 +1,5 @@
+import type { ReviewSources } from "./ecosystem.ts";
+
 export function pytestFailures(output: string): string[] | null {
   const ids = new Set<string>();
   for (const line of output.split("\n")) {
@@ -8,12 +10,14 @@ export function pytestFailures(output: string): string[] | null {
 }
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const TOPS = "print(' '.join(sorted({f.parts[0] for f in (d.files or []) if f.parts[0] != '..' and not f.parts[0].endswith(('.dist-info', '__pycache__', '.data', '.pth'))})))";
 
-export function pythonReview(pkg: string, directory: string, python: string): string[] {
-  if (!SAFE_NAME.test(pkg)) return [];
-  const where = `cd ${directory === "." ? "/work" : `/work/${directory}`} && ${python} -c "import importlib.metadata as m, sys; d = m.distribution(sys.argv[1]); print(d.locate_file('')); print(sorted({f.parts[0] for f in d.files if not f.parts[0].endswith(('.dist-info', '__pycache__'))}))" ${pkg}`;
-  return [
-    `\`${where}\` prints the install directory and the package's top-level names`,
-    `then \`grep -rhoiE "[^\\"']*(no longer|has been removed|removed in|was removed|deprecated)[^\\"']*" <install directory>/<top-level name> --include=*.py --include=*.md --include=*.rst | sort -u | head -100\`, and \`ls <install directory>/<top-level name>/.. | grep -iE "changelog|migrat|history"\` for notes shipped with it`,
-  ];
+export function pythonSources(pkg: string, directory: string, python: string): ReviewSources | null {
+  if (!SAFE_NAME.test(pkg)) return null;
+  const query = (print: string) => `${python} -c "import importlib.metadata as m, sys; d = m.distribution(sys.argv[1]); ${print}" ${pkg}`;
+  const head = `cd ${directory === "." ? "/work" : `/work/${directory}`} && base=$(${query("print(d.locate_file(''))")}) && tops=$(${query(TOPS)})`;
+  return {
+    search: `${head} && for t in $tops; do grep -rhoiEI "[^\\"']*(no longer|has been removed|removed in|was removed|not supported in|is deprecated)[^\\"']*" "$base/$t" --include='*.py' --include='*.md' --include='*.rst'; done | sort -u | head -3000`,
+    files: `${head} && for t in $tops; do find "$base/$t" -maxdepth 2 -type f \\( -iname 'readme*' -o -iname 'changelog*' -o -iname 'changes*' -o -iname '*migrat*' -o -iname 'history*' -o -iname 'upgrad*' \\) -print; done | head -30`,
+  };
 }

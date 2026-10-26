@@ -2,7 +2,7 @@ import { dirname, join } from "node:path/posix";
 import { highestVersion, packageKey } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
-import { pytestFailures, pythonReview } from "./pytest.ts";
+import { pytestFailures, pythonSources } from "./pytest.ts";
 import { parseToml, type TomlValue } from "./toml.ts";
 
 interface Locked {
@@ -141,7 +141,7 @@ export const uv: Ecosystem = {
 
   toolchainVersion: pythonToolchain,
 
-  reviewCommands: (pkg, directory) => pythonReview(pkg, directory, "uv run python"),
+  reviewSources: (pkg, directory) => pythonSources(pkg, directory, "uv run python"),
 
   allowedFiles(lockfile, text) {
     const directory = dirname(lockfile);

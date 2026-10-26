@@ -1,4 +1,5 @@
 import { compareVersions, isMajorUpgrade } from "../core/versions.ts";
+import { failureExcerpt } from "./excerpt.ts";
 import { isRegression, type TestComparison } from "./baseline.ts";
 import type { PackageCheck } from "./check.ts";
 import type { ForcedMajor } from "./majors.ts";
@@ -74,8 +75,7 @@ function fence(text: string): string {
 }
 
 function tailOf(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length <= MAX_TAIL_CHARS ? trimmed : `…${trimmed.slice(-MAX_TAIL_CHARS)}`;
+  return failureExcerpt(text, MAX_TAIL_CHARS);
 }
 
 function discardedSection(discarded: string[], reason: string): string[] {

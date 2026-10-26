@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path/posix";
 import { highestVersion } from "../../core/versions.ts";
-import type { Ecosystem, PreflightBox } from "./ecosystem.ts";
+import type { Ecosystem, PreflightBox, ReviewSources } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
 
 interface Entry {
@@ -166,29 +166,35 @@ export const npm: Ecosystem = {
     const directory = dirname(lockfile);
     const name = lockfile.split("/").pop()!;
     const bundled = await reresolve(box, directory, name, "npm", timeoutMs);
-    if (bundled && bundled.removed + bundled.added + bundled.changed === 0) return [];
+    if (bundled && bundled.removed + bundled.added + bundled.changed === 0) return { notes: [] };
     for (const major of OLDER_NPM) {
       const command = `npx -y npm@${major}`;
       const drift = await reresolve(box, directory, name, command, timeoutMs);
       if (drift && drift.removed + drift.added + drift.changed === 0) {
-        return [
-          `The npm in the sandbox rewrites this lockfile even when nothing is asked of it (${bundled ? describeDrift(bundled) : "it fails on the untouched lockfile"}), because the lockfile was written by an older npm. Measured on a scratch copy: \`${command}\` leaves it unchanged. Use \`${command}\` in place of \`npm\` for every resolver command (\`${command} ${RESOLVE_FLAGS}\`, \`${command} update ...\`, \`${command} ls\`). Do not run bare \`npm install\` or \`npm update\`: they would delete or rewrite packages unrelated to the task. \`npm ci\` and \`npm test\` are not affected.`,
-        ];
+        return {
+          tool: command,
+          notes: [
+            `The npm in the sandbox rewrites this lockfile even when nothing is asked of it (${bundled ? describeDrift(bundled) : "it fails on the untouched lockfile"}), because the lockfile was written by an older npm. Measured on a scratch copy: \`${command}\` leaves it unchanged. Use \`${command}\` in place of \`npm\` for every npm command: the resolver (\`${command} ${RESOLVE_FLAGS}\`, \`${command} update ...\`, \`${command} ls\`), \`${command} ci --no-audit --no-fund\` for installing, and \`${command} test\`. Do not run bare \`npm install\`, \`npm update\` or \`npm ci\`: the bundled npm would delete or rewrite packages unrelated to the task, or refuse the lockfile. The host's own install and test runs use \`${command}\` too.`,
+          ],
+        };
       }
     }
-    if (!bundled) return [];
-    return [
-      `Re-resolving the untouched lockfile with the sandbox's npm and with npm 10, 9, 8 and 7 changes packages unrelated to the task (with the bundled npm: ${describeDrift(bundled)}). No npm version reproduces it. Expect unrelated changes after every resolver run; keep them as small as you can and look at the lockfile diff for removed packages after each run.`,
-    ];
+    if (!bundled) return { notes: [] };
+    return {
+      notes: [
+        `Re-resolving the untouched lockfile with the sandbox's npm and with npm 10, 9, 8 and 7 changes packages unrelated to the task (with the bundled npm: ${describeDrift(bundled)}). No npm version reproduces it. Expect unrelated changes after every resolver run; keep them as small as you can and look at the lockfile diff for removed packages after each run.`,
+      ],
+    };
   },
 
-  reviewCommands(pkg, directory) {
-    if (!SAFE_NAME.test(pkg)) return [];
+  reviewSources(pkg, directory): ReviewSources | null {
+    if (!SAFE_NAME.test(pkg)) return null;
     const root = directory === "." ? `node_modules/${pkg}` : `${directory}/node_modules/${pkg}`;
-    return [
-      `\`grep -rhoiE "[^\\"']*(no longer|has been removed|removed in|was removed)[^\\"']*" ${root} --exclude-dir=node_modules | sort -u | head -100\``,
-      `\`ls ${root} | grep -iE "readme|changelog|migrat|history|upgrad"\``,
-    ];
+    const guard = `cd /work && [ -d ${root} ] || { echo PROSECO_MISSING; exit 0; }`;
+    return {
+      search: `${guard}; grep -rhoiEI "[^\\"']*(no longer|has been removed|removed in|was removed|not supported in|is deprecated)[^\\"']*" ${root} --exclude-dir=node_modules | sort -u | head -3000`,
+      files: `${guard}; find ${root} -maxdepth 2 -path ${root}/node_modules -prune -o -type f \\( -iname 'readme*' -o -iname 'changelog*' -o -iname 'changes*' -o -iname '*migrat*' -o -iname 'history*' -o -iname 'upgrad*' \\) -print | head -30`,
+    };
   },
 
   toolchainVersion(files) {
@@ -209,11 +215,11 @@ export const npm: Ecosystem = {
     ];
   },
 
-  harness(lockfile) {
+  harness(lockfile, tool = "npm") {
     const manifest = join(dirname(lockfile), "package.json");
     return {
-      install: "npm ci --no-audit --no-fund",
-      test: "npm test --if-present",
+      install: `${tool} ci --no-audit --no-fund`,
+      test: `${tool} test --if-present`,
       hasTests(read) {
         try {
           const scripts = (JSON.parse(read(manifest) ?? "") as { scripts?: { test?: unknown } }).scripts;

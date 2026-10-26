@@ -1,7 +1,7 @@
 import { basename } from "node:path/posix";
 import { packageKey } from "../../core/versions.ts";
 import type { Ecosystem } from "./ecosystem.ts";
-import { pytestFailures, pythonReview } from "./pytest.ts";
+import { pytestFailures, pythonSources } from "./pytest.ts";
 import { pythonToolchain } from "./uv.ts";
 
 export const REQUIREMENTS_NOTES = [
@@ -43,7 +43,7 @@ export const requirements: Ecosystem = {
     return pins(text).get(name)?.includes(version) ? [name] : null;
   },
   toolchainVersion: pythonToolchain,
-  reviewCommands: (pkg, directory) => pythonReview(pkg, directory, "python"),
+  reviewSources: (pkg, directory) => pythonSources(pkg, directory, "python"),
 
   allowedFiles(lockfile) {
     return [lockfile];
