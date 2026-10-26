@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path/posix";
 import { highestVersion } from "../../core/versions.ts";
-import type { Ecosystem, PreflightBox, ReviewSources } from "./ecosystem.ts";
+import type { Ecosystem, LockfileChange, PreflightBox, ReviewSources } from "./ecosystem.ts";
 import { shortestChain } from "./graph.ts";
 
 interface Entry {
@@ -120,6 +120,7 @@ export const NPM_NOTES = [
   "- Do not accept a resolver run that removes, adds or changes packages the task does not touch. Compare `git diff --stat` and the list of removed packages in package-lock.json after every resolve, and undo unrelated removals (restore the lockfile with `git checkout package-lock.json` and resolve again more narrowly) instead of committing them.",
   "- Never edit package-lock.json by hand. Only the resolver may write it. Never delete it to get past a resolver error: that re-resolves every package in the project.",
   "- `npm ls <package>` shows every installed copy and which package requires it.",
+  "- Call `lockfile_status` to see which lockfile entries changed against the default branch and whether every target is met, with the path of every copy. Use it instead of parsing `git diff package-lock.json`: the `\"node_modules/x\": {` key lines are unchanged context there.",
 ].join("\n");
 
 export const npm: Ecosystem = {
@@ -202,6 +203,19 @@ export const npm: Ecosystem = {
         `No npm available in the sandbox reproduces this lockfile exactly (the ones that rewrite lockfileVersion were not considered). ${bundled ? "The sandbox's npm is the closest" : `\`${best.command}\` is the closest`}: on the untouched lockfile it ${size(best.drift) === 0 ? "changes only the file's formatting or other top-level fields" : `changes ${size(best.drift)} packages unrelated to the task (${describeDrift(best.drift)})`}. Expect about that much unrelated change after every resolver run; keep it as small as you can and look at the lockfile diff for removed packages after each run.${bundled ? "" : ` Use \`${best.command}\` in place of \`npm\` for every npm command, \`ci\` and \`test\` included; the host's own install and test runs use it too.`}`,
       ],
     };
+  },
+
+  changes(before, after) {
+    const was = packagesOf(before);
+    const now = packagesOf(after);
+    const changes: LockfileChange[] = [];
+    for (const path of new Set([...Object.keys(was), ...Object.keys(now)])) {
+      if (path === "") continue;
+      const from = was[path]?.version ?? (path in was ? "link" : null);
+      const to = now[path]?.version ?? (path in now ? "link" : null);
+      if (from !== to) changes.push({ path, name: nameOf(path), from, to });
+    }
+    return changes;
   },
 
   copiesOf(text, pkg) {

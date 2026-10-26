@@ -14,6 +14,7 @@ import { runLoop } from "./agent/loop.ts";
 import type { OllamaClient } from "./agent/ollama.ts";
 import { systemPrompt, userPrompt } from "./agent/prompts.ts";
 import { executeTool, TOOL_DEFINITIONS } from "./agent/tools.ts";
+import { lockfileStatus } from "./status.ts";
 import { forcedMajors, withRepositories } from "./majors.ts";
 import { verifySummary, type DiffFile } from "./agent/verify.ts";
 import { compareTests, isRegression, type FailedOutcome } from "./baseline.ts";
@@ -238,6 +239,11 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const transcript = transcriptPath(ctx, unit);
     ctx.log(`transcript: ${transcript}`);
     const written = new Set<string>();
+    const lockfileStatusOf = async (filter?: string): Promise<string> => {
+      const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
+      if (read.exitCode !== 0) throw new Error(`cannot read ${unit.source}: ${read.stderr.trim()}`);
+      return lockfileStatus(ecosystem, unit.source, unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target })), lockfileText, read.stdout, filter);
+    };
     const loop = await runLoop({
       llm: ctx.llm,
       finaliseWith: [ctx.llm.withLowThink(), ctx.llm.withThink(false)],
@@ -246,7 +252,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       headroom: ctx.fixer.ollama.numPredict,
       tools: TOOL_DEFINITIONS,
       execute: (name, args) =>
-        executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options), wrote: (path) => written.add(path) }, name, args),
+        executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options), wrote: (path) => written.add(path), lockfileStatus: lockfileStatusOf }, name, args),
+      status: lockfileStatusOf,
       gate: finishGate(box, ecosystem, unit, lockfileText, ctx, commandMs, tool),
       system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),

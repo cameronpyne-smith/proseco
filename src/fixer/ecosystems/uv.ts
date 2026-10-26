@@ -71,6 +71,7 @@ export const UV_NOTES = [
   "- Resolve one package at a time with `uv lock --upgrade-package <package>`. It rewrites uv.lock with the newest version the constraints in pyproject.toml allow.",
   "- A direct dependency whose constraint in pyproject.toml excludes the target (for example an exact pin below it): change the constraint to the smallest version at or above the target, then run `uv lock --upgrade-package <package>`.",
   "- A transitive dependency: first try `uv lock --upgrade-package <package>`. If the lockfile stays below the target, raise the named parent's constraint in pyproject.toml and run `uv lock --upgrade-package <parent>`. If no parent release helps, add `constraint-dependencies = [\"<package>>=<target>\"]` under `[tool.uv]` in pyproject.toml, then run `uv lock`.",
+  "- Call `lockfile_status` to see which locked packages changed against the default branch and whether every target is met, instead of parsing `git diff uv.lock`.",
   "- Never edit uv.lock by hand. Only `uv lock` may write it.",
   "- Install with `uv sync --frozen --all-extras --all-groups`; the tests run with `uv run pytest -q -rfE` when pytest is locked. `uv tree --invert --package <package>` shows what requires a package.",
   "- Dependency groups such as `dev` live under `[dependency-groups]` in pyproject.toml; a workspace member has its own pyproject.toml.",

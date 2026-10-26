@@ -12,6 +12,7 @@ import { requirements } from "../src/fixer/ecosystems/requirements.ts";
 import { uv } from "../src/fixer/ecosystems/uv.ts";
 import type { TestOutcome } from "../src/fixer/pr.ts";
 import { failureExcerpt } from "../src/fixer/excerpt.ts";
+import { lockfileStatus } from "../src/fixer/status.ts";
 import { crossedMajors, gatherReview, lockfileMajorMessage, rankReviewLines, refusedChecksMessage, reviewMessage, type PackageReview } from "../src/fixer/review.ts";
 
 function failed(overrides: Partial<Extract<TestOutcome, { kind: "failed" }>> = {}): Extract<TestOutcome, { kind: "failed" }> {
@@ -319,5 +320,47 @@ describe("refusal messages", () => {
     const text = JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "tmp", version: "9.9.9" }, "node_modules/tmp": { version: "0.2.6" }, "node_modules/l": { link: true, version: "1.0.0" } } });
     assert.deepEqual(npm.copiesOf!(text, "tmp"), [{ version: "0.2.6", where: "node_modules/tmp" }]);
     assert.deepEqual(npm.copiesOf!(text, "l"), []);
+  });
+});
+
+describe("lockfileStatus", () => {
+  const lock = (packages: Record<string, string>) => JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "x" }, ...Object.fromEntries(Object.entries(packages).map(([path, version]) => [path, { version }])) } });
+  const before = lock({ "node_modules/tmp": "0.2.1", "node_modules/a": "1.0.0", "node_modules/a/node_modules/tmp": "0.2.1", "node_modules/gone": "1.0.0", "node_modules/z": "1.0.0" });
+  const after = lock({ "node_modules/tmp": "0.2.6", "node_modules/a": "1.0.1", "node_modules/a/node_modules/tmp": "0.2.3", "node_modules/new": "2.0.0", "node_modules/z": "1.0.0" });
+  const fixes = [{ package: "tmp", installed: "0.2.1", target: ["0.2.6"] }];
+
+  it("shows each fix check with its copies and paths, then the changes with the fix packages first", () => {
+    const text = lockfileStatus(npm, "package-lock.json", fixes, before, after);
+    assert.match(text, /^Lockfile status, read by the host from your current package-lock\.json:/);
+    assert.match(text, /- tmp: FAILING, installed 0\.2\.3 is below 0\.2\.6\. Target: 0\.2\.6\. Copies: 0\.2\.6 at node_modules\/tmp; 0\.2\.3 at node_modules\/a\/node_modules\/tmp/);
+    assert.match(text, /Changes against the default branch: 5 \(1 added, 1 removed, 3 changed\), the fix packages first:\n~ node_modules\/a\/node_modules\/tmp 0\.2\.1 → 0\.2\.3\n~ node_modules\/tmp 0\.2\.1 → 0\.2\.6\n~ node_modules\/a 1\.0\.0 → 1\.0\.1\n- node_modules\/gone 1\.0\.0\n\+ node_modules\/new 2\.0\.0/);
+    assert.doesNotMatch(text, /node_modules\/z/);
+  });
+
+  it("reports ok checks, limits to a package, and caps the change list", () => {
+    const ok = lockfileStatus(npm, "package-lock.json", fixes, before, lock({ "node_modules/tmp": "0.2.6" }));
+    assert.match(ok, /- tmp: ok, /);
+    const only = lockfileStatus(npm, "package-lock.json", fixes, before, after, "a");
+    assert.match(only, /- no fix for a in this unit/);
+    assert.match(only, /Changes against the default branch: 1 \(0 added, 0 removed, 1 changed\)[^]*~ node_modules\/a 1\.0\.0 → 1\.0\.1/);
+    assert.doesNotMatch(only, /node_modules\/tmp/);
+    const many = lockfileStatus(npm, "package-lock.json", [], lock({}), lock(Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`node_modules/p${index}`, "1.0.0"]))));
+    assert.match(many, /: 70 \(70 added, 0 removed, 0 changed\)/);
+    assert.match(many, /\.\.\. and 10 more$/);
+  });
+
+  it("works for uv and requirements through their installed versions", () => {
+    const uvLock = (version: string) => `version = 1\n[[package]]\nname = "Acme-Lib"\nversion = "${version}"\nsource = { registry = "https://pypi.org/simple" }\n`;
+    const status = lockfileStatus(uv, "uv.lock", [{ package: "acme.lib", installed: "1.0.0", target: ["1.2.0"] }], uvLock("1.0.0"), uvLock("1.1.0"));
+    assert.match(status, /- acme\.lib: FAILING, installed 1\.1\.0 is below 1\.2\.0\. Target: 1\.2\.0\. Copies: 1\.1\.0/);
+    assert.match(status, /~ acme-lib 1\.0\.0 → 1\.1\.0/);
+    const req = lockfileStatus(requirements, "requirements.txt", [{ package: "requests", installed: "2.31.0", target: ["2.32.0"] }], "requests==2.31.0\nold==1.0\n", "requests==2.32.3\n");
+    assert.match(req, /- requests: ok/);
+    assert.match(req, /~ requests 2\.31\.0 → 2\.32\.3\n- old 1\.0/);
+  });
+
+  it("is mentioned in the ecosystem notes and both system prompts", () => {
+    for (const notes of [npm.notes, uv.notes, requirements.notes]) assert.match(notes, /lockfile_status/);
+    assert.match(npm.notes, /instead of parsing `git diff package-lock\.json`/);
   });
 });

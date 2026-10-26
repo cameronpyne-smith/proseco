@@ -21,6 +21,7 @@ export interface ToolEnv {
   commandTimeoutMs: number;
   run(command: string[], timeoutMs: number, options?: ExecOptions): Promise<RunResult>;
   wrote?(path: string): void;
+  lockfileStatus?(filter?: string): Promise<string>;
 }
 
 export interface ToolResult {
@@ -97,6 +98,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       timeout_seconds: { type: "integer", description: "default 300; capped at the configured command limit" },
     },
     ["command"],
+  ),
+  fn(
+    "lockfile_status",
+    "Read by the host, not by you: your current lockfile checked against every target of this task (each package, ok or failing, with the path and version of every installed copy), and the packages that changed against the default branch. Use it instead of parsing a git diff of a lockfile. Optionally limit it to one package.",
+    { package: { type: "string", description: "optional package name to show only" } },
+    [],
   ),
   fn(
     "finish",
@@ -303,6 +310,10 @@ export async function executeTool(env: ToolEnv, name: string, args: Record<strin
         return { content: await editFile(env, args) };
       case "run":
         return { content: await run(env, args) };
+      case "lockfile_status": {
+        if (!env.lockfileStatus) return { content: "error: lockfile_status is not available" };
+        return { content: await env.lockfileStatus(typeof args["package"] === "string" && args["package"] !== "" ? args["package"] : undefined) };
+      }
       case "finish": {
         const parsed = parseFinish(args);
         if (typeof parsed === "string") return { content: `error: invalid finish arguments: ${parsed}; call finish again with corrected arguments` };

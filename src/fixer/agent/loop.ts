@@ -17,6 +17,8 @@ const REPEAT_WINDOW = 10;
 const REPEAT_LIMIT = 3;
 const REPEAT_STALL_ROUNDS = 3;
 const MUTATING = new Set(["write_file", "edit_file"]);
+const UNGUARDED = new Set(["finish", "lockfile_status"]);
+const STALL_FEEDBACK = "You are going round in circles. Fix the failing checks above, or call finish if nothing more can be done.";
 
 type Chat = { chat(messages: ChatMessage[], tools: ToolDefinition[], format?: Record<string, unknown>): Promise<ChatResult> };
 
@@ -32,6 +34,7 @@ export interface LoopInput {
   timeBudgetMs: number;
   maxToolCalls: number;
   gate?(): Promise<string | null>;
+  status?(): Promise<string | null>;
   now?: () => number;
   record?(message: ChatMessage): void;
 }
@@ -182,6 +185,20 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
   let silent = 0;
   let repeated = 0;
   let gateCalls = 0;
+  let stallFed = false;
+  const feedback = async (): Promise<boolean> => {
+    if (stallFed || !input.status) return false;
+    stallFed = true;
+    let status: string | null = null;
+    try {
+      status = await input.status();
+    } catch {
+      return false;
+    }
+    if (!status) return false;
+    append({ role: "user", content: `${capResult(status, limit)}\n\n${STALL_FEEDBACK}` });
+    return true;
+  };
   const history: { key: string; result: string }[] = [];
   for (;;) {
     if (now() - started >= input.timeBudgetMs) return finalise("budget");
@@ -206,7 +223,13 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
     messages.push(reply.message);
     if (calls.length === 0) {
       silent++;
-      if (silent >= 2) return finalise("stalled");
+      if (silent >= 2) {
+        if (await feedback()) {
+          silent = 0;
+          continue;
+        }
+        return finalise("stalled");
+      }
       append({ role: "user", content: cutOff ? CUT_OFF_NUDGE : NUDGE });
       continue;
     }
@@ -218,6 +241,8 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       if (name !== "finish") {
         if (stats.toolCalls >= input.maxToolCalls) return finalise("budget");
         stats.toolCalls++;
+      }
+      if (!UNGUARDED.has(name)) {
         const key = `${name}\n${JSON.stringify(args)}`;
         const same = history.slice(-REPEAT_WINDOW).filter((entry) => entry.key === key);
         const last = same.at(-1);
@@ -231,7 +256,7 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       }
       executed++;
       const result = await input.execute(name, args);
-      if (name !== "finish") {
+      if (!UNGUARDED.has(name)) {
         if (MUTATING.has(name)) history.length = 0;
         else history.push({ key: `${name}\n${JSON.stringify(args)}`, result: result.content });
       }
@@ -248,6 +273,13 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
       if (result.finish) return done("finished", { finish: result.finish });
     }
     repeated = executed === 0 ? repeated + 1 : 0;
-    if (repeated >= REPEAT_STALL_ROUNDS) return finalise("stalled");
+    if (repeated >= REPEAT_STALL_ROUNDS) {
+      if (await feedback()) {
+        repeated = 0;
+        history.length = 0;
+        continue;
+      }
+      return finalise("stalled");
+    }
   }
 }

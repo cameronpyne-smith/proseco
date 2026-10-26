@@ -17,6 +17,13 @@ export interface PreflightBox {
   run(command: string[], timeoutMs: number): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }>;
 }
 
+export interface LockfileChange {
+  path: string;
+  name: string;
+  from: string | null;
+  to: string | null;
+}
+
 export interface Preflight {
   notes: string[];
   tool?: string;
@@ -42,6 +49,7 @@ export interface Ecosystem {
   harness(lockfile: string, tool?: string): Harness;
   unsupported(lockfileText: string): string | null;
   preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<Preflight>;
+  changes?(before: string, after: string): LockfileChange[];
   copiesOf?(lockfileText: string, pkg: string): { version: string; where: string }[];
   reviewSources?(pkg: string, directory: string): ReviewSources | null;
 }

@@ -269,6 +269,63 @@ describe("agent loop", () => {
     });
   });
 
+  describe("stall feedback", () => {
+    const finaliser = (calls: { n: number }) => ({
+      async chat(): Promise<ChatResult> {
+        calls.n++;
+        return { message: { role: "assistant", content: JSON.stringify({ summary: "Done.", changes: [{ package: "p", from: "1", to: "2", how: "override" }] }) }, usage: { promptTokens: 1, outputTokens: 1, durationMs: 1, truncated: false } };
+      },
+    });
+
+    it("sends the lockfile status on the first stall and lets the agent carry on, forcing a finish only on the second", async () => {
+      const calls = { n: 0 };
+      let asked = 0;
+      const status = async () => (++asked, "STATUS: tmp FAILING");
+      const model = scripted([{ content: "hmm" }, { content: "hmm" }, { tool_calls: [FINISH] }]);
+      const fed = await runLoop(input(model, fakeEnv().env, { status, finaliseWith: [finaliser(calls)] }));
+      assert.deepEqual([fed.outcome, fed.forced, asked, calls.n], ["finished", undefined, 1, 0]);
+      const fedMessage = model.seen[2]!.at(-1)!;
+      assert.equal(fedMessage.role, "user");
+      assert.match(fedMessage.content, /^STATUS: tmp FAILING\n\nYou are going round in circles\. Fix the failing checks above, or call finish if nothing more can be done\./);
+
+      const again = await runLoop(input(scripted([{ content: "a" }, { content: "b" }, { content: "c" }, { content: "d" }]), fakeEnv().env, { status, finaliseWith: [finaliser(calls)] }));
+      assert.deepEqual([again.outcome, again.forced, asked, calls.n], ["finished", "stalled", 2, 1]);
+    });
+
+    it("does the same for the repetition guard's stall", async () => {
+      const calls = { n: 0 };
+      const same = { tool_calls: [call("run", { command: "npm test" })] };
+      const model = scripted([...Array.from({ length: 6 }, () => same), { tool_calls: [FINISH] }]);
+      const result = await runLoop(input(model, fakeEnv().env, { status: async () => "STATUS", finaliseWith: [finaliser(calls)] }));
+      assert.deepEqual([result.outcome, result.forced, calls.n], ["finished", undefined, 0]);
+      assert.ok(model.seen.some((messages) => messages.some((message) => message.role === "user" && message.content.startsWith("STATUS"))));
+    });
+
+    it("forces the finish at once when there is no status or it fails, and never feeds back for the budget", async () => {
+      const calls = { n: 0 };
+      const none = await runLoop(input(scripted([{ content: "a" }, { content: "b" }]), fakeEnv().env, { finaliseWith: [finaliser(calls)] }));
+      assert.equal(none.forced, "stalled");
+      const broken = await runLoop(input(scripted([{ content: "a" }, { content: "b" }]), fakeEnv().env, { status: async () => { throw new Error("x"); }, finaliseWith: [finaliser(calls)] }));
+      assert.equal(broken.forced, "stalled");
+      let asked = 0;
+      const capped = await runLoop(input(scripted([{ tool_calls: [call("run", { command: "a" }), call("run", { command: "b" })] }]), fakeEnv().env, { maxToolCalls: 1, status: async () => (++asked, "s"), finaliseWith: [finaliser(calls)] }));
+      assert.deepEqual([capped.forced, asked], ["budget", 0]);
+    });
+  });
+
+  describe("lockfile_status in the repetition guard", () => {
+    it("runs every time, because resolver commands change the answer without an edit", async () => {
+      let n = 0;
+      const execute = async (name: string) => (name === "lockfile_status" ? { content: "same" } : { content: `out ${n++}` });
+      const status = { tool_calls: [call("lockfile_status")] };
+      const model = scripted([status, status, status, status, { tool_calls: [FINISH] }]);
+      let ran = 0;
+      const result = await runLoop(input(model, fakeEnv().env, { execute: (name, args) => (name === "finish" ? executeTool(fakeEnv().env, name, args) : (ran++, execute(name))) }));
+      assert.equal(result.outcome, "finished");
+      assert.equal(ran, 4);
+    });
+  });
+
   describe("finish gate", () => {
     function gated(gate: () => Promise<string | null>, steps: Step[], overrides: Partial<LoopInput> = {}) {
       const model = scripted(steps);

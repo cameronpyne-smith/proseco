@@ -89,11 +89,12 @@ interface Run {
   users: string[];
   harnessFiles: string[][];
   gated: string[];
+  lastMessages: ChatMessage[];
 }
 
 async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof write> | ReturnType<typeof shell>)[]; exits?: Record<string, number>; baselineExits?: Record<string, number>; stdout?: { before?: string; after?: string }; unit?: PrUnit; budget?: Partial<FixerConfig["budget"]>; releases?: ReleaseNotes }): Promise<{ result: Awaited<ReturnType<typeof workUnit>>; seen: Run }> {
   const { store, head } = await origin();
-  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [], gated: [] };
+  const seen: Run = { published: [], commands: [], images: [], started: 0, prompts: [], users: [], harnessFiles: [], gated: [], lastMessages: [] };
   const steps: ChatResult["message"]["tool_calls"][] = [
     options.edits ?? [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/app.py", "changed\n"), write("svc/new.txt", "x\n")],
     [FINISH],
@@ -110,6 +111,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
       if (tools.length === 0) return { message: { role: "assistant", content: "Bumped pkg." }, usage };
       seen.prompts.push(messages[0]!.content);
       seen.users.push(messages[1]!.content);
+      seen.lastMessages = structuredClone(messages);
       const gates = messages.filter((message) => message.role === "tool" && message.content.startsWith("Not accepted yet"));
       for (const gate of gates.slice(seen.gated.length)) seen.gated.push(gate.content);
       return { message: { role: "assistant", content: "", tool_calls: steps.shift() }, usage };
@@ -330,6 +332,18 @@ describe("workUnit preflight", () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem({ preflight: async () => { throw new Error("no network"); } }) });
     assert.equal(result.outcome.kind, "pr");
     assert.doesNotMatch(seen.users[0]!, /Measured by the host/);
+  });
+});
+
+describe("workUnit lockfile_status", () => {
+  it("is answered by the host from the agent's current lockfile and the head lockfile", async () => {
+    const status = { function: { name: "lockfile_status", arguments: {} } };
+    const edits = [write(LOCKFILE, "pkg==1.5.0\nother==3.0.0\n"), status] as unknown as Parameters<typeof run>[0]["edits"];
+    const { seen } = await run({ ecosystem: fakeEcosystem(), edits });
+    const output = seen.lastMessages.find((message) => message.role === "tool" && message.tool_name === "lockfile_status")!.content;
+    assert.match(output, /^Lockfile status, read by the host from your current svc\/fake\.lock:/);
+    assert.match(output, /- pkg: FAILING, installed 1\.5\.0 is below 2\.0\.0\. Target: 2\.0\.0/);
+    assert.match(output, /~ pkg 1\.0\.0 → 1\.5\.0/);
   });
 });
 

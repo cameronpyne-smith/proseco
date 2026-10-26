@@ -47,7 +47,7 @@ describe("tool definitions", () => {
   it("names every tool in ollama's function shape with a required-arguments list", () => {
     assert.deepEqual(
       TOOL_DEFINITIONS.map((tool) => tool.function.name),
-      ["read_file", "list_dir", "search", "write_file", "edit_file", "run", "finish"],
+      ["read_file", "list_dir", "search", "write_file", "edit_file", "run", "lockfile_status", "finish"],
     );
     for (const tool of TOOL_DEFINITIONS) {
       assert.equal(tool.type, "function");
@@ -156,6 +156,22 @@ describe("list_dir", () => {
     writeFileSync(join(fixture.root, "a.txt"), "");
     assert.match((await call("list_dir", { path: "nope" })).content, /^error: nope does not exist/);
     assert.match((await call("list_dir", { path: "a.txt" })).content, /^error: a\.txt is a file; use read_file/);
+  });
+});
+
+describe("lockfile_status", () => {
+  it("returns what the unit-level closure produces, passing the package filter", async () => {
+    const seen: (string | undefined)[] = [];
+    const env = { ...fixture.env, lockfileStatus: async (filter?: string) => (seen.push(filter), "status text") };
+    assert.equal((await executeTool(env, "lockfile_status", {})).content, "status text");
+    assert.equal((await executeTool(env, "lockfile_status", { package: "tmp" })).content, "status text");
+    assert.deepEqual(seen, [undefined, "tmp"]);
+  });
+
+  it("says it is unavailable without the closure, and reports a failing closure as an error", async () => {
+    assert.match((await executeTool(fixture.env, "lockfile_status", {})).content, /^error: lockfile_status is not available/);
+    const env = { ...fixture.env, lockfileStatus: async () => { throw new Error("cannot read"); } };
+    assert.match((await executeTool(env, "lockfile_status", {})).content, /^error: cannot read/);
   });
 });
 
