@@ -278,12 +278,20 @@ describe("agent loop", () => {
 
     it("replaces the first finish with the review and accepts the second", async () => {
       let asked = 0;
-      const { result, model, recorded } = await gated(async () => (++asked, "Not accepted yet: review."), [{ tool_calls: [FINISH] }, { tool_calls: [FINISH] }]);
+      const { result, model, recorded } = await gated(async () => (++asked === 1 ? "Not accepted yet: review." : null), [{ tool_calls: [FINISH] }, { tool_calls: [FINISH] }]);
       assert.equal(result.outcome, "finished");
-      assert.equal(asked, 1);
+      assert.equal(asked, 2);
       assert.equal(result.stats.rounds, 2);
       assert.ok(model.seen[1]!.some((message) => message.role === "tool" && message.content === "Not accepted yet: review."));
       assert.ok(recorded.some((message) => message.role === "tool" && message.content === "Not accepted yet: review."));
+    });
+
+    it("asks the gate on every finish, but at most three times, then accepts", async () => {
+      let asked = 0;
+      const { result } = await gated(async () => (++asked, "Not accepted yet."), Array.from({ length: 5 }, () => ({ tool_calls: [FINISH] })));
+      assert.equal(result.outcome, "finished");
+      assert.equal(asked, 3);
+      assert.equal(result.stats.rounds, 4);
     });
 
     it("accepts the finish at once when the gate has nothing to say", async () => {

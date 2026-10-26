@@ -21,6 +21,12 @@ function git(cwd: string, ...args: string[]): string {
 
 const LOCKFILE = "svc/fake.lock";
 
+const DIRECT: Partial<Ecosystem> = {
+  directVersions(text) {
+    return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, line.split("==")[1]!]));
+  },
+};
+
 function fakeEcosystem(overrides: Partial<Ecosystem> = {}, tests = true): Ecosystem {
   return {
     name: "uv",
@@ -31,9 +37,7 @@ function fakeEcosystem(overrides: Partial<Ecosystem> = {}, tests = true): Ecosys
     installedVersions(text) {
       return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, [line.split("==")[1]!]]));
     },
-    directVersions(text) {
-      return new Map(text.split("\n").filter(Boolean).map((line) => [line.split("==")[0]!, line.split("==")[1]!]));
-    },
+    directVersions: () => new Map(),
     parentChain: () => null,
     toolchainVersion: (files) => files["toolchain.txt"]?.trim() ?? null,
     allowedFiles: (lockfile) => [lockfile, join(dirname(lockfile), "fake.manifest")],
@@ -93,7 +97,9 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
   const steps: ChatResult["message"]["tool_calls"][] = [
     options.edits ?? [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n"), write("svc/app.py", "changed\n"), write("svc/new.txt", "x\n")],
     [FINISH],
-    ...((options.unit ?? UNIT).kind === "major" ? [[FINISH]] : []),
+    [FINISH],
+    [FINISH],
+    [FINISH],
   ];
   const llm = {
     withThink: () => llm,
@@ -104,8 +110,8 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
       if (tools.length === 0) return { message: { role: "assistant", content: "Bumped pkg." }, usage };
       seen.prompts.push(messages[0]!.content);
       seen.users.push(messages[1]!.content);
-      const gate = messages.find((message) => message.role === "tool" && message.content.startsWith("Not accepted yet"));
-      if (gate) seen.gated.push(gate.content);
+      const gates = messages.filter((message) => message.role === "tool" && message.content.startsWith("Not accepted yet"));
+      for (const gate of gates.slice(seen.gated.length)) seen.gated.push(gate.content);
       return { message: { role: "assistant", content: "", tool_calls: steps.shift() }, usage };
     },
   } as unknown as OllamaClient;
@@ -327,6 +333,56 @@ describe("workUnit preflight", () => {
   });
 });
 
+describe("workUnit finish checks", () => {
+  const BAD = [write(LOCKFILE, "pkg==1.5.0\n")];
+  const GOOD = [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+
+  it("refuses a finish whose lockfile fails the check, names the failure, and accepts at most two refusals", async () => {
+    const ecosystem = fakeEcosystem({ copiesOf: (_text, pkg) => [{ version: "1.5.0", where: `deps/${pkg}` }] });
+    const { result, seen } = await run({ ecosystem, edits: BAD });
+    assert.equal(seen.gated.length, 2);
+    assert.match(seen.gated[0]!, /^Not accepted yet: the lockfile check[^]*- pkg: installed 1\.5\.0 is below 2\.0\.0\. Target: 2\.0\.0\.\n  Installed copies: 1\.5\.0 at deps\/pkg/);
+    assert.match((result.outcome as { reason: string }).reason, /lockfile check failed: pkg: installed 1\.5\.0 is below 2\.0\.0/);
+    assert.deepEqual(seen.published, []);
+  });
+
+  it("lets the agent fix it after a refusal and finish again", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(), edits: [...BAD, write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n")] });
+    assert.equal(result.outcome.kind, "pr");
+    assert.deepEqual(seen.gated, []);
+  });
+
+  it("does not refuse a finish that passes the check", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(), edits: GOOD });
+    assert.equal(result.outcome.kind, "pr");
+    assert.deepEqual(seen.gated, []);
+  });
+
+  it("refuses a lockfile unit that moved a direct dependency across a major, and counts it in the same two refusals", async () => {
+    const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(DIRECT), edits, unit: { ...UNIT, fixes: [{ ...UNIT.fixes[0]!, installed: "2.0.0", target: ["2.0.0"] }] } });
+    assert.equal(seen.gated.length, 2);
+    assert.match(seen.gated[0]!, /^Not accepted yet: this lockfile unit moved direct dependencies across a major version:\n- other 3\.0\.0 → 4\.0\.0/);
+    assert.equal(result.outcome.kind, "pr");
+  });
+
+  it("does not apply the direct-dependency rule to a major unit, whose review still fires once after the check", async () => {
+    const edits = [write(LOCKFILE, "pkg==1.5.0\n"), write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
+    const ecosystem = fakeEcosystem({ ...DIRECT, reviewSources: () => ({ search: "true", files: "true" }) });
+    const { result, seen } = await run({ ecosystem, unit: MAJOR_UNIT, edits });
+    assert.equal(result.outcome.kind, "pr");
+    assert.equal(seen.gated.length, 1);
+    assert.match(seen.gated[0]!, /^Not accepted yet: review before you finish/);
+  });
+
+  it("states the rule against moving direct dependencies across a major in the lockfile prompt only", async () => {
+    const lockfile = await run({ ecosystem: fakeEcosystem(), edits: GOOD });
+    assert.match(lockfile.seen.prompts[0]!, /Never move a direct dependency to a new major version/);
+    const major = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: GOOD });
+    assert.doesNotMatch(major.seen.prompts[0]!, /Never move a direct dependency to a new major version/);
+  });
+});
+
 describe("workUnit for a major upgrade", () => {
   it("lets the agent's code changes through, and opens a draft even though the harness passed", async () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES });
@@ -342,23 +398,23 @@ describe("workUnit for a major upgrade", () => {
 
   it("lists the other direct dependencies that crossed a major version, and not the upgraded one or a minor bump", async () => {
     const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
-    const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits, releases: RELEASES });
+    const { seen } = await run({ ecosystem: fakeEcosystem(DIRECT), unit: MAJOR_UNIT, edits, releases: RELEASES });
     const body = seen.published[0]!.body;
     assert.match(body, /### Other major upgrades[^]*- `other` 3\.0\.0 → 4\.0\.0 \(\[releases\]\(https:\/\/github\.com\/acme-org\/pkg\/releases\)\)/);
     assert.doesNotMatch(body, /- `pkg` 1\.0\.0/);
-    const minor = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.1.0\n"), write("svc/fake.manifest", "pkg>=2\n")] });
+    const minor = await run({ ecosystem: fakeEcosystem(DIRECT), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.1.0\n"), write("svc/fake.manifest", "pkg>=2\n")] });
     assert.doesNotMatch(minor.seen.published[0]!.body, /Other major upgrades/);
   });
 
   it("flags a direct dependency that jumped from a stable release to a prerelease of the next major", async () => {
     const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0-alpha.6\n"), write("svc/fake.manifest", "pkg>=2\n")];
-    const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits });
+    const { seen } = await run({ ecosystem: fakeEcosystem(DIRECT), unit: MAJOR_UNIT, edits });
     assert.match(seen.published[0]!.body, /- `other` 3\.0\.0 → 4\.0\.0-alpha\.6/);
   });
 
   it("holds the first finish of a major unit and puts the host's own search of every crossed package in the review", async () => {
     const edits = [write(LOCKFILE, "pkg==2.0.0\nother==4.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")];
-    const ecosystem = fakeEcosystem({
+    const ecosystem = fakeEcosystem({ ...DIRECT,
       preflight: async () => ({ notes: [], tool: "fake-v8" }),
       harness: (_lockfile, tool) => ({ install: `${tool ?? "fake"}-install`, test: `${tool ?? "fake"}-test`, hasTests: () => true }),
       reviewSources: (pkg) => ({

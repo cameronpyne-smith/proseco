@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { compareTests, isRegression } from "../src/fixer/baseline.ts";
 import type { PreflightBox } from "../src/fixer/ecosystems/ecosystem.ts";
-import { npm } from "../src/fixer/ecosystems/npm.ts";
+import { DIFF_SCRIPT, npm } from "../src/fixer/ecosystems/npm.ts";
 import { pytestFailures, pythonSources } from "../src/fixer/ecosystems/pytest.ts";
 import { requirements } from "../src/fixer/ecosystems/requirements.ts";
 import { uv } from "../src/fixer/ecosystems/uv.ts";
 import type { TestOutcome } from "../src/fixer/pr.ts";
 import { failureExcerpt } from "../src/fixer/excerpt.ts";
-import { crossedMajors, gatherReview, rankReviewLines, reviewMessage, type PackageReview } from "../src/fixer/review.ts";
+import { crossedMajors, gatherReview, lockfileMajorMessage, rankReviewLines, refusedChecksMessage, reviewMessage, type PackageReview } from "../src/fixer/review.ts";
 
 function failed(overrides: Partial<Extract<TestOutcome, { kind: "failed" }>> = {}): Extract<TestOutcome, { kind: "failed" }> {
   return { kind: "failed", step: "pytest", exitCode: 1, timedOut: false, tail: "", ...overrides };
@@ -72,7 +76,9 @@ describe("compareTests", () => {
   });
 });
 
-function box(drifts: Record<string, { removed: number; added: number; changed: number } | "fail">) {
+type Drifted = { removed: number; added: number; changed: number; exact?: boolean; sameVersion?: boolean };
+
+function box(drifts: Record<string, Drifted | "fail">) {
   const scripts: string[] = [];
   const fake: PreflightBox = {
     async run(command) {
@@ -81,7 +87,8 @@ function box(drifts: Record<string, { removed: number; added: number; changed: n
       const resolver = /cd "\$d" && (.+?) install --package-lock-only/.exec(script)![1]!;
       const drift = drifts[resolver];
       if (!drift || drift === "fail") return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
-      return { exitCode: 0, stdout: `noise\nPRESOLVE ${JSON.stringify(drift)}\n`, stderr: "", timedOut: false };
+      const full = { exact: drift.removed + drift.added + drift.changed === 0, sameVersion: true, ...drift };
+      return { exitCode: 0, stdout: `noise\nPRESOLVE ${JSON.stringify(full)}\n`, stderr: "", timedOut: false };
     },
   };
   return { fake, scripts };
@@ -90,9 +97,10 @@ function box(drifts: Record<string, { removed: number; added: number; changed: n
 const CLEAN = { removed: 0, added: 0, changed: 0 };
 
 describe("npm preflight", () => {
-  it("says nothing when the bundled npm leaves the untouched lockfile alone", async () => {
+  it("says nothing when the bundled npm leaves the untouched lockfile exactly alone", async () => {
     const { fake, scripts } = box({ npm: CLEAN });
-    assert.deepEqual(await npm.preflight!(fake, "web/package-lock.json", 1000), { notes: [] });
+    const result = await npm.preflight!(fake, "web/package-lock.json", 1000);
+    assert.deepEqual([result.notes, result.tool], [[], undefined]);
     assert.equal(scripts.length, 1);
   });
 
@@ -105,9 +113,24 @@ describe("npm preflight", () => {
     assert.doesNotMatch(scripts[0]!, /cd \/work|cd '\/work/);
   });
 
-  it("tries older majors newest first and tells the agent the exact command of the first that leaves it unchanged", async () => {
+  it("compares the whole lockfile, not only the packages map", () => {
+    const dir = mkdtempSync(join(tmpdir(), "proseco-diff-"));
+    const write = (name: string, value: unknown) => {
+      writeFileSync(join(dir, name), JSON.stringify(value));
+      return join(dir, name);
+    };
+    const packages = { "": { name: "x" }, "node_modules/a": { version: "1.0.0" } };
+    const v3 = write("v3.json", { name: "x", lockfileVersion: 3, packages });
+    const v2 = write("v2.json", { name: "x", lockfileVersion: 2, packages, dependencies: { a: { version: "1.0.0" } } });
+    const same = write("same.json", { packages, lockfileVersion: 3, name: "x" });
+    const drift = (a: string, b: string) => JSON.parse(spawnSync("node", ["-e", DIFF_SCRIPT, a, b], { encoding: "utf8" }).stdout.replace("PRESOLVE ", "")) as Record<string, unknown>;
+    assert.deepEqual(drift(v3, v2), { removed: 0, added: 0, changed: 0, exact: false, sameVersion: false });
+    assert.deepEqual(drift(v3, same), { removed: 0, added: 0, changed: 0, exact: true, sameVersion: true });
+  });
+
+  it("tries older majors newest first and tells the agent the exact command of the first that leaves it exactly unchanged", async () => {
     const { fake, scripts } = box({ npm: { removed: 300, added: 0, changed: 2 }, "npx -y npm@10": { removed: 120, added: 0, changed: 0 }, "npx -y npm@9": "fail", "npx -y npm@8": CLEAN });
-    const { notes, tool } = await npm.preflight!(fake, "package-lock.json", 1000);
+    const { notes, tool, summary } = await npm.preflight!(fake, "package-lock.json", 1000);
     const [note, ...more] = notes;
     assert.equal(tool, "npx -y npm@8");
     assert.equal(more.length, 0);
@@ -116,17 +139,35 @@ describe("npm preflight", () => {
     assert.match(note!, /in place of `npm` for every npm command/);
     assert.match(note!, /`npx -y npm@8 ci --no-audit --no-fund` for installing/);
     assert.doesNotMatch(note!, /are not affected/);
+    assert.match(summary!, /npm: 300 removed, 0 added, 2 changed; npx -y npm@10: 120 removed, 0 added, 0 changed; npx -y npm@9: failed; npx -y npm@8: exact/);
     assert.equal(scripts.length, 4);
   });
 
-  it("says re-resolving changes unrelated packages when no npm reproduces the lockfile", async () => {
-    const { fake, scripts } = box({ npm: { removed: 300, added: 0, changed: 0 } });
-    const { notes: [note], tool } = await npm.preflight!(fake, "package-lock.json", 1000);
+  it("does not take an older npm that has the same packages but rewrites lockfileVersion", async () => {
+    const { fake } = box({ npm: { removed: 5, added: 0, changed: 0 }, "npx -y npm@10": { removed: 5, added: 0, changed: 0 }, "npx -y npm@9": "fail", "npx -y npm@8": "fail", "npx -y npm@7": { removed: 0, added: 0, changed: 0, exact: false, sameVersion: false } });
+    const { notes, tool, summary } = await npm.preflight!(fake, "package-lock.json", 1000);
     assert.equal(tool, undefined);
-    assert.match(note!, /changes packages unrelated to the task \(with the bundled npm: 300 removed, 0 added, 0 changed\)/);
-    assert.match(note!, /No npm version reproduces it/);
-    assert.equal(scripts.length, 5);
-    for (const major of [10, 9, 8, 7]) assert.ok(scripts.some((script) => script.includes(`npx -y npm@${major} install`)));
+    assert.match(notes[0]!, /No npm available in the sandbox reproduces this lockfile exactly/);
+    assert.match(notes[0]!, /sandbox's npm is the closest[^]*changes 5 packages unrelated to the task \(5 removed, 0 added, 0 changed\)/);
+    assert.match(summary!, /npx -y npm@7: 0 removed, 0 added, 0 changed, lockfileVersion rewritten/);
+  });
+
+  it("picks the candidate with the smallest drift that keeps lockfileVersion, and the bundled npm on a tie", async () => {
+    const smaller = box({ npm: { removed: 300, added: 0, changed: 0 }, "npx -y npm@10": { removed: 40, added: 0, changed: 0 }, "npx -y npm@9": { removed: 90, added: 0, changed: 0 }, "npx -y npm@8": "fail", "npx -y npm@7": { removed: 1, added: 0, changed: 0, sameVersion: false } });
+    const result = await npm.preflight!(smaller.fake, "package-lock.json", 1000);
+    assert.equal(result.tool, "npx -y npm@10");
+    assert.match(result.notes[0]!, /`npx -y npm@10` is the closest[^]*40 packages[^]*Use `npx -y npm@10` in place of `npm` for every npm command, `ci` and `test` included/);
+    const tie = box({ npm: { removed: 7, added: 0, changed: 0 }, "npx -y npm@10": { removed: 7, added: 0, changed: 0 }, "npx -y npm@9": "fail", "npx -y npm@8": "fail", "npx -y npm@7": "fail" });
+    assert.equal((await npm.preflight!(tie.fake, "package-lock.json", 1000)).tool, undefined);
+    const formatting = box({ npm: { removed: 0, added: 0, changed: 0, exact: false }, "npx -y npm@10": "fail", "npx -y npm@9": "fail", "npx -y npm@8": "fail", "npx -y npm@7": "fail" });
+    const only = await npm.preflight!(formatting.fake, "package-lock.json", 1000);
+    assert.equal(only.tool, undefined);
+    assert.match(only.notes[0]!, /changes only the file's formatting or other top-level fields/);
+  });
+
+  it("gives nothing when no npm can re-resolve the lockfile at all", async () => {
+    const { fake } = box({});
+    assert.deepEqual((await npm.preflight!(fake, "package-lock.json", 1000)).notes, []);
   });
 
   it("tells the agent not to accept mass removals", () => {
@@ -248,5 +289,35 @@ describe("failureExcerpt", () => {
 
   it("returns everything from the error line when that fits", () => {
     assert.equal(failureExcerpt(`noise\n${"x".repeat(50)}\nnpm ERR! boom\ntrailing`, 40), "…\nnpm ERR! boom\ntrailing");
+  });
+});
+
+describe("refusal messages", () => {
+  it("lists each failing check with its target and the installed copies and where they sit", () => {
+    const text = JSON.stringify({ lockfileVersion: 3, packages: { "": {}, "node_modules/tmp": { version: "0.2.6" }, "node_modules/a/node_modules/tmp": { version: "0.2.3" } } });
+    const checks = [{ package: "tmp", from: "0.2.1", installed: ["0.2.3"], ok: false, reason: "installed 0.2.3 is below 0.2.6" }, { package: "fine", installed: ["1.0.0"], ok: true, reason: "ok" }];
+    const message = refusedChecksMessage(checks, () => "0.2.6", (pkg) => npm.copiesOf!(text, pkg));
+    assert.match(message, /^Not accepted yet: the lockfile check/);
+    assert.match(message, /- tmp: installed 0\.2\.3 is below 0\.2\.6\. Target: 0\.2\.6\.\n  Installed copies: 0\.2\.3 at node_modules\/a\/node_modules\/tmp/);
+    assert.doesNotMatch(message, /fine/);
+    assert.match(message, /then call finish again/);
+  });
+
+  it("falls back to the versions when the ecosystem cannot say where", () => {
+    const message = refusedChecksMessage([{ package: "x", installed: ["1.0.0", "1.1.0"], ok: false, reason: "r" }], () => "2.0.0", () => []);
+    assert.match(message, /Installed copies: 1\.0\.0, 1\.1\.0/);
+  });
+
+  it("says a lockfile unit must not move a direct dependency across a major", () => {
+    const message = lockfileMajorMessage([{ package: "acme-e2e", from: "12.0.0", to: "13.1.0", repository: null }, { package: "acme-test", from: "10.0.0", to: "11.0.0", repository: null }]);
+    assert.match(message, /- acme-e2e 12\.0\.0 → 13\.1\.0\n- acme-test 10\.0\.0 → 11\.0\.0/);
+    assert.match(message, /must not move a direct dependency across a major version/);
+    assert.match(message, /in-range update, a parent bump within its major, or an override/);
+  });
+
+  it("lists copies by path for npm and nothing for links or the root", () => {
+    const text = JSON.stringify({ lockfileVersion: 3, packages: { "": { name: "tmp", version: "9.9.9" }, "node_modules/tmp": { version: "0.2.6" }, "node_modules/l": { link: true, version: "1.0.0" } } });
+    assert.deepEqual(npm.copiesOf!(text, "tmp"), [{ version: "0.2.6", where: "node_modules/tmp" }]);
+    assert.deepEqual(npm.copiesOf!(text, "l"), []);
   });
 });

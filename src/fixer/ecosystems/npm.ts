@@ -51,22 +51,30 @@ export function workspaceMembers(text: string): string[] {
 const OLDER_NPM = [10, 9, 8, 7];
 const SAFE_NAME = /^[A-Za-z0-9@][A-Za-z0-9@/._-]*$/;
 const RESOLVE_FLAGS = "install --package-lock-only --no-audit --no-fund";
-const DIFF_SCRIPT = `const fs = require("fs");
-const read = (file) => JSON.parse(fs.readFileSync(file, "utf8")).packages || {};
-const before = read(process.argv[1]);
-const after = read(process.argv[2]);
+export const DIFF_SCRIPT = `const fs = require("fs");
+const { isDeepStrictEqual } = require("util");
+const before = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const after = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const was = before.packages || {};
+const now = after.packages || {};
 let removed = 0, added = 0, changed = 0;
-for (const key of Object.keys(before)) {
-  if (!(key in after)) removed++;
-  else if (before[key].version !== after[key].version) changed++;
+for (const key of Object.keys(was)) {
+  if (!(key in now)) removed++;
+  else if (was[key].version !== now[key].version) changed++;
 }
-for (const key of Object.keys(after)) if (!(key in before)) added++;
-console.log("PRESOLVE " + JSON.stringify({ removed, added, changed }));`;
+for (const key of Object.keys(now)) if (!(key in was)) added++;
+console.log("PRESOLVE " + JSON.stringify({ removed, added, changed, exact: isDeepStrictEqual(before, after), sameVersion: before.lockfileVersion === after.lockfileVersion }));`;
 
 interface Drift {
   removed: number;
   added: number;
   changed: number;
+  exact: boolean;
+  sameVersion: boolean;
+}
+
+function size(drift: Drift): number {
+  return drift.removed + drift.added + drift.changed;
 }
 
 function shellWord(text: string): string {
@@ -97,7 +105,7 @@ async function reresolve(box: PreflightBox, directory: string, lockfile: string,
 }
 
 function describeDrift(drift: Drift): string {
-  return `${drift.removed} removed, ${drift.added} added, ${drift.changed} changed`;
+  return `${drift.removed} removed, ${drift.added} added, ${drift.changed} changed${drift.sameVersion ? "" : ", lockfileVersion rewritten"}`;
 }
 
 export const NPM_NOTES = [
@@ -165,26 +173,39 @@ export const npm: Ecosystem = {
   async preflight(box, lockfile, timeoutMs) {
     const directory = dirname(lockfile);
     const name = lockfile.split("/").pop()!;
-    const bundled = await reresolve(box, directory, name, "npm", timeoutMs);
-    if (bundled && bundled.removed + bundled.added + bundled.changed === 0) return { notes: [] };
-    for (const major of OLDER_NPM) {
-      const command = `npx -y npm@${major}`;
+    const results: { command: string; drift: Drift | null }[] = [];
+    for (const command of ["npm", ...OLDER_NPM.map((major) => `npx -y npm@${major}`)]) {
       const drift = await reresolve(box, directory, name, command, timeoutMs);
-      if (drift && drift.removed + drift.added + drift.changed === 0) {
-        return {
-          tool: command,
-          notes: [
-            `The npm in the sandbox rewrites this lockfile even when nothing is asked of it (${bundled ? describeDrift(bundled) : "it fails on the untouched lockfile"}), because the lockfile was written by an older npm. Measured on a scratch copy: \`${command}\` leaves it unchanged. Use \`${command}\` in place of \`npm\` for every npm command: the resolver (\`${command} ${RESOLVE_FLAGS}\`, \`${command} update ...\`, \`${command} ls\`), \`${command} ci --no-audit --no-fund\` for installing, and \`${command} test\`. Do not run bare \`npm install\`, \`npm update\` or \`npm ci\`: the bundled npm would delete or rewrite packages unrelated to the task, or refuse the lockfile. The host's own install and test runs use \`${command}\` too.`,
-          ],
-        };
-      }
+      results.push({ command, drift });
+      if (drift?.exact) break;
     }
-    if (!bundled) return { notes: [] };
+    const summary = results.map(({ command, drift }) => `${command}: ${drift ? (drift.exact ? "exact" : describeDrift(drift)) : "failed"}`).join("; ");
+    const exact = results.find((result) => result.drift?.exact);
+    if (exact) {
+      if (exact.command === "npm") return { notes: [], summary };
+      return {
+        tool: exact.command,
+        summary,
+        notes: [
+          `The npm in the sandbox rewrites this lockfile even when nothing is asked of it (${results[0]!.drift ? describeDrift(results[0]!.drift) : "it fails on the untouched lockfile"}), because the lockfile was written by an older npm. Measured on a scratch copy: \`${exact.command}\` leaves it exactly unchanged. Use \`${exact.command}\` in place of \`npm\` for every npm command: the resolver (\`${exact.command} ${RESOLVE_FLAGS}\`, \`${exact.command} update ...\`, \`${exact.command} ls\`), \`${exact.command} ci --no-audit --no-fund\` for installing, and \`${exact.command} test\`. Do not run bare \`npm install\`, \`npm update\` or \`npm ci\`: the bundled npm would delete or rewrite packages unrelated to the task, or refuse the lockfile. The host's own install and test runs use \`${exact.command}\` too.`,
+        ],
+      };
+    }
+    const usable = results.flatMap((result, index) => (result.drift && result.drift.sameVersion ? [{ ...result, drift: result.drift, index }] : []));
+    if (usable.length === 0) return { notes: [], summary };
+    const best = usable.reduce((winner, item) => (size(item.drift) < size(winner.drift) ? item : winner));
+    const bundled = best.command === "npm";
     return {
+      ...(bundled ? {} : { tool: best.command }),
+      summary,
       notes: [
-        `Re-resolving the untouched lockfile with the sandbox's npm and with npm 10, 9, 8 and 7 changes packages unrelated to the task (with the bundled npm: ${describeDrift(bundled)}). No npm version reproduces it. Expect unrelated changes after every resolver run; keep them as small as you can and look at the lockfile diff for removed packages after each run.`,
+        `No npm available in the sandbox reproduces this lockfile exactly (the ones that rewrite lockfileVersion were not considered). ${bundled ? "The sandbox's npm is the closest" : `\`${best.command}\` is the closest`}: on the untouched lockfile it ${size(best.drift) === 0 ? "changes only the file's formatting or other top-level fields" : `changes ${size(best.drift)} packages unrelated to the task (${describeDrift(best.drift)})`}. Expect about that much unrelated change after every resolver run; keep it as small as you can and look at the lockfile diff for removed packages after each run.${bundled ? "" : ` Use \`${best.command}\` in place of \`npm\` for every npm command, \`ci\` and \`test\` included; the host's own install and test runs use it too.`}`,
       ],
     };
+  },
+
+  copiesOf(text, pkg) {
+    return Object.entries(packagesOf(text)).flatMap(([path, entry]) => (path !== "" && !entry.link && entry.version && nameOf(path) === pkg ? [{ version: entry.version, where: path }] : []));
   },
 
   reviewSources(pkg, directory): ReviewSources | null {

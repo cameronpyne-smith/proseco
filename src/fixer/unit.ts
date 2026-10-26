@@ -19,7 +19,7 @@ import { verifySummary, type DiffFile } from "./agent/verify.ts";
 import { compareTests, isRegression, type FailedOutcome } from "./baseline.ts";
 import { failureExcerpt } from "./excerpt.ts";
 import { contextLimit } from "./agent/loop.ts";
-import { crossedMajors, gatherReview, reviewMessage } from "./review.ts";
+import { crossedMajors, gatherReview, lockfileMajorMessage, refusedChecksMessage, reviewMessage } from "./review.ts";
 import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
@@ -139,24 +139,51 @@ const REVIEW_COMMAND_MS = 120_000;
 const CHARS_PER_TOKEN = 3;
 const GATE_SHARE = 8;
 
-async function reviewGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, before: string, ctx: UnitContext, commandMs: number, tool: string | undefined): Promise<string | null> {
-  try {
-    const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
-    if (read.exitCode !== 0) return null;
-    const crossed = crossedMajors(ecosystem, before, read.stdout, { package: unit.fixes[0]!.package, installed: unit.fixes[0]!.installed });
-    if (crossed.length === 0) return null;
-    const directory = dirname(unit.source);
-    ctx.log(`finish gate: ${crossed.map((item) => item.package).join(", ")}`);
-    const prefix = directory === "." ? "" : `cd ${shellQuote(`${WORK}/${directory}`)} && `;
-    const install = await box.run(["sh", "-c", `${prefix}${ecosystem.harness(unit.source, tool).install}`], commandMs);
-    const installProblem = install.exitCode === 0 ? null : `\`${ecosystem.harness(unit.source, tool).install}\` ${install.timedOut ? "timed out" : `failed with exit code ${install.exitCode}`}: ${failureExcerpt(combined(install), 600)}`;
-    const reviews = await gatherReview((script) => box.run(["sh", "-c", script], REVIEW_COMMAND_MS), ecosystem, crossed, directory);
-    const maxChars = Math.floor((contextLimit(ctx.fixer.ollama.numCtx, ctx.fixer.ollama.numPredict) * CHARS_PER_TOKEN) / GATE_SHARE);
-    return reviewMessage(reviews, maxChars, installProblem);
-  } catch (error) {
-    ctx.log(`finish gate skipped: ${(error as Error).message}`);
-    return null;
-  }
+const MAX_REFUSALS = 2;
+
+function finishGate(box: SandboxHandle, ecosystem: Ecosystem, unit: PrUnit, before: string, ctx: UnitContext, commandMs: number, tool: string | undefined): () => Promise<string | null> {
+  let refusals = 0;
+  let reviewed = false;
+  return async () => {
+    try {
+      const read = await box.run(["cat", `${WORK}/${unit.source}`], FILE_READ_MS);
+      if (read.exitCode !== 0) return null;
+      const after = read.stdout;
+      if (refusals < MAX_REFUSALS) {
+        const fixes = unit.fixes.map((fix) => ({ package: fix.package, installed: fix.installed, target: fix.target }));
+        const checks = checkLockfile(ecosystem, after, fixes);
+        if (!checkPassed(checks)) {
+          refusals++;
+          ctx.log(`finish refused: lockfile check fails for ${checks.filter((check) => !check.ok).map((check) => check.package).join(", ")}`);
+          const target = (check: PackageCheck) => fixes.find((fix) => fix.package === check.package && (check.from === undefined || fix.installed === check.from))?.target.join(" or ") ?? "unknown";
+          return refusedChecksMessage(checks, target, (pkg) => ecosystem.copiesOf?.(after, pkg) ?? []);
+        }
+        if (unit.kind === "lockfile") {
+          const forced = forcedMajors(ecosystem, before, after, "");
+          if (forced.length > 0) {
+            refusals++;
+            ctx.log(`finish refused: direct dependencies crossed a major: ${forced.map((item) => item.package).join(", ")}`);
+            return lockfileMajorMessage(forced);
+          }
+        }
+      }
+      if (unit.kind !== "major" || reviewed) return null;
+      const crossed = crossedMajors(ecosystem, before, after, { package: unit.fixes[0]!.package, installed: unit.fixes[0]!.installed });
+      if (crossed.length === 0) return null;
+      reviewed = true;
+      const directory = dirname(unit.source);
+      ctx.log(`finish gate: ${crossed.map((item) => item.package).join(", ")}`);
+      const prefix = directory === "." ? "" : `cd ${shellQuote(`${WORK}/${directory}`)} && `;
+      const install = await box.run(["sh", "-c", `${prefix}${ecosystem.harness(unit.source, tool).install}`], commandMs);
+      const installProblem = install.exitCode === 0 ? null : `\`${ecosystem.harness(unit.source, tool).install}\` ${install.timedOut ? "timed out" : `failed with exit code ${install.exitCode}`}: ${failureExcerpt(combined(install), 600)}`;
+      const reviews = await gatherReview((script) => box.run(["sh", "-c", script], REVIEW_COMMAND_MS), ecosystem, crossed, directory);
+      const maxChars = Math.floor((contextLimit(ctx.fixer.ollama.numCtx, ctx.fixer.ollama.numPredict) * CHARS_PER_TOKEN) / GATE_SHARE);
+      return reviewMessage(reviews, maxChars, installProblem);
+    } catch (error) {
+      ctx.log(`finish gate skipped: ${(error as Error).message}`);
+      return null;
+    }
+  };
 }
 
 function transcriptPath(ctx: UnitContext, unit: PrUnit): string {
@@ -198,6 +225,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
         const preflight = await ecosystem.preflight(box, unit.source, commandMs);
         context.push(...preflight.notes);
         tool = preflight.tool;
+        if (preflight.summary) ctx.log(`preflight: ${preflight.summary}`);
       } catch (error) {
         ctx.log(`preflight failed: ${(error as Error).message}`);
       }
@@ -219,7 +247,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
       tools: TOOL_DEFINITIONS,
       execute: (name, args) =>
         executeTool({ commandTimeoutMs: commandMs, run: (command, timeoutMs, options) => box.run(command, timeoutMs, options), wrote: (path) => written.add(path) }, name, args),
-      gate: major ? () => reviewGate(box, ecosystem, unit, lockfileText, ctx, commandMs, tool) : undefined,
+      gate: finishGate(box, ecosystem, unit, lockfileText, ctx, commandMs, tool),
       system: systemPrompt(ecosystem.notes, unit.kind),
       user: userPrompt(facts),
       timeBudgetMs: (major ? ctx.fixer.budget.majorMinutes : ctx.fixer.budget.minutes) * MS_PER_MINUTE,

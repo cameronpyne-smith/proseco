@@ -12,6 +12,7 @@ const FINALISE = "Stop working now. Produce the finish arguments as a JSON objec
 const NOT_JSON = "That was not a valid finish object. Output only the JSON object.";
 const TRACE_CHARS = 300;
 const RESULT_SHARE = 4;
+const MAX_GATE_CALLS = 3;
 const REPEAT_WINDOW = 10;
 const REPEAT_LIMIT = 3;
 const REPEAT_STALL_ROUNDS = 3;
@@ -180,7 +181,7 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
   };
   let silent = 0;
   let repeated = 0;
-  let gated = false;
+  let gateCalls = 0;
   const history: { key: string; result: string }[] = [];
   for (;;) {
     if (now() - started >= input.timeBudgetMs) return finalise("budget");
@@ -235,8 +236,8 @@ export async function runLoop(input: LoopInput): Promise<LoopResult> {
         else history.push({ key: `${name}\n${JSON.stringify(args)}`, result: result.content });
       }
       trace.push({ tool: name, args: JSON.stringify(args).slice(0, TRACE_CHARS), result: result.content.slice(0, TRACE_CHARS) });
-      if (result.finish && input.gate && !gated && now() - started < input.timeBudgetMs && stats.toolCalls < input.maxToolCalls) {
-        gated = true;
+      if (result.finish && input.gate && gateCalls < MAX_GATE_CALLS && now() - started < input.timeBudgetMs && stats.toolCalls < input.maxToolCalls) {
+        gateCalls++;
         const review = await input.gate();
         if (review) {
           append({ role: "tool", tool_name: name, content: capResult(review, limit) });

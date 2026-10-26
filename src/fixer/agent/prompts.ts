@@ -8,6 +8,7 @@ export const RULES = [
   "- Only change files under the lockfile's directory.",
   "- Never touch anything under .github/.",
   "- Never add a dependency that the task does not name.",
+  "- Never move a direct dependency to a new major version; packages that can only be fixed that way are handled in a separate pull request.",
   "- Never disable, skip or delete tests or scripts to make them pass. If a test fails after your change, fix the cause or report it in the summary.",
   "- Make the smallest change that makes every listed package safe. Do not upgrade anything else.",
 ].join("\n");

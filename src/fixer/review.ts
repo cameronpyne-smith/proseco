@@ -1,6 +1,7 @@
 import { highestVersion, packageKey } from "../core/versions.ts";
+import type { PackageCheck } from "./check.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
-import { forcedMajors } from "./majors.ts";
+import { forcedMajors, type ForcedMajor } from "./majors.ts";
 
 const LINE_CHARS = 300;
 const MIN_LINE_CHARS = 8;
@@ -138,4 +139,27 @@ export function reviewMessage(reviews: PackageReview[], maxChars: number, instal
     message = frame(render());
   }
   return message;
+}
+
+export function refusedChecksMessage(checks: PackageCheck[], targets: (check: PackageCheck) => string, copies: (pkg: string) => { version: string; where: string }[]): string {
+  const failing = checks.filter((check) => !check.ok);
+  return [
+    "Not accepted yet: the lockfile check, which the host runs on your current lockfile, fails:",
+    ...failing.flatMap((check) => {
+      const where = copies(check.package).filter((copy) => check.installed.includes(copy.version));
+      return [
+        `- ${check.package}: ${check.reason}. Target: ${targets(check)}.`,
+        ...(where.length > 0 ? [`  Installed copies: ${where.map((copy) => `${copy.version} at ${copy.where}`).join("; ")}`] : check.installed.length > 0 ? [`  Installed copies: ${check.installed.join(", ")}`] : []),
+      ];
+    }),
+    "Fix these in the lockfile (a nested copy needs its own fix, not only the top-level one), run the resolver and the tests again, then call finish again.",
+  ].join("\n");
+}
+
+export function lockfileMajorMessage(forced: ForcedMajor[]): string {
+  return [
+    "Not accepted yet: this lockfile unit moved direct dependencies across a major version:",
+    ...forced.map((item) => `- ${item.package} ${item.from} → ${item.to}`),
+    "A lockfile unit must not move a direct dependency across a major version; a package that can only be fixed that way is handled in a separate pull request. Undo these bumps (restore their ranges in package.json and the lockfile) and fix the vulnerable packages with an in-range update, a parent bump within its major, or an override. Then run the resolver and the tests again and call finish again.",
+  ].join("\n");
 }

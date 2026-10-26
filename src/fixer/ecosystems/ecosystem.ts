@@ -20,6 +20,7 @@ export interface PreflightBox {
 export interface Preflight {
   notes: string[];
   tool?: string;
+  summary?: string;
 }
 
 export interface ReviewSources {
@@ -41,6 +42,7 @@ export interface Ecosystem {
   harness(lockfile: string, tool?: string): Harness;
   unsupported(lockfileText: string): string | null;
   preflight?(box: PreflightBox, lockfile: string, timeoutMs: number): Promise<Preflight>;
+  copiesOf?(lockfileText: string, pkg: string): { version: string; where: string }[];
   reviewSources?(pkg: string, directory: string): ReviewSources | null;
 }
 
