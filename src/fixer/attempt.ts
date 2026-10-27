@@ -1,4 +1,5 @@
 import { parseRawTable } from "../core/ticket.ts";
+import { announcements, queueAnnouncement } from "./announce.ts";
 import { renderComment, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
 import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, type Decision, type PullRequestStatus, type State } from "./state.ts";
@@ -28,6 +29,7 @@ export interface AttemptDeps {
   saveState?(state: State): void;
   started?(decision: Decision): void;
   shouldStop?(): boolean;
+  announce?: boolean;
   now(): Date;
 }
 
@@ -90,13 +92,14 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
   if (input.local) return { skipped: false, decision, headSha, reports, state };
 
   const urls = reports.flatMap((report) => (report.outcome.kind === "pr" ? [report.outcome.url] : []));
-  const next = recordAttempt(state, ticket.number, {
+  const recorded = recordAttempt(state, ticket.number, {
     bodyHash: hash,
     headSha,
     attemptedAt: deps.now().toISOString(),
     outcome: urls.length > 0 ? "pr-opened" : "gave-up",
     prUrls: urls,
   });
+  const next = deps.announce ? queueAnnouncement(recorded, ticket.number, announcements(reports), deps.now()) : recorded;
   try {
     await deps.postComment(renderComment(hash, reports));
   } finally {

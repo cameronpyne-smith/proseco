@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { TicketComment } from "../src/core/types.ts";
-import { renderComment, upsertComment, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
+import { appendToComment, renderComment, upsertComment, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
 
 const REPORTS: UnitReport[] = [
   { label: "`package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/7", draft: false } },
@@ -70,5 +70,15 @@ describe("ticket comment", () => {
     const api = writer([comment(3, "acme-proseco[bot]", "<!-- proseco:attempt a -->"), comment(8, "acme-proseco[bot]", "<!-- proseco:attempt b -->")]);
     await upsertComment(api, 5, "acme-proseco", "<!-- proseco:attempt c -->\nx");
     assert.equal(api.edited[0]![0], 8);
+  });
+
+  it("appends a line to the bot's newest marked comment, and writes nothing when there is none", async () => {
+    const api = writer([comment(3, "acme-proseco[bot]", "<!-- proseco:attempt a -->\n- one\n"), comment(4, "a-person", "<!-- proseco:attempt b -->")]);
+    await appendToComment(api, 5, "acme-proseco", "- Not announced in Teams: `x`");
+    assert.deepEqual(api.edited, [[3, "<!-- proseco:attempt a -->\n- one\n- Not announced in Teams: `x`\n"]]);
+    const none = writer([comment(4, "a-person", "<!-- proseco:attempt b -->")]);
+    await appendToComment(none, 5, "acme-proseco", "- line");
+    assert.deepEqual(none.edited, []);
+    assert.deepEqual(none.created, []);
   });
 });

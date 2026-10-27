@@ -25,7 +25,7 @@ function recorder(...replies: (unknown | Response)[]): { fetch: typeof fetch; ca
   return { fetch: impl, calls };
 }
 
-const PULL = { number: 7, html_url: "https://github.com/acme-org/acme-api/pull/7", node_id: "PR_node", draft: false, state: "open", merged_at: null };
+const PULL = { number: 7, html_url: "https://github.com/acme-org/acme-api/pull/7", node_id: "PR_node", draft: false, state: "open", merged_at: null, title: "Bump a to 1.0.1", user: { login: "acme-proseco[bot]" }, head: { sha: "abc123" } };
 
 describe("repo api", () => {
   it("reads the default branch", async () => {
@@ -38,9 +38,35 @@ describe("repo api", () => {
   it("finds an open pull request by head and returns null when there is none", async () => {
     const { fetch, calls } = recorder([PULL], []);
     const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
-    assert.deepEqual(await api.findOpenPull("proseco/package-lock.json"), { number: 7, url: PULL.html_url, nodeId: "PR_node", draft: false });
+    assert.deepEqual(await api.findOpenPull("proseco/package-lock.json"), { number: 7, url: PULL.html_url, nodeId: "PR_node", draft: false, headSha: "abc123" });
     assert.equal(await api.findOpenPull("proseco/other"), null);
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls?head=acme-org%3Aproseco%2Fpackage-lock.json&state=open");
+  });
+
+  it("reads a pull request's title, state, draft flag and author", async () => {
+    const { fetch, calls } = recorder(PULL, { ...PULL, draft: true, state: "closed", merged_at: "2026-01-01T00:00:00Z" });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual(await api.pullDetails(7), { url: PULL.html_url, title: "Bump a to 1.0.1", state: "open", draft: false, author: "acme-proseco[bot]" });
+    assert.equal((await api.pullDetails(7)).state, "merged");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7");
+  });
+
+  it("counts a pull request as approved only by each reviewer's latest deciding review", async () => {
+    const review = (login: string, state: string) => ({ user: { login }, state });
+    const approved = async (...reviews: unknown[]) => new RepoApi("tok", "acme-org", "acme-api", recorder(reviews).fetch).approved(7);
+    assert.equal(await approved(review("ana", "APPROVED")), true);
+    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "COMMENTED")), true);
+    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "DISMISSED")), false);
+    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "CHANGES_REQUESTED")), false);
+    assert.equal(await approved(review("ana", "CHANGES_REQUESTED"), review("bo", "APPROVED")), true);
+    assert.equal(await approved(review("ana", "COMMENTED")), false);
+    assert.equal(await approved(), false);
+  });
+
+  it("reads a commit's tree", async () => {
+    const { fetch, calls } = recorder({ sha: "abc123", tree: { sha: "tree9" } });
+    assert.equal(await new RepoApi("tok", "acme-org", "acme-api", fetch).commitTree("abc123"), "tree9");
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/git/commits/abc123");
   });
 
   it("creates a pull request with its draft flag", async () => {

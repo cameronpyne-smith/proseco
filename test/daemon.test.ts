@@ -163,4 +163,23 @@ describe("daemon loop", () => {
     assert.deepEqual(run.log.filter((line) => line.startsWith("find failed")), ["find failed: GitHub is down", "find failed: GitHub is down"]);
     assert.deepEqual(run.attempted, [1]);
   });
+
+  it("delivers announcements after each finished attempt and once per pass, and logs a delivery failure without stopping", async () => {
+    const run = fixture({ passes: [[request(1), request(2)], []], stopAfterPasses: 2 });
+    const order: string[] = [];
+    const attempt = run.deps.attempt;
+    run.deps.attempt = async (item, started) => {
+      order.push(`attempt ${item.number}`);
+      return attempt(item, started);
+    };
+    let deliveries = 0;
+    run.deps.deliver = async () => {
+      order.push("deliver");
+      if (++deliveries === 1) throw new Error("state file unreadable");
+    };
+    await runDaemon(run.deps);
+    assert.deepEqual(order, ["attempt 1", "deliver", "attempt 2", "deliver", "deliver", "deliver"]);
+    assert.ok(run.log.includes("announcing in Teams failed: state file unreadable"));
+    assert.equal(run.log.at(-1), "stopped");
+  });
 });

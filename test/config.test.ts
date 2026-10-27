@@ -55,6 +55,7 @@ describe("config", () => {
       ollama: { url: "http://127.0.0.1:11434", model: "qwen3.8:27b", numCtx: 131072, numPredict: 12288, think: "medium", temperature: 0.2, timeoutMinutes: 20 },
       budget: { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 },
       transcripts: { maxAgeDays: 14, maxMegabytes: 500 },
+      teams: null,
     });
   });
 
@@ -127,6 +128,30 @@ describe("config", () => {
     bad({ sandbox: { memory: "lots" } }, /fixer.sandbox.memory must be a name/);
     bad({ sandbox: { cpus: 0 } }, /fixer.sandbox.cpus must be a positive number/);
     bad({ sandbox: { pids: 1 } }, /fixer.sandbox has unknown keys: pids/);
+  });
+
+  it("reads the Teams section with the global service URL by default", () => {
+    const raw = full();
+    const teams = { tenantId: "00000000-0000-4000-8000-000000000001", appId: "00000000-0000-4000-8000-000000000002", chatId: "19:abc_DEF-1@thread.v2" };
+    Object.assign(raw["fixer"] as Record<string, unknown>, { teams });
+    assert.deepEqual(parseConfig(raw, mapping).fixer!.teams, { ...teams, serviceUrl: "https://smba.trafficmanager.net/teams" });
+    Object.assign(raw["fixer"] as Record<string, unknown>, { teams: { ...teams, serviceUrl: "https://smba.trafficmanager.net/uk/" } });
+    assert.equal(parseConfig(raw, mapping).fixer!.teams!.serviceUrl, "https://smba.trafficmanager.net/uk");
+  });
+
+  it("validates the Teams section", () => {
+    const good = { tenantId: "00000000-0000-4000-8000-000000000001", appId: "00000000-0000-4000-8000-000000000002", chatId: "19:abc@thread.v2" };
+    const bad = (teams: Record<string, unknown>, message: RegExp) => {
+      const raw = full();
+      Object.assign(raw["fixer"] as Record<string, unknown>, { teams });
+      assert.throws(() => parseConfig(raw, mapping), message);
+    };
+    bad({ ...good, tenantId: "acme" }, /fixer.teams.tenantId must be a name/);
+    bad({ ...good, appId: undefined }, /fixer.teams.appId must be a name/);
+    bad({ ...good, chatId: "abc@thread.v2" }, /fixer.teams.chatId must be a name/);
+    bad({ ...good, chatId: "19:abc def" }, /fixer.teams.chatId must be a name/);
+    bad({ ...good, serviceUrl: "http://smba.trafficmanager.net/teams" }, /fixer.teams.serviceUrl must be an https URL/);
+    bad({ ...good, secret: "x" }, /fixer.teams has unknown keys: secret/);
   });
 
   it("treats the project, Defender and the fixer as optional", () => {

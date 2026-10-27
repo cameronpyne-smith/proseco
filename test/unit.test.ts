@@ -133,6 +133,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     ollama: DEFAULT_OLLAMA,
     transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...options.budget },
+    teams: null,
   };
   const ctx: UnitContext = {
     org: "acme-org",
@@ -149,7 +150,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     publisher: {
       async publish(request) {
         seen.published.push(request);
-        return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft };
+        return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: request.draft ? null : "new" };
       },
     },
     keepCheckout: false,
@@ -542,16 +543,22 @@ describe("workUnit finish checks", () => {
 });
 
 describe("workUnit for a major upgrade", () => {
-  it("lets the agent's code changes through, and opens a draft even though the harness passed", async () => {
+  it("lets the agent's code changes through, and opens a ready pull request to announce when the harness passed", async () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES });
     assert.equal(result.outcome.kind, "pr");
     const [request] = seen.published;
-    assert.equal(request!.draft, true);
+    assert.equal(request!.draft, false);
     assert.equal(request!.branch, "proseco/pkg-2.0.0");
     assert.equal(request!.title, "Upgrade pkg to 2.0.0 (major)");
     assert.equal(request!.tests.kind, "passed");
     assert.deepEqual([...request!.commit.files].sort(), ["svc/app.py", "svc/fake.lock", "svc/fake.manifest", "svc/new_module.py"]);
-    assert.equal(result.outcome.kind === "pr" && result.outcome.draft, true);
+    assert.deepEqual(result.outcome, {
+      kind: "pr",
+      url: "https://github.com/acme-org/acme-api/pull/1",
+      draft: false,
+      announce: "new",
+      facts: { title: "Upgrade pkg to 2.0.0 (major)", major: true, lockfile: "svc/fake.lock", packages: [{ name: "pkg", from: "1.0.0", to: "2.0.0" }] },
+    });
   });
 
   it("lists the other direct dependencies that crossed a major version, and not the upgraded one or a minor bump", async () => {
@@ -609,12 +616,13 @@ describe("workUnit for a major upgrade", () => {
     assert.match(seen.users[0]!, /the module is now ESM only/);
   });
 
-  it("writes the major body: the release tags, why it is a draft, and what was discarded", async () => {
+  it("writes the major body: the release tags, what to review, and what was discarded", async () => {
     const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES });
     const body = seen.published[0]!.body;
     assert.match(body, /### Breaking changes considered\n\nThe agent was given the notes of 2 releases of `acme-org\/pkg` after 1\.0\.0, up to 2\.0\.0\. These start a new major version or mention breaking changes:\n\n- \[`v2\.0\.0`\]/);
     assert.doesNotMatch(body, /`v1\.5\.0`\]/);
-    assert.match(body, /### Why this is a draft/);
+    assert.match(body, /### What to review/);
+    assert.doesNotMatch(body, /### Why this is a draft/);
     assert.match(body, /`fake-install` and `fake-test` ran in the sandbox and exited 0/);
     assert.match(body, /- `\.github\/workflows\/ci\.yml`\n- `svc\/package\.json`/);
     assert.doesNotMatch(body, /Draft: /);
@@ -634,17 +642,19 @@ describe("workUnit for a major upgrade", () => {
     assert.match(manifestOnly.seen.published[0]!.body, /changed only the manifest and lockfile/);
   });
 
-  it("words the draft reason by whether code changed", async () => {
+  it("words what to review by whether code changed", async () => {
     const withCode = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS });
     assert.match(withCode.seen.published[0]!.body, /the agent changed code to adapt to it/);
     const manifestOnly = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: [write(LOCKFILE, "pkg==2.0.0\nother==3.0.0\n"), write("svc/fake.manifest", "pkg>=2\n")] });
     assert.match(manifestOnly.seen.published[0]!.body, /changed only the manifest and lockfile/);
   });
 
-  it("still names the failing command when the harness fails, and is still a draft", async () => {
-    const { seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES, exits: { "fake-test": 3 } });
+  it("names the failing command when the harness fails, and is a draft that says why and is not announced", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem(), unit: MAJOR_UNIT, edits: MAJOR_EDITS, releases: RELEASES, exits: { "fake-test": 3 } });
     assert.equal(seen.published[0]!.draft, true);
     assert.match(seen.published[0]!.body, /`fake-test` failed with exit code 3/);
+    assert.match(seen.published[0]!.body, /### Why this is a draft\n\n- `fake-test` fails in the sandbox with failures the default branch does not have/);
+    assert.equal(result.outcome.kind === "pr" && result.outcome.announce, null);
   });
 
   it("says in the body when no release notes were found", async () => {

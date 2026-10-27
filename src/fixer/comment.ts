@@ -2,7 +2,16 @@ import type { TicketComment } from "../core/types.ts";
 
 export const COMMENT_PREFIX = "<!-- proseco:attempt ";
 
-export type UnitOutcomeReport = { kind: "pr"; url: string; draft: boolean } | { kind: "none"; reason: string };
+export type AnnounceReason = "new" | "re-review";
+
+export interface PrFacts {
+  title: string;
+  major: boolean;
+  lockfile: string;
+  packages: { name: string; from: string; to: string }[];
+}
+
+export type UnitOutcomeReport = { kind: "pr"; url: string; draft: boolean; announce?: AnnounceReason | null; facts?: PrFacts } | { kind: "none"; reason: string };
 
 export interface UnitReport {
   label: string;
@@ -29,12 +38,18 @@ export function renderComment(bodyHash: string, reports: UnitReport[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function upsertComment(api: CommentWriter, ticket: number, bot: string, body: string): Promise<"created" | "edited" | "unchanged"> {
+async function latestComment(api: CommentWriter, ticket: number, bot: string): Promise<TicketComment | undefined> {
   const author = `${bot}[bot]`;
-  const mine = (await api.comments(ticket))
-    .filter((comment) => comment.author === author && comment.body.startsWith(COMMENT_PREFIX))
-    .sort((a, b) => b.id - a.id);
-  const existing = mine[0];
+  return (await api.comments(ticket)).filter((comment) => comment.author === author && comment.body.startsWith(COMMENT_PREFIX)).sort((a, b) => b.id - a.id)[0];
+}
+
+export async function appendToComment(api: CommentWriter, ticket: number, bot: string, line: string): Promise<void> {
+  const existing = await latestComment(api, ticket, bot);
+  if (existing) await api.editComment(existing.id, `${existing.body.trimEnd()}\n${line}\n`);
+}
+
+export async function upsertComment(api: CommentWriter, ticket: number, bot: string, body: string): Promise<"created" | "edited" | "unchanged"> {
+  const existing = await latestComment(api, ticket, bot);
   if (!existing) {
     await api.comment(ticket, body);
     return "created";

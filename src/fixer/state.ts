@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { AnnounceReason, PrFacts } from "./comment.ts";
 
 export interface Attempt {
   bodyHash: string;
@@ -10,10 +11,25 @@ export interface Attempt {
   prUrls: string[];
 }
 
+export interface AnnouncedPr {
+  url: string;
+  reason: AnnounceReason;
+  facts: PrFacts;
+}
+
+export interface PendingAnnouncement {
+  prs: AnnouncedPr[];
+  queuedAt: string;
+  attempts: number;
+  nextAt: string;
+  lastError: string | null;
+}
+
 export interface TicketState {
   attempt: Attempt | null;
   lastCommentId: number | null;
   ignored?: boolean;
+  announcement?: PendingAnnouncement;
 }
 
 export interface State {
@@ -66,6 +82,15 @@ export function recordIgnored(state: State, ticket: number, ignored: boolean): S
   return withEntry(state, ticket, { ...entry(state, ticket), ignored });
 }
 
+export function withAnnouncement(state: State, ticket: number, announcement: PendingAnnouncement | null): State {
+  const { announcement: _, ...rest } = entry(state, ticket);
+  return withEntry(state, ticket, announcement ? { ...rest, announcement } : rest);
+}
+
+export function pendingAnnouncement(state: State, ticket: number): PendingAnnouncement | undefined {
+  return entry(state, ticket).announcement;
+}
+
 export function isIgnored(state: State, ticket: number): boolean {
   return entry(state, ticket).ignored === true;
 }
@@ -89,6 +114,33 @@ export function decide(last: Attempt | undefined, query: AttemptQuery): Decision
   return { attempt: true, reason: "body changed since the last attempt" };
 }
 
+function validFacts(value: unknown): boolean {
+  const facts = value as Partial<PrFacts> | null;
+  return (
+    typeof facts === "object" &&
+    facts !== null &&
+    typeof facts.title === "string" &&
+    typeof facts.major === "boolean" &&
+    typeof facts.lockfile === "string" &&
+    Array.isArray(facts.packages) &&
+    facts.packages.every((pkg) => typeof pkg === "object" && pkg !== null && typeof pkg.name === "string" && typeof pkg.from === "string" && typeof pkg.to === "string")
+  );
+}
+
+function validAnnouncement(value: unknown): boolean {
+  const pending = value as Partial<PendingAnnouncement> | null;
+  return (
+    typeof pending === "object" &&
+    pending !== null &&
+    Array.isArray(pending.prs) &&
+    pending.prs.every((pr) => typeof pr === "object" && pr !== null && typeof pr.url === "string" && (pr.reason === "new" || pr.reason === "re-review") && validFacts(pr.facts)) &&
+    typeof pending.queuedAt === "string" &&
+    Number.isInteger(pending.attempts) &&
+    typeof pending.nextAt === "string" &&
+    (pending.lastError === null || typeof pending.lastError === "string")
+  );
+}
+
 function validate(value: unknown, file: string): State {
   const fail = (message: string): never => {
     throw new Error(`${file} is not a fixer state file: ${message}`);
@@ -101,6 +153,7 @@ function validate(value: unknown, file: string): State {
     if (typeof item !== "object" || item === null) return fail(`ticket ${number} is malformed`);
     if (item.lastCommentId !== null && !Number.isInteger(item.lastCommentId)) fail(`ticket ${number} has a malformed lastCommentId`);
     if (item.ignored !== undefined && typeof item.ignored !== "boolean") fail(`ticket ${number} has a malformed ignored flag`);
+    if (item.announcement !== undefined && !validAnnouncement(item.announcement)) fail(`ticket ${number} has a malformed announcement`);
     const attempt = item.attempt;
     if (attempt === null) continue;
     const valid =

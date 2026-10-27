@@ -58,6 +58,15 @@ export const DEFAULT_TRANSCRIPTS: TranscriptLimits = { maxAgeDays: 14, maxMegaby
 
 export const DEFAULT_POLL_MINUTES = 1;
 
+export interface TeamsConfig {
+  tenantId: string;
+  appId: string;
+  chatId: string;
+  serviceUrl: string;
+}
+
+export const DEFAULT_TEAMS_SERVICE_URL = "https://smba.trafficmanager.net/teams";
+
 export interface AppConfig {
   clientId: string;
   installationId: number;
@@ -78,6 +87,7 @@ export interface FixerConfig {
   ollama: OllamaConfig;
   budget: BudgetConfig;
   transcripts: TranscriptLimits;
+  teams: TeamsConfig | null;
 }
 
 export interface Config {
@@ -142,6 +152,24 @@ function httpUrl(value: unknown, path: string): string {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new ConfigError(message);
   return value.replace(/\/+$/, "");
+}
+
+function httpsUrl(value: unknown, path: string): string {
+  const url = httpUrl(value, path);
+  if (!url.startsWith("https://")) throw new ConfigError(`${path} must be an https URL`);
+  return url;
+}
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function teamsSection(value: unknown): TeamsConfig {
+  const raw = object(value, "fixer.teams", ["tenantId", "appId", "chatId", "serviceUrl"]);
+  return {
+    tenantId: name(raw["tenantId"], "fixer.teams.tenantId", GUID),
+    appId: name(raw["appId"], "fixer.teams.appId", GUID),
+    chatId: name(raw["chatId"], "fixer.teams.chatId", /^19:[A-Za-z0-9_.@:-]+$/),
+    serviceUrl: option(raw, "serviceUrl", "fixer.teams", DEFAULT_TEAMS_SERVICE_URL, httpsUrl),
+  };
 }
 
 function option<T>(raw: Json, key: string, path: string, fallback: T, read: (value: unknown, path: string) => T): T {
@@ -221,7 +249,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   }
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts"]);
+    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts", "teams"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "temperature", "timeoutMinutes"]);
@@ -257,6 +285,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
         maxAgeDays: option(transcripts, "maxAgeDays", "fixer.transcripts", DEFAULT_TRANSCRIPTS.maxAgeDays, positiveNumber),
         maxMegabytes: option(transcripts, "maxMegabytes", "fixer.transcripts", DEFAULT_TRANSCRIPTS.maxMegabytes, positiveNumber),
       },
+      teams: raw["teams"] === undefined ? null : teamsSection(raw["teams"]),
     };
   }
   return {

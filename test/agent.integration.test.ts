@@ -173,6 +173,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
     ollama: DEFAULT_OLLAMA,
     transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...scenario.budget },
+    teams: null,
   };
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: () => bare });
   const llm = new OllamaClient({
@@ -187,7 +188,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
   const publisher: Publisher = {
     async publish(request) {
       result.captured.push(request);
-      return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft };
+      return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: request.draft ? null : "new" };
     },
   };
   const body = renderBody("acme-api", [scenario.finding], ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" });
@@ -346,13 +347,13 @@ describe("agent end to end: major upgrade", { skip: !enabled && "set PROSECO_AGE
 
   const captured = () => result.captured[0]!;
 
-  it("plans one major unit and opens a draft pull request request for it", () => {
+  it("plans one major unit and opens a pull request for it, a draft only when the body says why", () => {
     assert.equal(result.outcome.reports.length, 1);
     const [report] = result.outcome.reports;
     assert.equal(report?.unit.kind, "major");
     assert.equal(report?.outcome.kind, "pr", `outcome: ${JSON.stringify(report?.outcome)}; last tool calls: ${JSON.stringify(report?.result.trace?.slice(-5))}`);
     assert.equal(result.captured.length, 1);
-    assert.equal(captured().draft, true);
+    assert.equal(captured().draft, /### Why this is a draft/.test(captured().body));
     assert.equal(captured().branch, NODE_FETCH_MAJOR.branch);
     assert.equal(captured().title, "Upgrade node-fetch to 3.1.1 (major)");
   });
@@ -368,8 +369,8 @@ describe("agent end to end: major upgrade", { skip: !enabled && "set PROSECO_AGE
     for (const file of ["package.json", "package-lock.json"]) assert.ok(captured().commit.files.includes(file), captured().commit.files.join(", "));
   });
 
-  it("explains the draft, names the CVE and ends with Part of", () => {
-    assert.match(captured().body, /### Why this is a draft[^]*major version/);
+  it("says what to review, names the CVE and ends with Part of", () => {
+    assert.match(captured().body, /### What to review[^]*major version/);
     assert.match(captured().body, /CVE-2022-0235/);
     assert.match(captured().body, /- `v3\.0\.0`/);
     assert.match(captured().body, /Part of acme-org\/acme-tickets#12/);

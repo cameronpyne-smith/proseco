@@ -5,6 +5,7 @@ import { basename, dirname } from "node:path/posix";
 import type { FixerConfig } from "../core/config.ts";
 import type { Advisory } from "./advisories.ts";
 import type { UnitResult } from "./attempt.ts";
+import type { AnnounceReason } from "./comment.ts";
 import { checkLockfile, checkPassed, type CheckedFix, type PackageCheck } from "./check.ts";
 import { declaredToolchain } from "./dryrun.ts";
 import { ecosystemFor, type Ecosystem, type ManifestPair, type ResolverReference, type Verification } from "./ecosystems/ecosystem.ts";
@@ -21,7 +22,7 @@ import { compareTests, isRegression, type FailedOutcome } from "./baseline.ts";
 import { failureExcerpt } from "./excerpt.ts";
 import { contextLimit } from "./agent/loop.ts";
 import { crossedMajors, gatherReview, lockfileMajorMessage, minimalityMessage, refusedChecksMessage, reviewMessage, unreadableMessage } from "./review.ts";
-import { commitMessage, majorTitle, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
+import { commitMessage, majorTitle, reachedVersions, renderMajorPrBody, renderPrBody, summariseDiscarded, type PrFix, type TestOutcome } from "./pr.ts";
 import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, highRiskPaths, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
 import type { ReleaseNotes } from "./releases.ts";
@@ -50,8 +51,14 @@ export interface PublishRequest {
   summary: string;
 }
 
+export interface Published {
+  url: string;
+  draft: boolean;
+  announce: AnnounceReason | null;
+}
+
 export interface Publisher {
-  publish(request: PublishRequest): Promise<{ url: string; draft: boolean } | null>;
+  publish(request: PublishRequest): Promise<Published>;
 }
 
 export interface UnitContext {
@@ -394,17 +401,22 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const diffFiles = await diffFilesOf(ctx, checkout, headSha, commit, unit.source, major ? manifests : null);
     const diff = diffFiles.map((file) => file.text).join("\n");
     const summary = await verifySummary(ctx.llm.withThink(false).withTemperature(0), loop.finish.summary, major ? diffFiles : diff);
-    const draft = major || isRegression(tests, comparison) || loop.forced !== undefined || (verification !== null && verification.outcome !== "ok");
+    const draftReasons = [
+      ...(isRegression(tests, comparison) ? [`\`${tests.kind === "failed" ? tests.step : "the tests"}\` fails in the sandbox with failures the default branch does not have, or that could not be compared with it.`] : []),
+      ...(loop.forced !== undefined ? [`The agent was stopped before it finished (${loop.forced === "budget" ? "it ran out of budget" : "it stalled"}), so the change may be incomplete.`] : []),
+      ...(verification !== null && verification.outcome !== "ok" ? ["The committed lockfile was not verified against the resolver."] : []),
+    ];
+    const draft = draftReasons.length > 0;
     const afterText = readFileSync(join(checkout, unit.source), "utf8");
     const highRisk = major ? await highRiskOf(ctx, ecosystem, checkout, headSha, commit.files) : [];
     const forced = major ? await withRepositories(ecosystem.findingEcosystem, forcedMajors(ecosystem, lockfileText, afterText, unit.fixes[0]!.package), ctx.releases) : [];
-    const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, verification, tests, comparison, discarded: summariseDiscarded([...discarded]) };
+    const common = { org: ctx.org, ticketsRepo: ctx.ticketsRepo, ticket: ctx.ticket, lockfile: unit.source, summary, checks, verification, tests, comparison, discarded: summariseDiscarded([...discarded]), draftReasons };
     const body = major
       ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)), forcedMajors: forced, highRisk })
       : renderPrBody({ ...common, fixes: prFixes });
     const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
-    if (!published) return none("not published (local run)", extra);
-    return { outcome: { kind: "pr", url: published.url, draft: published.draft }, ...extra };
+    const prFacts = { title, major, lockfile: unit.source, packages: prFixes.map((fix) => ({ name: fix.package, from: fix.installed, to: reachedVersions(fix, checks) })) };
+    return { outcome: { kind: "pr", url: published.url, draft: published.draft, announce: published.announce, facts: prFacts }, ...extra };
   } finally {
     try {
       await sandbox?.stop();

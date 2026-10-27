@@ -12,6 +12,7 @@ export interface DaemonDeps {
   pollMs: number;
   find(): Promise<FixRequest[]>;
   attempt(request: FixRequest, started: () => void): Promise<AttemptReport>;
+  deliver?(): Promise<void>;
   sleep(ms: number): Promise<void>;
   stopping(): boolean;
   log(line: string): void;
@@ -25,6 +26,14 @@ function describe(outcome: UnitOutcomeReport): string {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function deliver(deps: DaemonDeps): Promise<void> {
+  try {
+    await deps.deliver?.();
+  } catch (error) {
+    deps.log(`announcing in Teams failed: ${message(error)}`);
+  }
 }
 
 export async function runDaemon(deps: DaemonDeps): Promise<void> {
@@ -66,6 +75,7 @@ export async function runDaemon(deps: DaemonDeps): Promise<void> {
         }
         skips.delete(number);
         deps.log(`#${number} done: ${report.units.length === 0 ? "nothing to attempt" : report.units.map((unit) => `${unit.label}: ${describe(unit.outcome)}`).join("; ")}`);
+        await deliver(deps);
       } catch (error) {
         skips.delete(number);
         if (error instanceof ShutdownRequested) {
@@ -76,6 +86,7 @@ export async function runDaemon(deps: DaemonDeps): Promise<void> {
         deps.log(`#${number} failed: ${message(error)}`);
       }
     }
+    await deliver(deps);
     if (!busy && previousWasBusy && !deps.stopping()) deps.log(`idle: nothing to attempt among ${requests.length} open ticket${requests.length === 1 ? "" : "s"}`);
     previousWasBusy = busy;
     if (!deps.stopping()) await deps.sleep(deps.pollMs);

@@ -4,7 +4,7 @@ import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 import { runAttempt, ShutdownRequested, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
-import { bodyHash, emptyState, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
+import { bodyHash, emptyState, pendingAnnouncement, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
 
 function finding(overrides: Partial<Finding>): Finding {
   return { origin: "dependabot", repo: "acme-api", cve: "CVE-2026-0001", severity: "high", ecosystem: "npm", package: "minimist", installed: "1.2.5", fixedIn: "1.2.6", source: "package-lock.json", relationship: null, scope: null, imageKey: null, ...overrides };
@@ -199,6 +199,29 @@ describe("attempt", () => {
     const result = await runAttempt(base(earlier), run.deps);
     assert.equal(result.skipped, false);
     assert.equal(run.worked.length, 2);
+  });
+
+  it("queues the ready pull requests marked for announcing when announcing is on, and nothing when it is off", async () => {
+    const facts = { title: "Bump minimist to 1.2.6", major: false, lockfile: "package-lock.json", packages: [{ name: "minimist", from: "1.2.5", to: "1.2.6" }] };
+    const work = async (unit: PrUnit): Promise<UnitResult> =>
+      unit.source === "package-lock.json"
+        ? { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/1", draft: false, announce: "new", facts } }
+        : { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/2", draft: true, announce: null, facts } };
+    const on = harness({ work });
+    on.deps.announce = true;
+    const queued = await runAttempt(base(), on.deps);
+    assert.deepEqual(pendingAnnouncement(queued.state, 12), {
+      prs: [{ url: "https://github.com/acme-org/acme-api/pull/1", reason: "new", facts }],
+      queuedAt: "2026-02-03T04:05:06.000Z",
+      attempts: 0,
+      nextAt: "2026-02-03T04:05:06.000Z",
+      lastError: null,
+    });
+    const off = await runAttempt(base(), harness({ work }).deps);
+    assert.equal(pendingAnnouncement(off.state, 12), undefined);
+    const local = harness({ work });
+    local.deps.announce = true;
+    assert.equal(pendingAnnouncement((await runAttempt(base(emptyState(), { local: true }), local.deps)).state, 12), undefined);
   });
 
   it("in local mode ignores the decision and writes no comment and no state", async () => {

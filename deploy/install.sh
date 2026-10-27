@@ -13,6 +13,7 @@ ETC_DIR="/etc/proseco"
 UNIT_NAME="proseco-fixer"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME.service"
 DROPIN_PATH="/etc/systemd/system/$UNIT_NAME.service.d/docker.conf"
+TEAMS_DROPIN_PATH="/etc/systemd/system/$UNIT_NAME.service.d/teams.conf"
 SUBID_FLOOR=100000
 SUBID_COUNT=65536
 BUS_WAIT_SECONDS=60
@@ -272,6 +273,27 @@ install_unit_file() {
     UNIT_CHANGED=1
     report drop-in done "wrote $DROPIN_PATH"
   fi
+  install_teams_dropin
+}
+
+install_teams_dropin() {
+  local dropin
+  dropin=$(printf '[Service]\nLoadCredential=teams-certificate:%s/teams-certificate.pem' "$ETC_DIR")
+  if [[ -f "$ETC_DIR/teams-certificate.pem" ]]; then
+    if [[ -f "$TEAMS_DROPIN_PATH" ]] && [[ "$(cat "$TEAMS_DROPIN_PATH")" == "$dropin" ]]; then
+      report teams already "$TEAMS_DROPIN_PATH"
+    else
+      write_file "$TEAMS_DROPIN_PATH" 0644 "$dropin"
+      UNIT_CHANGED=1
+      report teams done "wrote $TEAMS_DROPIN_PATH"
+    fi
+  elif [[ -f "$TEAMS_DROPIN_PATH" ]]; then
+    run rm -f "$TEAMS_DROPIN_PATH"
+    UNIT_CHANGED=1
+    report teams done "removed $TEAMS_DROPIN_PATH because $ETC_DIR/teams-certificate.pem is absent"
+  else
+    report teams skipped "$ETC_DIR/teams-certificate.pem is absent, so the daemon gets no Teams certificate"
+  fi
 }
 
 reload_systemd() {
@@ -315,6 +337,9 @@ run_fixer_check() {
   fi
   run install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$credentials"
   run install -m 0400 -o "$SERVICE_USER" -g "$SERVICE_USER" "$ETC_DIR/private-key.pem" "$credentials/private-key"
+  if [[ -f "$ETC_DIR/teams-certificate.pem" ]]; then
+    run install -m 0400 -o "$SERVICE_USER" -g "$SERVICE_USER" "$ETC_DIR/teams-certificate.pem" "$credentials/teams-certificate"
+  fi
   echo "running the fixer's own check as $SERVICE_USER"
   if ! (
     cd "$APP_DIR" 2>/dev/null || cd /
@@ -345,7 +370,10 @@ Left for you:
        sudo install -m 0600 -o root -g root /path/to/private-key.pem $ETC_DIR/private-key.pem
   2. Edit the config for your organisation:
        sudoedit $ETC_DIR/config.json
-  3. Start the service and watch it:
+  3. To announce pull requests in Teams, copy the bot's certificate and key as one PEM file (root only),
+     add fixer.teams to the config, and run this script again:
+       sudo install -m 0600 -o root -g root /path/to/teams-certificate.pem $ETC_DIR/teams-certificate.pem
+  4. Start the service and watch it:
        sudo systemctl enable --now $UNIT_NAME
        journalctl -fu $UNIT_NAME
 NEXT

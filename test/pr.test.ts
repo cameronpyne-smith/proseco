@@ -83,6 +83,12 @@ describe("pull request body", () => {
     assert.match(timedOut, /`npm ci` timed out/);
   });
 
+  it("says why it is a draft just before Part of, only when given reasons", () => {
+    assert.doesNotMatch(renderPrBody(input()), /Why this is a draft/);
+    const body = renderPrBody(input({ draftReasons: ["The committed lockfile was not verified against the resolver."] }));
+    assert.match(body, /### Why this is a draft\n\n- The committed lockfile was not verified against the resolver\.\n\nPart of acme-org\/acme-tickets#12\n$/);
+  });
+
   it("uses a longer fence when the output contains backticks", () => {
     const body = renderPrBody(input({ tests: { kind: "passed", commands: ["npm ci"], tail: "```\ninner\n```" } }));
     assert.match(body, /\n````\n```\ninner\n```\n````\n/);
@@ -156,14 +162,14 @@ describe("major upgrade pull request", () => {
     assert.equal(majorTitle({ ...nodeFetch, target: ["3.1.1", "4.0.0"] }), "Upgrade node-fetch to 3.1.1 or 4.0.0 (major)");
   });
 
-  it("has the package row, the release tags, the summary, the harness result, why it is a draft and Part of, in that order", () => {
+  it("has the package row, the release tags, the summary, the harness result, what to review and Part of, in that order", () => {
     const body = renderMajorPrBody(major());
     const positions = [
       /\| `node-fetch` \| 2\.6\.1 → 3\.3\.2 \(fix needs 3\.1\.1\) \| CVE-2022-0235 \(high\) \|/,
       /### Breaking changes considered\n\nThe agent was given the notes of 6 releases of `acme-org\/node-fetch` after 2\.6\.1, up to 3\.1\.1\. These start a new major version or mention breaking changes:\n\n- \[`v3\.0\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v3\.0\.0\)\n- \[`v2\.7\.0`\]\(https:\/\/github\.com\/acme-org\/node-fetch\/releases\/tag\/v2\.7\.0\)\n\nAll release notes: https:\/\/github\.com\/acme-org\/node-fetch\/releases\n/,
       /### Summary[^]*dynamically/,
       /### Checks[^]*node-fetch: installed 3\.3\.2/,
-      /### Why this is a draft[^]*crosses a major version[^]*person must confirm/,
+      /### What to review[^]*crosses a major version[^]*Check that the change is correct and complete/,
       /Part of acme-org\/acme-tickets#12/,
     ].map((pattern) => {
       const match = pattern.exec(body);
@@ -179,15 +185,18 @@ describe("major upgrade pull request", () => {
     assert.match(renderMajorPrBody(major()), /the agent changed code to adapt to it/);
     const manifestOnly = renderMajorPrBody(major({ codeChanged: false }));
     assert.doesNotMatch(manifestOnly, /changed code/);
-    assert.match(manifestOnly, /crosses a major version\. The agent changed only the manifest and lockfile, but a person must confirm nothing else needs to change before this pull request can merge, whatever the sandbox run reported\./);
+    assert.match(manifestOnly, /crosses a major version\. The agent changed only the manifest and lockfile, so check that nothing else needs to change, whatever the sandbox run reported\./);
   });
 
-  it("is a draft whether the harness passed, had no tests or failed, and never claims the upgrade is safe", () => {
+  it("always says what to review, says why it is a draft only when given reasons, and never claims the upgrade is safe", () => {
     for (const tests of [major().tests, { kind: "no-tests" as const, commands: ["npm ci"], tail: "" }, { kind: "failed" as const, step: "npm test", exitCode: 1, timedOut: false, tail: "boom" }]) {
       const body = renderMajorPrBody(major({ tests }));
-      assert.match(body, /### Why this is a draft/);
+      assert.match(body, /### What to review/);
+      assert.doesNotMatch(body, /### Why this is a draft/);
       assert.doesNotMatch(body, /\bsafe\b|\bready\b/i);
     }
+    const draft = renderMajorPrBody(major({ draftReasons: ["The agent was stopped before it finished (it stalled), so the change may be incomplete."] }));
+    assert.match(draft, /### Why this is a draft\n\n- The agent was stopped before it finished \(it stalled\), so the change may be incomplete\.\n\n### What to review/);
   });
 
   it("reports what ran: commands that passed, the one that failed with its output, and that nothing else ran without tests", () => {

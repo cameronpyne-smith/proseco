@@ -34,6 +34,7 @@ export interface PrBodyInput {
   comparison?: TestComparison | null;
   verification?: Verification | null;
   discarded: string[];
+  draftReasons?: string[];
 }
 
 export interface MajorPrBodyInput {
@@ -52,6 +53,7 @@ export interface MajorPrBodyInput {
   comparison?: TestComparison | null;
   verification?: Verification | null;
   discarded: string[];
+  draftReasons?: string[];
 }
 
 export function majorTitle(fix: PrFix): string {
@@ -89,12 +91,21 @@ function discardedSection(discarded: string[], reason: string): string[] {
   return lines;
 }
 
+function installedNow(fix: PrFix, checks: PackageCheck[]): string[] {
+  return (checks.find((check) => check.package === fix.package && check.from === fix.installed) ?? checks.find((check) => check.package === fix.package && check.from === undefined))?.installed ?? [];
+}
+
 function changeOf(fix: PrFix, checks: PackageCheck[]): string {
   const target = fix.target.join(" or ");
-  const now = (checks.find((check) => check.package === fix.package && check.from === fix.installed) ?? checks.find((check) => check.package === fix.package && check.from === undefined))?.installed ?? [];
+  const now = installedNow(fix, checks);
   if (now.length === 0) return `${fix.installed} → ${target}`;
   const reached = now.join(", ");
   return reached === target ? `${fix.installed} → ${reached}` : `${fix.installed} → ${reached} (fix needs ${target})`;
+}
+
+export function reachedVersions(fix: PrFix, checks: PackageCheck[]): string {
+  const now = installedNow(fix, checks);
+  return now.length === 0 ? fix.target.join(" or ") : now.join(", ");
 }
 
 function packageRow(fix: PrFix, checks: PackageCheck[]): string {
@@ -177,6 +188,7 @@ export function renderPrBody(input: PrBodyInput): string {
     ...testSection(input.tests, input.comparison),
   ];
   lines.push(...discardedSection(input.discarded, "They are outside the lockfile's manifest and lockfiles, so they were discarded and are not part of this pull request:"));
+  lines.push(...draftSection(input.draftReasons ?? []));
   lines.push("", `Part of ${input.org}/${input.ticketsRepo}#${input.ticket}`, "");
   return lines.join("\n");
 }
@@ -213,6 +225,11 @@ function releasesSection(fix: PrFix, notes: ReleaseNotes | null): string[] {
 function verificationLines(verification: Verification | null | undefined): string[] {
   if (!verification) return [];
   return [verification.outcome === "ok" ? `- Resolver check: ${verification.text}.` : `- Draft: the lockfile was not verified against the resolver: ${verification.text}. A person needs to check it before this can merge.`];
+}
+
+function draftSection(reasons: string[]): string[] {
+  if (reasons.length === 0) return [];
+  return ["", "### Why this is a draft", "", ...reasons.map((reason) => `- ${reason}`)];
 }
 
 function highRiskSection(paths: string[]): string[] {
@@ -287,12 +304,13 @@ export function renderMajorPrBody(input: MajorPrBodyInput): string {
     ...verificationLines(input.verification),
     ...ranSection(input.tests, input.comparison),
     ...discardedSection(input.discarded, "They are on the list of paths the fixer never commits (workflows, installed packages, other ecosystems' files, package-manager configuration such as `.npmrc`, new files that a command created rather than the agent, such as build output), so they were discarded and are not part of this pull request:"),
+    ...draftSection(input.draftReasons ?? []),
     "",
-    "### Why this is a draft",
+    "### What to review",
     "",
     input.codeChanged
-      ? `The upgrade from ${input.fix.installed} to ${target} crosses a major version, and the agent changed code to adapt to it. A person must confirm the change is correct and complete before this pull request can merge, whatever the sandbox run reported.`
-      : `The upgrade from ${input.fix.installed} to ${target} crosses a major version. The agent changed only the manifest and lockfile, but a person must confirm nothing else needs to change before this pull request can merge, whatever the sandbox run reported.`,
+      ? `The upgrade from ${input.fix.installed} to ${target} crosses a major version, and the agent changed code to adapt to it. Check that the change is correct and complete, whatever the sandbox run reported.`
+      : `The upgrade from ${input.fix.installed} to ${target} crosses a major version. The agent changed only the manifest and lockfile, so check that nothing else needs to change, whatever the sandbox run reported.`,
     "",
     `Part of ${input.org}/${input.ticketsRepo}#${input.ticket}`,
     "",

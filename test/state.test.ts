@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, isIgnored, lastAttempt, lastCommentId, loadState, recordAttempt, recordComment, recordIgnored, saveState, type Attempt } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordIgnored, saveState, withAnnouncement, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -156,5 +156,34 @@ describe("state file", () => {
     writeFileSync(file, "not json");
     assert.throws(() => loadState(file), /state\.json/);
     assert.equal(readFileSync(file, "utf8"), "not json");
+  });
+});
+
+describe("pending announcements", () => {
+  const pending: PendingAnnouncement = {
+    prs: [{ url: PR, reason: "new", facts: { title: "Bump a to 1.0.1", major: false, lockfile: "package-lock.json", packages: [{ name: "a", from: "1.0.0", to: "1.0.1" }] } }],
+    queuedAt: "2026-10-01T10:00:00.000Z",
+    attempts: 0,
+    nextAt: "2026-10-01T10:00:00.000Z",
+    lastError: null,
+  };
+
+  it("sets and clears an announcement beside the attempt", () => {
+    const withBoth = withAnnouncement(recordAttempt(emptyState(), 12, attempt()), 12, pending);
+    assert.deepEqual(pendingAnnouncement(withBoth, 12), pending);
+    const cleared = withAnnouncement(withBoth, 12, null);
+    assert.equal(pendingAnnouncement(cleared, 12), undefined);
+    assert.equal("announcement" in cleared.tickets["12"]!, false);
+    assert.deepEqual(lastAttempt(cleared, 12), attempt());
+  });
+
+  it("round-trips through the file and refuses a malformed one", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "proseco-state-")), "state.json");
+    saveState(file, withAnnouncement(emptyState(), 12, pending));
+    assert.deepEqual(pendingAnnouncement(loadState(file), 12), pending);
+    for (const bad of [{ ...pending, prs: [{ ...pending.prs[0], reason: "later" }] }, { ...pending, attempts: "1" }, { ...pending, prs: [{ ...pending.prs[0], facts: { title: "t" } }] }, { ...pending, lastError: 3 }]) {
+      writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, announcement: bad } } }));
+      assert.throws(() => loadState(file), /malformed announcement/);
+    }
   });
 });

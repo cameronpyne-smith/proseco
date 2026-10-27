@@ -11,11 +11,12 @@ import { Docker } from "./sandbox/docker.ts";
 import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
 import { commandComment } from "./requests.ts";
-import { findTickets, runTicket, summarise } from "./run.ts";
+import { deliveryDeps, findTickets, localAnnouncement, messageDeps, runTicket, summarise, teamsClient } from "./run.ts";
+import { buildMessage, deliverAnnouncements, isAnnounceable, messageGroups, pullLocation } from "./announce.ts";
 import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
-import { isIgnored, lastAttempt, lastCommentId, loadState } from "./state.ts";
+import { isIgnored, lastAttempt, lastCommentId, loadState, type AnnouncedPr } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -43,7 +44,35 @@ async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: To
   const { key, repo, body } = await fixableTicket(config, tickets, number);
   const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local });
   console.log(JSON.stringify(summarise(result, number), null, 2));
-  if (local) for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
+  if (local) {
+    for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
+    for (const message of await localAnnouncement(config, tokens, number, result.reports)) console.log(`--- would announce in Teams\n${message}`);
+    return;
+  }
+  const delivery = deliveryDeps(config, tokens, async () => tickets, (line) => console.error(line));
+  if (delivery) await deliverAnnouncements(delivery);
+}
+
+async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, number: number, dryRun: boolean): Promise<void> {
+  const teams = teamsClient(config.fixer);
+  if (!teams && !dryRun) throw new Error("the config has no fixer.teams section");
+  const last = lastAttempt(loadState(config.fixer.stateFile), number);
+  if (!last || last.prUrls.length === 0) throw new Error(`#${number} has no pull requests in the fixer's state`);
+  const deps = messageDeps(config, tokens);
+  const prs: AnnouncedPr[] = [];
+  for (const url of last.prUrls) {
+    const location = pullLocation(url);
+    if (!location || location.org !== config.org) continue;
+    const details = await deps.pull(location);
+    if (isAnnounceable(deps, url, details)) prs.push({ url, reason: "new", facts: { title: details.title, major: / \(major\)$/.test(details.title), lockfile: "", packages: [] } });
+  }
+  if (prs.length === 0) throw new Error(`#${number} has no open, ready pull request by ${config.app.bot}[bot] to announce`);
+  for (const group of messageGroups(prs)) {
+    const message = await buildMessage(deps, number, group);
+    console.log(message);
+    if (!dryRun) await teams!.send(message);
+  }
+  console.log(dryRun ? "dry run: nothing was posted" : "posted to Teams");
 }
 
 async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number): Promise<void> {
@@ -117,6 +146,15 @@ async function prepare(): Promise<Prepared> {
     },
     { name: "ollama", run: () => checkOllama(loaded().fixer.ollama.url, loaded().fixer.ollama.model) },
     { name: "docker", run: async () => `server ${await new Docker().info()} answers` },
+    {
+      name: "teams",
+      run: async () => {
+        const teams = teamsClient(loaded().fixer);
+        if (!teams) return "not configured, nothing is announced";
+        await teams.token();
+        return `signed in as ${loaded().fixer.teams!.appId} for the Bot Framework`;
+      },
+    },
   ];
   return { results: await runChecks(checks), config, tokens };
 }
@@ -159,6 +197,7 @@ async function serve(): Promise<void> {
       stop.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
     });
   let bodies = new Map<number, string>();
+  const delivery = deliveryDeps(config, tokens, ticketRepo, stamped);
   stamped(`polling every ${fixer.pollMinutes} minute${fixer.pollMinutes === 1 ? "" : "s"}`);
   await runDaemon({
     pollMs: fixer.pollMinutes * 60_000,
@@ -183,6 +222,7 @@ async function serve(): Promise<void> {
       });
       return { skipped: result.skipped, reason: result.decision.reason, units: result.reports.map((report) => ({ label: report.label, outcome: report.outcome })) };
     },
+    ...(delivery ? { deliver: () => deliverAnnouncements(delivery) } : {}),
     sleep,
     stopping: () => stop.signal.aborted,
     log: stamped,
@@ -198,6 +238,10 @@ async function main(args: string[]): Promise<void> {
   const [command, argument, ...flags] = args;
   const tokens = tokenProvider(process.env, config.app);
   if (command === "sandbox") return sandboxCommand({ ...config, fixer }, tokens, args.slice(1));
+  if (command === "announce") {
+    if (flags.length > 1 || (flags.length === 1 && flags[0] !== "--dry-run")) throw new Error(USAGE);
+    return announceCommand({ ...config, fixer }, tokens, ticketNumber(argument), flags.length === 1);
+  }
   const writes = command === "find" || (command === "run" && flags.length === 0);
   const ticketToken = await tokens({
     repositories: [config.tickets.repo],

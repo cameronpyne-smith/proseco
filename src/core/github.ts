@@ -196,6 +196,15 @@ export interface PullRequest {
   url: string;
   nodeId: string;
   draft: boolean;
+  headSha: string;
+}
+
+export interface PullDetails {
+  url: string;
+  title: string;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  author: string;
 }
 
 export interface NewPullRequest {
@@ -213,10 +222,27 @@ interface Pull {
   draft?: boolean;
   state: string;
   merged_at?: string | null;
+  title?: string;
+  user?: { login: string } | null;
+  head?: { sha: string };
 }
 
 function toPullRequest(pull: Pull): PullRequest {
-  return { number: pull.number, url: pull.html_url, nodeId: pull.node_id, draft: pull.draft === true };
+  return { number: pull.number, url: pull.html_url, nodeId: pull.node_id, draft: pull.draft === true, headSha: pull.head?.sha ?? "" };
+}
+
+function stateOf(pull: Pull): "open" | "merged" | "closed" {
+  if (pull.merged_at) return "merged";
+  return pull.state === "open" ? "open" : "closed";
+}
+
+export function latestReviewsApprove(reviews: { user: { login: string } | null; state: string }[]): boolean {
+  const latest = new Map<string, string>();
+  for (const review of reviews) {
+    if (!review.user || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) continue;
+    latest.set(review.user.login, review.state);
+  }
+  return [...latest.values()].includes("APPROVED");
 }
 
 export class RepoApi extends GitHubApi {
@@ -267,10 +293,26 @@ export class RepoApi extends GitHubApi {
     await this.graphql(mutation, { id: nodeId });
   }
 
-  async pullState(number: number): Promise<"open" | "merged" | "closed"> {
+  async #pull(number: number): Promise<Pull> {
     const response = await expectOk(await this.request(`${this.#path}/pulls/${number}`), `read pull request #${number}`);
-    const pull = (await response.json()) as Pull;
-    if (pull.merged_at) return "merged";
-    return pull.state === "open" ? "open" : "closed";
+    return (await response.json()) as Pull;
+  }
+
+  async pullState(number: number): Promise<"open" | "merged" | "closed"> {
+    return stateOf(await this.#pull(number));
+  }
+
+  async pullDetails(number: number): Promise<PullDetails> {
+    const pull = await this.#pull(number);
+    return { url: pull.html_url, title: pull.title ?? "", state: stateOf(pull), draft: pull.draft === true, author: pull.user?.login ?? "" };
+  }
+
+  async approved(number: number): Promise<boolean> {
+    return latestReviewsApprove(await this.paginate<{ user: { login: string } | null; state: string }>(`${this.#path}/pulls/${number}/reviews?per_page=100`, `list reviews on #${number}`));
+  }
+
+  async commitTree(sha: string): Promise<string> {
+    const response = await expectOk(await this.request(`${this.#path}/git/commits/${sha}`), `read commit ${sha}`);
+    return ((await response.json()) as { tree: { sha: string } }).tree.sha;
   }
 }
