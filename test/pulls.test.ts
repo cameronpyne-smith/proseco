@@ -49,7 +49,7 @@ async function scan(api: PullSource, state: State = emptyState(), requests = [re
 
 describe("finding a pull request's ticket", () => {
   it("reads the Part of line for the configured tickets repository only", () => {
-    assert.equal(ticketOfPull("x\n\nPart of acme-org/acme-tickets#12195\n", "acme-org", "acme-tickets"), 12195);
+    assert.equal(ticketOfPull("x\n\nPart of acme-org/acme-tickets#4321\n", "acme-org", "acme-tickets"), 4321);
     assert.equal(ticketOfPull("Part of acme-org/other#3", "acme-org", "acme-tickets"), null);
     assert.equal(ticketOfPull("see Part of acme-org/acme-tickets#3", "acme-org", "acme-tickets"), null);
   });
