@@ -46,7 +46,7 @@ describe("repo api", () => {
   it("reads a pull request's title, state, draft flag and author", async () => {
     const { fetch, calls } = recorder(PULL, { ...PULL, draft: true, state: "closed", merged_at: "2026-01-01T00:00:00Z" });
     const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
-    assert.deepEqual(await api.pullDetails(7), { url: PULL.html_url, title: "Bump a to 1.0.1", state: "open", draft: false, author: "acme-proseco[bot]" });
+    assert.deepEqual(await api.pullDetails(7), { url: PULL.html_url, title: "Bump a to 1.0.1", state: "open", draft: false, author: "acme-proseco[bot]", headSha: "abc123" });
     assert.equal((await api.pullDetails(7)).state, "merged");
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7");
   });
@@ -116,5 +116,30 @@ describe("ticket repo comments", () => {
     assert.equal(calls[0]!.method, "PATCH");
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-tickets/issues/comments/99");
     assert.deepEqual(calls[0]!.body, { body: "new body" });
+  });
+});
+
+describe("repo api reviews, labels and comments", () => {
+  it("lists reviews with their author, commit and body, and the inline comments with their review", async () => {
+    const { fetch, calls } = recorder([{ id: 5, user: { login: "reviewdo-bot[bot]" }, state: "COMMENTED", commit_id: "abc123", body: "<!-- reviewdo verdict=ready -->" }], [{ id: 9, pull_request_review_id: 5, path: "a.ts", line: null, original_line: 4, body: "b" }]);
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual(await api.reviews(7), [{ id: 5, author: "reviewdo-bot[bot]", state: "COMMENTED", commitId: "abc123", body: "<!-- reviewdo verdict=ready -->" }]);
+    assert.deepEqual(await api.reviewComments(7), [{ id: 9, reviewId: 5, path: "a.ts", line: 4, body: "b" }]);
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7/reviews?per_page=100");
+    assert.equal(calls[1]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7/comments?per_page=100");
+  });
+
+  it("checks, creates and adds a label, and comments on a pull request", async () => {
+    const { fetch, calls } = recorder(new Response("", { status: 404 }), { name: "reviewdo" }, {}, {}, { name: "reviewdo" });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.equal(await api.hasLabel("reviewdo"), false);
+    await api.createLabel("reviewdo", "0e8a16", "d");
+    await api.addLabels(7, ["reviewdo"]);
+    await api.commentOnPull(7, "reply");
+    assert.equal(await api.hasLabel("reviewdo"), true);
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/labels/reviewdo");
+    assert.deepEqual([calls[1]!.method, calls[1]!.url, calls[1]!.body], ["POST", "https://api.github.com/repos/acme-org/acme-api/labels", { name: "reviewdo", color: "0e8a16", description: "d" }]);
+    assert.deepEqual([calls[2]!.method, calls[2]!.url, calls[2]!.body], ["POST", "https://api.github.com/repos/acme-org/acme-api/issues/7/labels", { labels: ["reviewdo"] }]);
+    assert.deepEqual([calls[3]!.method, calls[3]!.url, calls[3]!.body], ["POST", "https://api.github.com/repos/acme-org/acme-api/issues/7/comments", { body: "reply" }]);
   });
 });

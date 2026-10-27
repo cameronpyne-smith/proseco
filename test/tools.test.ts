@@ -329,3 +329,27 @@ describe("unknown tools", () => {
     assert.match((await call("rm_rf", {})).content, /^error: unknown tool "rm_rf"; the tools are read_file, list_dir/);
   });
 });
+
+describe("finish with review responses", () => {
+  const valid = { summary: "Capped the retries.", changes: [] };
+
+  it("accepts a list of responses, with line optional, and rejects malformed ones", () => {
+    const responses = [
+      { path: "src/a.ts", line: 10, outcome: "fixed", why: "Capped at three." },
+      { path: "src/b.ts", outcome: "not-changed", why: "Used by a type." },
+    ];
+    assert.deepEqual(parseFinish({ ...valid, review: responses }), {
+      ...valid,
+      review: [
+        { path: "src/a.ts", line: 10, outcome: "fixed", why: "Capped at three." },
+        { path: "src/b.ts", line: null, outcome: "not-changed", why: "Used by a type." },
+      ],
+    });
+    assert.deepEqual(parseFinish(valid), valid);
+    assert.match(parseFinish({ ...valid, review: "none" }) as string, /review must be a list/);
+    assert.match(parseFinish({ ...valid, review: [{ path: "", outcome: "fixed", why: "" }] }) as string, /review\[0\]\.path must be a non-empty string/);
+    assert.match(parseFinish({ ...valid, review: [{ path: "a", line: "10", outcome: "fixed", why: "" }] }) as string, /review\[0\]\.line must be an integer/);
+    assert.match(parseFinish({ ...valid, review: [{ path: "a", outcome: "ignored", why: "" }] }) as string, /review\[0\]\.outcome must be one of fixed, not-changed/);
+    assert.match(parseFinish({ ...valid, review: [{ path: "a", outcome: "fixed" }] }) as string, /review\[0\]\.why must be a string/);
+  });
+});

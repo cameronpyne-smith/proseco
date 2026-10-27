@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordIgnored, saveState, withAnnouncement, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, feedbackRounds, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -185,5 +185,31 @@ describe("pending announcements", () => {
       writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, announcement: bad } } }));
       assert.throws(() => loadState(file), /malformed announcement/);
     }
+  });
+});
+
+describe("review feedback", () => {
+  const blocked = { url: PR, state: "open" as const, review: "blocked" as const };
+
+  it("attempts a ticket whose open pull request the reviewer blocked, once", () => {
+    const decision = decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked] });
+    assert.deepEqual(decision, { attempt: true, reason: `the reviewer requested changes on ${PR}` });
+    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked], feedback: { [PR]: 1 } }).attempt, false);
+    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [{ ...blocked, review: "caution" }] }).attempt, false);
+    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [{ ...blocked, state: "closed" }] }).attempt, false);
+    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked], ignored: true }).attempt, false);
+  });
+
+  it("counts feedback rounds per pull request, keeps them through the file and refuses a malformed record", () => {
+    const once = recordFeedback(emptyState(), 12, [PR]);
+    assert.deepEqual(feedbackRounds(once, 12), { [PR]: 1 });
+    assert.deepEqual(feedbackRounds(recordFeedback(once, 12, [PR, "https://github.com/acme-org/acme-api/pull/8"]), 12), { [PR]: 2, "https://github.com/acme-org/acme-api/pull/8": 1 });
+    assert.equal(recordFeedback(once, 12, []), once);
+    assert.deepEqual(feedbackRounds(once, 13), {});
+    const file = join(mkdtempSync(join(tmpdir(), "proseco-state-")), "state.json");
+    saveState(file, once);
+    assert.deepEqual(feedbackRounds(loadState(file), 12), { [PR]: 1 });
+    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, feedback: { [PR]: "1" } } } }));
+    assert.throws(() => loadState(file), /malformed feedback record/);
   });
 });

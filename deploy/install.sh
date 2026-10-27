@@ -14,6 +14,8 @@ UNIT_NAME="proseco-fixer"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME.service"
 DROPIN_PATH="/etc/systemd/system/$UNIT_NAME.service.d/docker.conf"
 TEAMS_DROPIN_PATH="/etc/systemd/system/$UNIT_NAME.service.d/teams.conf"
+TURN_LOCK_DIR="/run/lock/ollama"
+TMPFILES_PATH="/etc/tmpfiles.d/ollama-turn-lock.conf"
 SUBID_FLOOR=100000
 SUBID_COUNT=65536
 BUS_WAIT_SECONDS=60
@@ -296,6 +298,22 @@ install_teams_dropin() {
   fi
 }
 
+install_turn_lock() {
+  local entry="d $TURN_LOCK_DIR 0755 root root -"
+  if [[ -f "$TMPFILES_PATH" ]] && [[ "$(cat "$TMPFILES_PATH")" == "$entry" ]]; then
+    report turn-lock already "$TMPFILES_PATH"
+  else
+    write_file "$TMPFILES_PATH" 0644 "$entry"
+    report turn-lock done "wrote $TMPFILES_PATH"
+  fi
+  if [[ -d "$TURN_LOCK_DIR" ]]; then
+    report turn-lock already "$TURN_LOCK_DIR exists"
+  else
+    run systemd-tmpfiles --create "$TMPFILES_PATH"
+    report turn-lock done "created $TURN_LOCK_DIR; the fixer and reviewdo take turns on it"
+  fi
+}
+
 reload_systemd() {
   if ((UNIT_CHANGED)); then
     run systemctl daemon-reload
@@ -392,6 +410,7 @@ main() {
   ensure_rootless_docker
   install_config_file config.json config.example.json
   install_unit_file
+  install_turn_lock
   reload_systemd
   restart_if_moved
   run_fixer_check

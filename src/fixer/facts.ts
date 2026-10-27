@@ -3,6 +3,7 @@ import type { Advisory } from "./advisories.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 import type { PrUnit } from "./plan.ts";
 import type { ReleaseNotes } from "./releases.ts";
+import type { ReviewFindings } from "./reviewer.ts";
 
 export interface RowFacts {
   cve: string;
@@ -29,6 +30,7 @@ export interface UnitFacts {
   toolchain: string | null;
   fixes: FixFacts[];
   context?: string[];
+  review?: ReviewFindings | null;
 }
 
 export async function buildFacts(

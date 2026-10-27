@@ -2,15 +2,18 @@ import type { TokenProvider } from "../core/app.ts";
 import type { Config, FixerConfig } from "../core/config.ts";
 import { RepoApi, type TicketRepo } from "../core/github.ts";
 import { announceReason, announcements, buildMessage, messageGroups, writeSentence, type DeliveryDeps, type MessageDeps } from "./announce.ts";
+import type { TurnLock } from "./lock.ts";
+import { collectFindings, verdictAt } from "./reviewer.ts";
 import { Advisories } from "./advisories.ts";
 import { OllamaClient } from "./agent/ollama.ts";
 import { runAttempt, type AttemptResult } from "./attempt.ts";
 import { applyCommands, commandComment, fixRequests, requestFilters, type FixRequest } from "./requests.ts";
+import type { PrUnit } from "./plan.ts";
 import { appendToComment, upsertComment, type UnitReport } from "./comment.ts";
 import { GitStore } from "./git.ts";
 import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus } from "./state.ts";
+import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type ReviewVerdict } from "./state.ts";
 import { readTeamsCredential, TeamsClient } from "./teams.ts";
 import { workUnit, type Published, type PublishRequest, type Publisher } from "./unit.ts";
 
@@ -26,6 +29,7 @@ export interface RunTicket {
   body: string;
   local: boolean;
   request?: { force: boolean };
+  lock?: TurnLock;
   started?(decision: Decision): void;
   shouldStop?(): boolean;
 }
@@ -42,14 +46,25 @@ function ollamaClient(fixer: FixerConfig): OllamaClient {
   });
 }
 
-export function messageDeps(config: Config & { fixer: FixerConfig }, tokens: TokenProvider): MessageDeps {
+export function messageDeps(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, lock?: TurnLock): MessageDeps {
   const llm = ollamaClient(config.fixer).withThink(false).withTemperature(0);
+  const reviewer = config.fixer.reviewer;
+  const api = async (repo: string) => new RepoApi(await tokens({ repositories: [repo], permissions: { pull_requests: "read" } }), config.org, repo);
   return {
     org: config.org,
     bot: config.app.bot,
+    reviewer: reviewer ? { name: reviewer.name } : null,
     ticketUrl: (ticket) => `https://github.com/${config.org}/${config.tickets.repo}/issues/${ticket}`,
-    pull: async (location) => new RepoApi(await tokens({ repositories: [location.repo], permissions: { pull_requests: "read" } }), config.org, location.repo).pullDetails(location.number),
-    sentence: (repo, prs) => writeSentence(llm, repo, prs),
+    pull: async (location) => (await api(location.repo)).pullDetails(location.number),
+    verdict: async (location, headSha) => (reviewer ? verdictAt(await (await api(location.repo)).reviews(location.number), reviewer.bot, headSha) : null),
+    sentence: async (repo, prs) => {
+      const release = lock ? await lock.acquire() : null;
+      try {
+        return await writeSentence(llm, repo, prs);
+      } finally {
+        await release?.();
+      }
+    },
   };
 }
 
@@ -57,11 +72,11 @@ export function teamsClient(config: FixerConfig): TeamsClient | null {
   return config.teams ? new TeamsClient(config.teams, () => readTeamsCredential(process.env)) : null;
 }
 
-export function deliveryDeps(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: () => Promise<TicketRepo>, log: (line: string) => void): DeliveryDeps | null {
+export function deliveryDeps(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: () => Promise<TicketRepo>, log: (line: string) => void, lock?: TurnLock): DeliveryDeps | null {
   const teams = teamsClient(config.fixer);
   if (!teams) return null;
   return {
-    ...messageDeps(config, tokens),
+    ...messageDeps(config, tokens, lock),
     loadState: () => loadState(config.fixer.stateFile),
     saveState: (state) => saveState(config.fixer.stateFile, state),
     send: (html) => teams.send(html),
@@ -95,14 +110,28 @@ export interface LivePublisherOptions {
   org: string;
   tokens: TokenProvider;
   store: Pick<GitStore, "push" | "inCheckout">;
+  reviewLabel?: string | null;
   api?(token: string, repo: string): RepoApi;
 }
 
+const LABEL_COLOR = "0e8a16";
+
 export class LivePublisher implements Publisher {
   readonly #options: LivePublisherOptions;
+  readonly #labelled = new Set<string>();
 
   constructor(options: LivePublisherOptions) {
     this.#options = options;
+  }
+
+  async #requestReview(api: RepoApi, repo: string, number: number): Promise<void> {
+    const label = this.#options.reviewLabel;
+    if (!label) return;
+    if (!this.#labelled.has(repo)) {
+      if (!(await api.hasLabel(label))) await api.createLabel(label, LABEL_COLOR, "A review of this pull request is requested");
+      this.#labelled.add(repo);
+    }
+    await api.addLabels(number, [label]);
   }
 
   async publish(request: PublishRequest): Promise<Published> {
@@ -113,6 +142,8 @@ export class LivePublisher implements Publisher {
     if (!existing) {
       await store.push(request.checkout, request.repo, request.branch, token);
       const created = await api.createPull({ title: request.title, body: request.body, head: request.branch, base: await api.defaultBranch(), draft: request.draft });
+      if (request.reviewReply) await api.commentOnPull(created.number, request.reviewReply);
+      if (!request.draft) await this.#requestReview(api, request.repo, created.number);
       return { url: created.url, draft: request.draft, announce: announceReason(null, request.draft) };
     }
     const tree = (await store.inCheckout(request.checkout, ["rev-parse", `${request.commit.sha}^{tree}`], "git rev-parse")).trim();
@@ -121,6 +152,8 @@ export class LivePublisher implements Publisher {
     if (changed) await store.push(request.checkout, request.repo, request.branch, token);
     await api.updatePull(existing.number, { title: request.title, body: request.body });
     if (existing.draft !== request.draft) await api.setDraft(existing.nodeId, request.draft);
+    if (request.reviewReply) await api.commentOnPull(existing.number, request.reviewReply);
+    if (!request.draft && (changed || existing.draft)) await this.#requestReview(api, request.repo, existing.number);
     return { url: existing.url, draft: request.draft, announce: announceReason({ draft: existing.draft, approved, changed }, request.draft) };
   }
 }
@@ -128,6 +161,7 @@ export class LivePublisher implements Publisher {
 class LocalPublisher implements Publisher {
   async publish(request: PublishRequest): Promise<Published> {
     console.log(`--- would push ${request.branch} and open ${request.draft ? "a draft" : "a ready"} pull request: ${request.title}`);
+    if (request.reviewReply) console.log(`--- would reply to the review\n${request.reviewReply}`);
     console.log(`--- committed files: ${request.commit.files.join(", ")}`);
     console.log(`--- diff\n${request.diff}`);
     console.log(`--- lockfile check\n${request.checks.map((check) => `${check.ok ? "ok" : "FAILED"} ${check.package}: ${check.reason}`).join("\n")}`);
@@ -159,8 +193,10 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   }
   const llm = ollamaClient(fixer);
   const docker = new Docker();
-  const publisher = local ? new LocalPublisher() : new LivePublisher({ org: config.org, tokens, store });
+  const reviewer = fixer.reviewer;
+  const publisher = local ? new LocalPublisher() : new LivePublisher({ org: config.org, tokens, store, reviewLabel: reviewer?.label ?? null });
   const checkouts: string[] = [];
+  const verdictOf = async (number: number, headSha: string): Promise<ReviewVerdict | null> => (reviewer ? verdictAt(await readApi.reviews(number), reviewer.bot, headSha) : null);
   const result = await runAttempt(
     { ticket: { number, key, repo, body: input.body }, force: input.request ? input.request.force : command?.command === "fix", state, local },
     {
@@ -169,8 +205,20 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
         await store.fetch(repo);
         return store.headSha(repo);
       },
-      prStatus: async (url): Promise<PullRequestStatus> => ({ url, state: await readApi.pullState(pullNumber(url)) }),
-      workUnit: async (unit, headSha) => {
+      prStatus: async (url): Promise<PullRequestStatus> => {
+        const details = await readApi.pullDetails(pullNumber(url));
+        return { url, state: details.state, review: details.state === "open" ? await verdictOf(pullNumber(url), details.headSha) : null };
+      },
+      ...(reviewer
+        ? {
+            findings: async (unit: PrUnit) => {
+              const pull = await readApi.findOpenPull(unit.branch);
+              return pull ? collectFindings(readApi, reviewer.bot, pull) : null;
+            },
+          }
+        : {}),
+      ...(input.lock ? { lock: () => input.lock!.acquire() } : {}),
+      workUnit: async (unit, headSha, review) => {
         const outcome = await workUnit(
           {
             org: config.org,
@@ -186,10 +234,12 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
             releases: (ecosystem, pkg, installed, target) => releases.lookup(ecosystem, pkg, installed, target),
             publisher,
             keepCheckout: local,
+            ...(reviewer ? { reviewerName: reviewer.name } : {}),
             log: (message) => console.error(`[${unit.branch}] ${message}`),
           },
           unit,
           headSha,
+          review,
         );
         if (outcome.checkout) checkouts.push(outcome.checkout);
         return outcome;

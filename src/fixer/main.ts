@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { tokenProvider, type TokenProvider } from "../core/app.ts";
 import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
 import { TicketRepo } from "../core/github.ts";
@@ -12,11 +13,13 @@ import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
 import { commandComment } from "./requests.ts";
 import { deliveryDeps, findTickets, localAnnouncement, messageDeps, runTicket, summarise, teamsClient } from "./run.ts";
-import { buildMessage, deliverAnnouncements, isAnnounceable, messageGroups, pullLocation } from "./announce.ts";
+import { deliverAnnouncements, deliverTicket, isAnnounceable, pullLocation, type DeliveryDeps } from "./announce.ts";
+import { appendToComment } from "./comment.ts";
+import { TurnLock } from "./lock.ts";
 import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
-import { isIgnored, lastAttempt, lastCommentId, loadState, type AnnouncedPr } from "./state.ts";
+import { isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, saveState, withAnnouncement, type AnnouncedPr, type PendingAnnouncement } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -40,25 +43,27 @@ async function fixableTicket(config: Config, tickets: TicketRepo, number: number
   return { key: markerKey(ticket.body)!, repo, body: ticket.body };
 }
 
+function turnLock(config: FixerConfig, log: (line: string) => void): TurnLock {
+  return new TurnLock(config.turnLock, { log });
+}
+
 async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, local: boolean): Promise<void> {
   const { key, repo, body } = await fixableTicket(config, tickets, number);
-  const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local });
+  const lock = turnLock(config.fixer, (line) => console.error(line));
+  const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local, lock });
   console.log(JSON.stringify(summarise(result, number), null, 2));
   if (local) {
     for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
     for (const message of await localAnnouncement(config, tokens, number, result.reports)) console.log(`--- would announce in Teams\n${message}`);
     return;
   }
-  const delivery = deliveryDeps(config, tokens, async () => tickets, (line) => console.error(line));
+  const delivery = deliveryDeps(config, tokens, async () => tickets, (line) => console.error(line), lock);
   if (delivery) await deliverAnnouncements(delivery);
 }
 
-async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, number: number, dryRun: boolean): Promise<void> {
-  const teams = teamsClient(config.fixer);
-  if (!teams && !dryRun) throw new Error("the config has no fixer.teams section");
+async function lastAttemptAnnouncement(config: Config & { fixer: FixerConfig }, deps: Pick<DeliveryDeps, "pull" | "bot">, number: number, now: Date): Promise<PendingAnnouncement> {
   const last = lastAttempt(loadState(config.fixer.stateFile), number);
   if (!last || last.prUrls.length === 0) throw new Error(`#${number} has no pull requests in the fixer's state`);
-  const deps = messageDeps(config, tokens);
   const prs: AnnouncedPr[] = [];
   for (const url of last.prUrls) {
     const location = pullLocation(url);
@@ -67,12 +72,40 @@ async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: 
     if (isAnnounceable(deps, url, details)) prs.push({ url, reason: "new", facts: { title: details.title, major: / \(major\)$/.test(details.title), lockfile: "", packages: [] } });
   }
   if (prs.length === 0) throw new Error(`#${number} has no open, ready pull request by ${config.app.bot}[bot] to announce`);
-  for (const group of messageGroups(prs)) {
-    const message = await buildMessage(deps, number, group);
-    console.log(message);
-    if (!dryRun) await teams!.send(message);
-  }
-  console.log(dryRun ? "dry run: nothing was posted" : "posted to Teams");
+  return { prs, queuedAt: now.toISOString(), attempts: 0, nextAt: now.toISOString(), lastError: null };
+}
+
+async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, options: { dryRun: boolean; now: boolean }): Promise<void> {
+  const teams = teamsClient(config.fixer);
+  if (!teams && !options.dryRun) throw new Error("the config has no fixer.teams section");
+  const fixer = config.fixer;
+  const deps = messageDeps(config, tokens, turnLock(fixer, (line) => console.error(line)));
+  const queued = pendingAnnouncement(loadState(fixer.stateFile), number);
+  if (queued) console.log(`announcing the queued announcement for #${number}: ${queued.prs.map((pr) => pr.url).join(", ")}`);
+  else console.log(`no announcement is queued for #${number}; announcing the pull requests of its last attempt`);
+  const pending = queued ?? (await lastAttemptAnnouncement(config, deps, number, new Date()));
+  let sent = 0;
+  const delivery: DeliveryDeps = {
+    ...deps,
+    loadState: () => loadState(fixer.stateFile),
+    saveState: (state) => saveState(fixer.stateFile, state),
+    send: async (html) => {
+      console.log(html);
+      if (!options.dryRun) await teams!.send(html);
+      sent++;
+    },
+    gaveUp: async (ticket, reason) => {
+      if (!options.dryRun) await appendToComment(tickets, ticket, config.app.bot, `- Not announced in Teams: \`${reason.replace(/`/g, "'").replace(/\s+/g, " ")}\``);
+    },
+    now: () => new Date(),
+    log: (line) => console.error(line),
+  };
+  const next = await deliverTicket(delivery, number, pending, { force: options.now, waiting: (pr) => console.log(`waiting for ${deps.reviewer?.name ?? "the reviewer"} on ${pr.url}`) });
+  if (!options.dryRun) saveState(fixer.stateFile, withAnnouncement(loadState(fixer.stateFile), number, next));
+  if (next?.lastError) throw new Error(`not posted: ${next.lastError}`);
+  if (options.dryRun) console.log(`dry run: nothing was posted and the state file is unchanged${sent === 0 ? "; nothing would be posted" : ""}`);
+  else if (sent > 0) console.log(`posted to Teams${next ? ", the rest stays queued" : ""}`);
+  else console.log(next ? "nothing posted yet: still waiting for a review" : "nothing to post: no open, ready pull request was left in the announcement, which is now cleared");
 }
 
 async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number): Promise<void> {
@@ -147,6 +180,21 @@ async function prepare(): Promise<Prepared> {
     { name: "ollama", run: () => checkOllama(loaded().fixer.ollama.url, loaded().fixer.ollama.model) },
     { name: "docker", run: async () => `server ${await new Docker().info()} answers` },
     {
+      name: "turnLock",
+      run: async () => {
+        const path = loaded().fixer.turnLock;
+        if (!path) return "not configured, Ollama is used without taking turns";
+        let directory = false;
+        try {
+          directory = statSync(path).isDirectory();
+        } catch {
+          throw new Error(`${path} does not exist; create it (the install script adds a tmpfiles.d entry) or remove fixer.turnLock`);
+        }
+        if (!directory) throw new Error(`${path} is not a directory`);
+        return `${path} is a directory, each attempt and review takes a turn on it`;
+      },
+    },
+    {
       name: "teams",
       run: async () => {
         const teams = teamsClient(loaded().fixer);
@@ -197,7 +245,8 @@ async function serve(): Promise<void> {
       stop.signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
     });
   let bodies = new Map<number, string>();
-  const delivery = deliveryDeps(config, tokens, ticketRepo, stamped);
+  const lock = turnLock(fixer, stamped);
+  const delivery = deliveryDeps(config, tokens, ticketRepo, stamped, lock);
   stamped(`polling every ${fixer.pollMinutes} minute${fixer.pollMinutes === 1 ? "" : "s"}`);
   await runDaemon({
     pollMs: fixer.pollMinutes * 60_000,
@@ -217,6 +266,7 @@ async function serve(): Promise<void> {
         body: bodies.get(request.number) ?? "",
         local: false,
         request: { force: request.force },
+        lock,
         started: () => started(),
         shouldStop: () => stop.signal.aborted,
       });
@@ -238,16 +288,15 @@ async function main(args: string[]): Promise<void> {
   const [command, argument, ...flags] = args;
   const tokens = tokenProvider(process.env, config.app);
   if (command === "sandbox") return sandboxCommand({ ...config, fixer }, tokens, args.slice(1));
-  if (command === "announce") {
-    if (flags.length > 1 || (flags.length === 1 && flags[0] !== "--dry-run")) throw new Error(USAGE);
-    return announceCommand({ ...config, fixer }, tokens, ticketNumber(argument), flags.length === 1);
-  }
-  const writes = command === "find" || (command === "run" && flags.length === 0);
+  const announceFlags = { dryRun: flags.includes("--dry-run"), now: flags.includes("--now") };
+  if (command === "announce" && (flags.length > 2 || flags.some((flag) => flag !== "--dry-run" && flag !== "--now") || new Set(flags).size !== flags.length)) throw new Error(USAGE);
+  const writes = command === "find" || (command === "run" && flags.length === 0) || (command === "announce" && !announceFlags.dryRun);
   const ticketToken = await tokens({
     repositories: [config.tickets.repo],
     permissions: { issues: writes ? "write" : "read" },
   });
   const tickets = new TicketRepo(ticketToken, config.org, config.tickets.repo);
+  if (command === "announce") return announceCommand({ ...config, fixer }, tokens, tickets, ticketNumber(argument), announceFlags);
   if (command === "run") {
     const number = ticketNumber(argument);
     if (flags.length === 0) return attemptTicket({ ...config, fixer }, tokens, tickets, number, false);

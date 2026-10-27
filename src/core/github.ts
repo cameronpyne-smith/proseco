@@ -205,6 +205,23 @@ export interface PullDetails {
   state: "open" | "merged" | "closed";
   draft: boolean;
   author: string;
+  headSha: string;
+}
+
+export interface PullReview {
+  id: number;
+  author: string;
+  state: string;
+  commitId: string;
+  body: string;
+}
+
+export interface PullReviewComment {
+  id: number;
+  reviewId: number | null;
+  path: string;
+  line: number | null;
+  body: string;
 }
 
 export interface NewPullRequest {
@@ -304,11 +321,46 @@ export class RepoApi extends GitHubApi {
 
   async pullDetails(number: number): Promise<PullDetails> {
     const pull = await this.#pull(number);
-    return { url: pull.html_url, title: pull.title ?? "", state: stateOf(pull), draft: pull.draft === true, author: pull.user?.login ?? "" };
+    return { url: pull.html_url, title: pull.title ?? "", state: stateOf(pull), draft: pull.draft === true, author: pull.user?.login ?? "", headSha: pull.head?.sha ?? "" };
+  }
+
+  async reviews(number: number): Promise<PullReview[]> {
+    const items = await this.paginate<{ id: number; user: { login: string } | null; state: string; commit_id: string | null; body: string | null }>(
+      `${this.#path}/pulls/${number}/reviews?per_page=100`,
+      `list reviews on #${number}`,
+    );
+    return items.map((item) => ({ id: item.id, author: item.user?.login ?? "", state: item.state, commitId: item.commit_id ?? "", body: item.body ?? "" }));
   }
 
   async approved(number: number): Promise<boolean> {
-    return latestReviewsApprove(await this.paginate<{ user: { login: string } | null; state: string }>(`${this.#path}/pulls/${number}/reviews?per_page=100`, `list reviews on #${number}`));
+    return latestReviewsApprove((await this.reviews(number)).map((review) => ({ user: { login: review.author }, state: review.state })));
+  }
+
+  async reviewComments(number: number): Promise<PullReviewComment[]> {
+    const items = await this.paginate<{ id: number; pull_request_review_id: number | null; path: string; line: number | null; original_line: number | null; body: string | null }>(
+      `${this.#path}/pulls/${number}/comments?per_page=100`,
+      `list review comments on #${number}`,
+    );
+    return items.map((item) => ({ id: item.id, reviewId: item.pull_request_review_id ?? null, path: item.path, line: item.line ?? item.original_line ?? null, body: item.body ?? "" }));
+  }
+
+  async commentOnPull(number: number, body: string): Promise<void> {
+    await expectOk(await this.request(`${this.#path}/issues/${number}/comments`, { method: "POST", body: JSON.stringify({ body }) }), `comment on pull request #${number}`);
+  }
+
+  async hasLabel(name: string): Promise<boolean> {
+    const response = await this.request(`${this.#path}/labels/${encodeURIComponent(name)}`);
+    if (response.status === 404) return false;
+    await expectOk(response, `read label ${name}`);
+    return true;
+  }
+
+  async createLabel(name: string, color: string, description: string): Promise<void> {
+    await expectOk(await this.request(`${this.#path}/labels`, { method: "POST", body: JSON.stringify({ name, color, description }) }), `create label ${name}`);
+  }
+
+  async addLabels(number: number, labels: string[]): Promise<void> {
+    await expectOk(await this.request(`${this.#path}/issues/${number}/labels`, { method: "POST", body: JSON.stringify({ labels }) }), `label pull request #${number}`);
   }
 
   async commitTree(sha: string): Promise<string> {

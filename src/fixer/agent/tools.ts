@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import type { ToolDefinition } from "./ollama.ts";
 import type { ExecOptions } from "../sandbox/docker.ts";
 import type { RunResult } from "../sandbox/sandbox.ts";
+import { REVIEW_OUTCOMES, type FinishReview } from "../reviewer.ts";
 
 export const CHANGE_HOWS = ["direct-bump", "parent-bump", "override"] as const;
 
@@ -15,6 +16,7 @@ export interface FinishChange {
 export interface FinishArgs {
   summary: string;
   changes: FinishChange[];
+  review?: FinishReview[];
 }
 
 export interface ToolEnv {
@@ -107,7 +109,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   ),
   fn(
     "finish",
-    "Call once when the work is done, or when you cannot make further progress. summary is for a reviewer, as long as the task asks. changes lists every package version change you made.",
+    "Call once when the work is done, or when you cannot make further progress. summary is for a reviewer, as long as the task asks. changes lists every package version change you made. review, only when the task gives reviewer findings, lists each finding with its path and line, whether you fixed it or left it, and why.",
     {
       summary: { type: "string" },
       changes: {
@@ -121,6 +123,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             how: { type: "string", enum: [...CHANGE_HOWS] },
           },
           required: ["package", "from", "to", "how"],
+        },
+      },
+      review: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            line: { type: "integer" },
+            outcome: { type: "string", enum: [...REVIEW_OUTCOMES] },
+            why: { type: "string" },
+          },
+          required: ["path", "outcome", "why"],
         },
       },
     },
@@ -292,7 +307,20 @@ export function parseFinish(args: Record<string, unknown>): FinishArgs | string 
     if (!CHANGE_HOWS.includes(change["how"] as FinishChange["how"])) return fail(`changes[${index}].how must be one of ${CHANGE_HOWS.join(", ")}`);
     changes.push({ package: change["package"] as string, from: change["from"] as string, to: change["to"] as string, how: change["how"] as FinishChange["how"] });
   }
-  return { summary: summary.trim(), changes };
+  const review = args["review"];
+  if (review === undefined || review === null) return { summary: summary.trim(), changes };
+  if (!Array.isArray(review)) return fail("review must be a list of { path, line, outcome, why }");
+  const responses: FinishReview[] = [];
+  for (const [index, item] of review.entries()) {
+    const entry = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+    if (typeof entry["path"] !== "string" || entry["path"].trim() === "") return fail(`review[${index}].path must be a non-empty string`);
+    const line = entry["line"] === undefined || entry["line"] === null ? null : entry["line"];
+    if (line !== null && !Number.isInteger(line)) return fail(`review[${index}].line must be an integer`);
+    if (!REVIEW_OUTCOMES.includes(entry["outcome"] as FinishReview["outcome"])) return fail(`review[${index}].outcome must be one of ${REVIEW_OUTCOMES.join(", ")}`);
+    if (typeof entry["why"] !== "string") return fail(`review[${index}].why must be a string`);
+    responses.push({ path: entry["path"], line: line as number | null, outcome: entry["outcome"] as FinishReview["outcome"], why: entry["why"] });
+  }
+  return { summary: summary.trim(), changes, review: responses };
 }
 
 export async function executeTool(env: ToolEnv, name: string, args: Record<string, unknown>): Promise<ToolResult> {

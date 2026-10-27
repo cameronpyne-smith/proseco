@@ -151,9 +151,9 @@ describe("attempt", () => {
     let stop = false;
     run.deps.shouldStop = () => stop;
     const work = run.deps.workUnit;
-    run.deps.workUnit = async (unit, headSha) => {
+    run.deps.workUnit = async (unit, headSha, review) => {
       stop = true;
-      return work(unit, headSha);
+      return work(unit, headSha, review);
     };
     let saved = 0;
     run.deps.saveState = () => void saved++;
@@ -298,5 +298,72 @@ describe("attempt", () => {
     const result = await runAttempt(base(cleared, { force: true }), run.deps);
     assert.equal(result.skipped, false);
     assert.equal(run.worked.length, 2);
+  });
+});
+
+describe("review feedback and the turn lock", () => {
+  const blocked = (url: string) => ({ url, headSha: "h1", summary: "s", findings: [{ path: "a.ts", line: 1, severity: "critical", title: "t", body: "b" }] });
+
+  it("attempts a blocked pull request once more, gives its unit the findings and counts the round", async () => {
+    const attempted = (await runAttempt(base(), harness().deps)).state;
+    const given: (string | null)[] = [];
+    const run = harness();
+    run.deps.prStatus = async (url) => ({ url, state: "open", review: url.endsWith("/1") ? "blocked" : "ready" });
+    run.deps.findings = async (unit) => (unit.source === "package-lock.json" ? blocked("https://github.com/acme-org/acme-api/pull/1") : null);
+    const work = run.deps.workUnit;
+    run.deps.workUnit = async (unit, headSha, review) => {
+      given.push(review?.url ?? null);
+      return work(unit, headSha, review);
+    };
+    const result = await runAttempt(base(attempted), run.deps);
+    assert.equal(result.skipped, false);
+    assert.match(result.decision.reason, /requested changes on https:\/\/github\.com\/acme-org\/acme-api\/pull\/1/);
+    assert.deepEqual(given, ["https://github.com/acme-org/acme-api/pull/1", null]);
+    assert.deepEqual(result.state.tickets["12"]!.feedback, { "https://github.com/acme-org/acme-api/pull/1": 1 });
+    const again = await runAttempt(base(result.state), run.deps);
+    assert.equal(again.skipped, true);
+    assert.match(again.decision.reason, /open pull request/);
+  });
+
+  it("counts the round even when the revised unit produces no pull request", async () => {
+    const attempted = (await runAttempt(base(), harness().deps)).state;
+    const run = harness({ work: async () => ({ outcome: { kind: "none", reason: "the agent gave up" } }) });
+    run.deps.prStatus = async (url) => ({ url, state: "open", review: "blocked" });
+    run.deps.findings = async (unit) => blocked(`https://github.com/acme-org/acme-api/pull/${unit.source === "package-lock.json" ? 1 : 2}`);
+    const result = await runAttempt(base(attempted), run.deps);
+    assert.deepEqual(result.state.tickets["12"]!.feedback, { "https://github.com/acme-org/acme-api/pull/1": 1, "https://github.com/acme-org/acme-api/pull/2": 1 });
+  });
+
+  it("holds the lock from before the fetch until after the last unit, and releases it when a unit throws or a stop is requested", async () => {
+    const order: string[] = [];
+    const lock = async () => {
+      order.push("lock");
+      return async () => void order.push("release");
+    };
+    const run = harness();
+    run.deps.lock = lock;
+    const fetch = run.deps.fetch;
+    run.deps.fetch = async () => {
+      order.push("fetch");
+      return fetch();
+    };
+    const work = run.deps.workUnit;
+    run.deps.workUnit = async (unit, headSha, review) => {
+      order.push(`work ${unit.source}`);
+      return work(unit, headSha, review);
+    };
+    run.deps.postComment = async () => void order.push("comment");
+    await runAttempt(base(), run.deps);
+    assert.deepEqual(order, ["lock", "fetch", "work package-lock.json", "work web/package-lock.json", "release", "comment"]);
+    const skipped = harness();
+    skipped.deps.lock = lock;
+    order.length = 0;
+    await runAttempt(base((await runAttempt(base(), harness().deps)).state), skipped.deps);
+    assert.deepEqual(order, []);
+    const stopping = harness();
+    stopping.deps.lock = lock;
+    stopping.deps.shouldStop = () => true;
+    await assert.rejects(runAttempt(base(), stopping.deps), ShutdownRequested);
+    assert.deepEqual(order, ["lock", "release"]);
   });
 });

@@ -67,6 +67,14 @@ export interface TeamsConfig {
 
 export const DEFAULT_TEAMS_SERVICE_URL = "https://smba.trafficmanager.net/teams";
 
+export interface ReviewerConfig {
+  bot: string;
+  name: string;
+  label: string;
+}
+
+export const DEFAULT_REVIEW_LABEL = "reviewdo";
+
 export interface AppConfig {
   clientId: string;
   installationId: number;
@@ -88,6 +96,8 @@ export interface FixerConfig {
   budget: BudgetConfig;
   transcripts: TranscriptLimits;
   teams: TeamsConfig | null;
+  reviewer: ReviewerConfig | null;
+  turnLock: string | null;
 }
 
 export interface Config {
@@ -172,6 +182,16 @@ function teamsSection(value: unknown): TeamsConfig {
   };
 }
 
+function reviewerSection(value: unknown): ReviewerConfig {
+  const raw = object(value, "fixer.reviewer", ["bot", "name", "label"]);
+  const bot = name(raw["bot"], "fixer.reviewer.bot", /^[A-Za-z0-9-]+$/);
+  return {
+    bot,
+    name: option(raw, "name", "fixer.reviewer", bot, text),
+    label: option(raw, "label", "fixer.reviewer", DEFAULT_REVIEW_LABEL, LABEL),
+  };
+}
+
 function option<T>(raw: Json, key: string, path: string, fallback: T, read: (value: unknown, path: string) => T): T {
   return raw[key] === undefined ? fallback : read(raw[key], `${path}.${key}`);
 }
@@ -249,7 +269,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   }
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts", "teams"]);
+    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts", "teams", "reviewer", "turnLock"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "temperature", "timeoutMinutes"]);
@@ -286,6 +306,8 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
         maxMegabytes: option(transcripts, "maxMegabytes", "fixer.transcripts", DEFAULT_TRANSCRIPTS.maxMegabytes, positiveNumber),
       },
       teams: raw["teams"] === undefined ? null : teamsSection(raw["teams"]),
+      reviewer: raw["reviewer"] === undefined ? null : reviewerSection(raw["reviewer"]),
+      turnLock: option(raw, "turnLock", "fixer", null, text),
     };
   }
   return {

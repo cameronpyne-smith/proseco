@@ -32,3 +32,13 @@ describe("deploy examples", () => {
     assert.equal(fixer.stateFile, "/var/lib/proseco/state.json");
   });
 });
+
+describe("deploy turn lock", () => {
+  it("the example config takes turns on the directory the install script creates", () => {
+    assert.equal(loadConfig(join(installed(), "config.json")).fixer!.turnLock, "/run/lock/ollama");
+    const script = readFileSync(join(DEPLOY, "install.sh"), "utf8");
+    assert.match(script, /TURN_LOCK_DIR="\/run\/lock\/ollama"/);
+    assert.match(script, /TMPFILES_PATH="\/etc\/tmpfiles\.d\//);
+    assert.match(script, /entry="d \$TURN_LOCK_DIR 0755 root root -"/);
+  });
+});

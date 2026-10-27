@@ -56,6 +56,8 @@ describe("config", () => {
       budget: { minutes: 30, majorMinutes: 60, toolCalls: 200, commandMinutes: 10 },
       transcripts: { maxAgeDays: 14, maxMegabytes: 500 },
       teams: null,
+      reviewer: null,
+      turnLock: null,
     });
   });
 
@@ -251,5 +253,31 @@ describe("config", () => {
     assert.equal(loadConfig(join(dir, "proseco.json")).sources!.defender!.imageRepos.own.get("ghcr.io/acme-org/acme-api"), "acme-api");
     writeFileSync(join(dir, "image-repos.json"), JSON.stringify({ ...mapping(), own: { "Acme/Api": "acme-api" } }));
     assert.throws(() => loadConfig(join(dir, "proseco.json")), /proseco\.json: image-repos\.json\.own: "Acme\/Api"/);
+  });
+});
+
+describe("the reviewer and the turn lock", () => {
+  const set = (patch: Record<string, unknown>) => {
+    const raw = full();
+    Object.assign(raw["fixer"] as Record<string, unknown>, patch);
+    return raw;
+  };
+
+  it("reads the reviewer bot with its display name and label defaulting, and the lock path", () => {
+    assert.deepEqual(parseConfig(set({ reviewer: { bot: "reviewdo-bot" } }), mapping).fixer!.reviewer, { bot: "reviewdo-bot", name: "reviewdo-bot", label: "reviewdo" });
+    assert.deepEqual(parseConfig(set({ reviewer: { bot: "reviewdo-bot", name: "reviewdo", label: "needs-review" } }), mapping).fixer!.reviewer, { bot: "reviewdo-bot", name: "reviewdo", label: "needs-review" });
+    assert.equal(parseConfig(set({ turnLock: "/run/lock/ollama" }), mapping).fixer!.turnLock, "/run/lock/ollama");
+    assert.equal(parseConfig(full(), mapping).fixer!.reviewer, null);
+    assert.equal(parseConfig(full(), mapping).fixer!.turnLock, null);
+  });
+
+  it("validates them", () => {
+    const bad = (patch: Record<string, unknown>, message: RegExp) => assert.throws(() => parseConfig(set(patch), mapping), message);
+    bad({ reviewer: { bot: "reviewdo-bot[bot]" } }, /fixer.reviewer.bot must be a name/);
+    bad({ reviewer: {} }, /fixer.reviewer.bot must be a name/);
+    bad({ reviewer: { bot: "r", name: "" } }, /fixer.reviewer.name must be a non-empty string/);
+    bad({ reviewer: { bot: "r", label: 1 } }, /fixer.reviewer.label must be a non-empty string/);
+    bad({ reviewer: { bot: "r", login: "x" } }, /fixer.reviewer has unknown keys: login/);
+    bad({ turnLock: "" }, /fixer.turnLock must be a non-empty string/);
   });
 });

@@ -30,6 +30,7 @@ export interface TicketState {
   lastCommentId: number | null;
   ignored?: boolean;
   announcement?: PendingAnnouncement;
+  feedback?: Record<string, number>;
 }
 
 export interface State {
@@ -37,9 +38,12 @@ export interface State {
   tickets: Record<string, TicketState>;
 }
 
+export type ReviewVerdict = "ready" | "caution" | "blocked";
+
 export interface PullRequestStatus {
   url: string;
   state: "open" | "merged" | "closed";
+  review?: ReviewVerdict | null;
 }
 
 export interface AttemptQuery {
@@ -47,7 +51,10 @@ export interface AttemptQuery {
   force: boolean;
   prs: PullRequestStatus[];
   ignored?: boolean;
+  feedback?: Record<string, number>;
 }
+
+export const MAX_FEEDBACK_ROUNDS = 1;
 
 export interface Decision {
   attempt: boolean;
@@ -91,6 +98,21 @@ export function pendingAnnouncement(state: State, ticket: number): PendingAnnoun
   return entry(state, ticket).announcement;
 }
 
+export function feedbackRounds(state: State, ticket: number): Record<string, number> {
+  return entry(state, ticket).feedback ?? {};
+}
+
+export function recordFeedback(state: State, ticket: number, urls: string[]): State {
+  if (urls.length === 0) return state;
+  const feedback = { ...feedbackRounds(state, ticket) };
+  for (const url of urls) feedback[url] = (feedback[url] ?? 0) + 1;
+  return withEntry(state, ticket, { ...entry(state, ticket), feedback });
+}
+
+export function wantsFeedback(prs: PullRequestStatus[], feedback: Record<string, number> = {}): PullRequestStatus | undefined {
+  return prs.find((pr) => pr.state === "open" && pr.review === "blocked" && (feedback[pr.url] ?? 0) < MAX_FEEDBACK_ROUNDS);
+}
+
 export function isIgnored(state: State, ticket: number): boolean {
   return entry(state, ticket).ignored === true;
 }
@@ -106,6 +128,8 @@ export function lastAttempt(state: State, ticket: number): Attempt | undefined {
 export function decide(last: Attempt | undefined, query: AttemptQuery): Decision {
   if (query.ignored) return { attempt: false, reason: "ignored by a comment command" };
   if (query.force) return { attempt: true, reason: "a comment command forces a new attempt" };
+  const blocked = wantsFeedback(query.prs, query.feedback);
+  if (blocked) return { attempt: true, reason: `the reviewer requested changes on ${blocked.url}` };
   if (query.prs.some((pr) => pr.state === "open")) return { attempt: false, reason: "an open pull request exists for the ticket" };
   if (!last) return { attempt: true, reason: "never attempted" };
   if (last.bodyHash === query.bodyHash) return { attempt: false, reason: `already attempted this ticket body (${last.outcome})` };
@@ -141,6 +165,10 @@ function validAnnouncement(value: unknown): boolean {
   );
 }
 
+function validFeedback(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value as Record<string, unknown>).every((rounds) => Number.isInteger(rounds) && (rounds as number) >= 0);
+}
+
 function validate(value: unknown, file: string): State {
   const fail = (message: string): never => {
     throw new Error(`${file} is not a fixer state file: ${message}`);
@@ -154,6 +182,7 @@ function validate(value: unknown, file: string): State {
     if (item.lastCommentId !== null && !Number.isInteger(item.lastCommentId)) fail(`ticket ${number} has a malformed lastCommentId`);
     if (item.ignored !== undefined && typeof item.ignored !== "boolean") fail(`ticket ${number} has a malformed ignored flag`);
     if (item.announcement !== undefined && !validAnnouncement(item.announcement)) fail(`ticket ${number} has a malformed announcement`);
+    if (item.feedback !== undefined && !validFeedback(item.feedback)) fail(`ticket ${number} has a malformed feedback record`);
     const attempt = item.attempt;
     if (attempt === null) continue;
     const valid =

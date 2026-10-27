@@ -1,9 +1,11 @@
 import type { PullDetails } from "../core/github.ts";
 import type { ChatMessage, ChatResult, ToolDefinition } from "./agent/ollama.ts";
 import type { AnnounceReason, UnitReport } from "./comment.ts";
-import { pendingAnnouncement, withAnnouncement, type AnnouncedPr, type PendingAnnouncement, type State } from "./state.ts";
+import { reviewLine, type ReviewOutcome } from "./reviewer.ts";
+import { feedbackRounds, MAX_FEEDBACK_ROUNDS, pendingAnnouncement, withAnnouncement, type AnnouncedPr, type PendingAnnouncement, type ReviewVerdict, type State } from "./state.ts";
 
 export const GIVE_UP_MS = 24 * 60 * 60_000;
+export const REVIEW_WAIT_MS = 24 * 60 * 60_000;
 const FIRST_RETRY_MS = 5 * 60_000;
 const MAX_RETRY_MS = 2 * 60 * 60_000;
 export const MAX_SENTENCE = 120;
@@ -31,8 +33,27 @@ export function retryDelay(attempts: number): number {
   return Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, attempts - 1));
 }
 
-export function messageGroups(prs: AnnouncedPr[]): { reReview: boolean; prs: AnnouncedPr[] }[] {
-  return [false, true].map((reReview) => ({ reReview, prs: prs.filter((pr) => (pr.reason === "re-review") === reReview) })).filter((group) => group.prs.length > 0);
+export interface DecidedPr extends AnnouncedPr {
+  outcome?: ReviewOutcome | null;
+}
+
+export interface MessageGroup<T extends AnnouncedPr = AnnouncedPr> {
+  reReview: boolean;
+  outcome: ReviewOutcome | null;
+  prs: T[];
+}
+
+export function messageGroups<T extends DecidedPr>(prs: T[]): MessageGroup<T>[] {
+  const groups = new Map<string, MessageGroup<T>>();
+  for (const pr of prs) {
+    const reReview = pr.reason === "re-review";
+    const outcome = pr.outcome ?? null;
+    const key = `${reReview}|${outcome}`;
+    const group = groups.get(key) ?? { reReview, outcome, prs: [] };
+    group.prs.push(pr);
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((a, b) => Number(a.reReview) - Number(b.reReview));
 }
 
 function lower(text: string): string {
@@ -130,9 +151,13 @@ function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; reReview: boolean; urls: string[] }): string {
+export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; reReview: boolean; urls: string[]; review?: string | null }): string {
   const link = (url: string, text: string) => `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
-  return [`${link(input.ticketUrl, String(input.ticket))} - ${escapeHtml(`${input.reReview ? "Re-review: " : ""}${input.sentence}`)}`, ...input.urls.map((url) => link(url, url))].join("<br>");
+  return [
+    `${link(input.ticketUrl, String(input.ticket))} - ${escapeHtml(`${input.reReview ? "Re-review: " : ""}${input.sentence}`)}`,
+    ...input.urls.map((url) => link(url, url)),
+    ...(input.review ? [escapeHtml(input.review)] : []),
+  ].join("<br>");
 }
 
 export interface PullLocation {
@@ -149,8 +174,10 @@ export function pullLocation(url: string): PullLocation | null {
 export interface MessageDeps {
   org: string;
   bot: string;
+  reviewer: { name: string } | null;
   ticketUrl(ticket: number): string;
   pull(location: PullLocation): Promise<PullDetails>;
+  verdict(location: PullLocation, headSha: string): Promise<ReviewVerdict | null>;
   sentence(repo: string, prs: AnnouncedPr[]): Promise<string>;
 }
 
@@ -158,19 +185,39 @@ export function isAnnounceable(deps: Pick<MessageDeps, "bot">, url: string, deta
   return details.state === "open" && !details.draft && details.author === `${deps.bot}[bot]` && details.url === url;
 }
 
-export async function stillAnnounceable(deps: Pick<MessageDeps, "org" | "bot" | "pull">, prs: AnnouncedPr[]): Promise<AnnouncedPr[]> {
-  const kept: AnnouncedPr[] = [];
+export async function stillAnnounceable(deps: Pick<MessageDeps, "org" | "bot" | "pull">, prs: AnnouncedPr[]): Promise<{ pr: AnnouncedPr; details: PullDetails }[]> {
+  const kept: { pr: AnnouncedPr; details: PullDetails }[] = [];
   for (const pr of prs) {
     const location = pullLocation(pr.url);
-    if (location && location.org === deps.org && isAnnounceable(deps, pr.url, await deps.pull(location))) kept.push(pr);
+    if (!location || location.org !== deps.org) continue;
+    const details = await deps.pull(location);
+    if (isAnnounceable(deps, pr.url, details)) kept.push({ pr, details });
   }
   return kept;
 }
 
-export async function buildMessage(deps: MessageDeps, ticket: number, group: { reReview: boolean; prs: AnnouncedPr[] }): Promise<string> {
+export interface ReviewQuery {
+  queuedAt: string;
+  rounds: Record<string, number>;
+  now: Date;
+  force: boolean;
+}
+
+export async function reviewOutcome(deps: Pick<MessageDeps, "reviewer" | "verdict">, pr: AnnouncedPr, details: PullDetails, query: ReviewQuery): Promise<ReviewOutcome | null | "waiting"> {
+  if (!deps.reviewer) return null;
+  const location = pullLocation(pr.url)!;
+  const verdict = await deps.verdict(location, details.headSha);
+  if (verdict === "ready" || verdict === "caution") return verdict;
+  if (verdict === "blocked") return query.force || (query.rounds[pr.url] ?? 0) >= MAX_FEEDBACK_ROUNDS ? "changes-requested" : "waiting";
+  if (query.force || query.now.getTime() - Date.parse(query.queuedAt) >= REVIEW_WAIT_MS) return "no-review";
+  return "waiting";
+}
+
+export async function buildMessage(deps: MessageDeps, ticket: number, group: MessageGroup<DecidedPr>): Promise<string> {
   const repos = [...new Set(group.prs.map((pr) => pullLocation(pr.url)?.repo ?? ""))].join(", ");
   const sentence = await deps.sentence(repos, group.prs);
-  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, reReview: group.reReview, urls: group.prs.map((pr) => pr.url) });
+  const review = deps.reviewer && group.outcome ? reviewLine(deps.reviewer.name, group.outcome) : null;
+  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, reReview: group.reReview, urls: group.prs.map((pr) => pr.url), review });
 }
 
 export interface DeliveryDeps extends MessageDeps {
@@ -182,21 +229,36 @@ export interface DeliveryDeps extends MessageDeps {
   log(line: string): void;
 }
 
+export interface DeliveryOptions {
+  force?: boolean;
+  waiting?(pr: AnnouncedPr): void;
+}
+
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR);
 }
 
-async function deliverOne(deps: DeliveryDeps, ticket: number, pending: PendingAnnouncement): Promise<PendingAnnouncement | null> {
+export async function deliverTicket(deps: DeliveryDeps, ticket: number, pending: PendingAnnouncement, options: DeliveryOptions = {}): Promise<PendingAnnouncement | null> {
   let remaining = pending.prs;
   try {
-    remaining = await stillAnnounceable(deps, remaining);
-    for (const group of messageGroups(remaining)) {
+    const query: ReviewQuery = { queuedAt: pending.queuedAt, rounds: feedbackRounds(deps.loadState(), ticket), now: deps.now(), force: options.force === true };
+    const decided: DecidedPr[] = [];
+    const waiting: AnnouncedPr[] = [];
+    for (const { pr, details } of await stillAnnounceable(deps, remaining)) {
+      const outcome = await reviewOutcome(deps, pr, details, query);
+      if (outcome === "waiting") waiting.push(pr);
+      else decided.push({ ...pr, outcome });
+    }
+    const kept = new Set([...waiting, ...decided].map((pr) => pr.url));
+    remaining = remaining.filter((pr) => kept.has(pr.url));
+    for (const group of messageGroups(decided)) {
       await deps.send(await buildMessage(deps, ticket, group));
       const sent = new Set(group.prs.map((pr) => pr.url));
       remaining = remaining.filter((pr) => !sent.has(pr.url));
-      deps.log(`#${ticket} announced in Teams: ${group.prs.map((pr) => pr.url).join(", ")}`);
+      deps.log(`#${ticket} announced in Teams${group.outcome ? ` (${group.outcome})` : ""}: ${group.prs.map((pr) => pr.url).join(", ")}`);
     }
-    return null;
+    for (const pr of waiting) options.waiting?.(pr);
+    return waiting.length > 0 ? { ...pending, prs: waiting } : null;
   } catch (error) {
     const now = deps.now();
     const reason = errorText(error);
@@ -221,7 +283,7 @@ export async function deliverAnnouncements(deps: DeliveryDeps): Promise<void> {
     entry.announcement && Date.parse(entry.announcement.nextAt) <= deps.now().getTime() ? [{ ticket: Number(number), pending: entry.announcement }] : [],
   );
   for (const { ticket, pending } of due) {
-    const next = await deliverOne(deps, ticket, pending);
+    const next = await deliverTicket(deps, ticket, pending);
     deps.saveState(withAnnouncement(deps.loadState(), ticket, next));
   }
 }

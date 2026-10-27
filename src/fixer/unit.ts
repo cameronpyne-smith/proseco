@@ -26,6 +26,7 @@ import { commitMessage, majorTitle, reachedVersions, renderMajorPrBody, renderPr
 import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, highRiskPaths, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
 import type { ReleaseNotes } from "./releases.ts";
+import { replyComment, type ReviewFindings } from "./reviewer.ts";
 import { Docker, type ExecOptions, type ExecResult } from "./sandbox/docker.ts";
 import { ensureImage, imageFor } from "./sandbox/images.ts";
 import { Sandbox, WORK, type StartOptions } from "./sandbox/sandbox.ts";
@@ -49,6 +50,7 @@ export interface PublishRequest {
   checks: PackageCheck[];
   tests: TestOutcome;
   summary: string;
+  reviewReply?: string;
 }
 
 export interface Published {
@@ -75,6 +77,7 @@ export interface UnitContext {
   releases?(ecosystem: string, pkg: string, installed: string, target: string): Promise<ReleaseNotes>;
   publisher: Publisher;
   keepCheckout: boolean;
+  reviewerName?: string;
   ecosystemFor?(lockfile: string): Ecosystem | null;
   startSandbox?(options: StartOptions): Promise<SandboxHandle>;
   log(message: string): void;
@@ -268,7 +271,7 @@ function transcriptPath(ctx: UnitContext, unit: PrUnit): string {
   return join(directory, `${ctx.ticket}-${unit.branch.replace(/[^A-Za-z0-9._-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
 }
 
-export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string): Promise<UnitResult> {
+export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string, review: ReviewFindings | null = null): Promise<UnitResult> {
   const ecosystem = (ctx.ecosystemFor ?? ecosystemFor)(unit.source);
   if (!ecosystem) return none("unsupported ecosystem: unknown lockfile type");
   const readFile = (path: string) => ctx.store.tryShow(ctx.repo, headSha, path);
@@ -315,6 +318,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     await box.load(checkout);
     if (baseline.kind === "failed") context.push(...baselineContext(baseline));
     facts.context = context;
+    facts.review = review;
     const transcript = transcriptPath(ctx, unit);
     ctx.log(`transcript: ${transcript}`);
     const written = new Set<string>();
@@ -414,7 +418,8 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string):
     const body = major
       ? renderMajorPrBody({ ...common, fix: prFixes[0]!, releases: facts.fixes[0]?.releases ?? null, codeChanged: commit.files.some((file) => !manifests.has(file)), forcedMajors: forced, highRisk })
       : renderPrBody({ ...common, fixes: prFixes });
-    const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary });
+    const reviewReply = review ? replyComment(review, ctx.reviewerName ?? "the reviewer", loop.finish.review) : undefined;
+    const published = await ctx.publisher.publish({ repo: ctx.repo, branch: unit.branch, title, body, draft, checkout, commit, diff, checks, tests, summary, ...(reviewReply ? { reviewReply } : {}) });
     const prFacts = { title, major, lockfile: unit.source, packages: prFixes.map((fix) => ({ name: fix.package, from: fix.installed, to: reachedVersions(fix, checks) })) };
     return { outcome: { kind: "pr", url: published.url, draft: published.draft, announce: published.announce, facts: prFacts }, ...extra };
   } finally {
