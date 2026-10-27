@@ -227,6 +227,15 @@ describe("delivering announcements", () => {
     assert.match(run.log[0]!, /#12 announced in Teams/);
   });
 
+  it("delivers only the named ticket's announcement when asked to, leaving other due ones queued", async () => {
+    const run = delivery(queueAnnouncement(queueAnnouncement(emptyState(), 12, [LOCKFILE], NOW), 13, [MAJOR], NOW));
+    await deliverAnnouncements(run.deps, 13);
+    assert.equal(run.sent.length, 1);
+    assert.match(run.sent[0]!, /issues\/13">13<\/a>/);
+    assert.ok(pendingAnnouncement(run.state, 12));
+    assert.equal(pendingAnnouncement(run.state, 13), undefined);
+  });
+
   it("leaves an announcement that is not due yet", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE], new Date(NOW.getTime() + 60_000)));
     await deliverAnnouncements(run.deps);

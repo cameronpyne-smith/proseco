@@ -58,7 +58,7 @@ async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: To
     return;
   }
   const delivery = deliveryDeps(config, tokens, async () => tickets, (line) => console.error(line), lock);
-  if (delivery) await deliverAnnouncements(delivery);
+  if (delivery) await deliverAnnouncements(delivery, number);
 }
 
 async function lastAttemptAnnouncement(config: Config & { fixer: FixerConfig }, deps: Pick<DeliveryDeps, "pull" | "bot">, number: number, now: Date): Promise<PendingAnnouncement> {
