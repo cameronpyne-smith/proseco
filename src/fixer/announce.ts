@@ -1,7 +1,7 @@
 import type { PullDetails } from "../core/github.ts";
 import type { ChatMessage, ChatResult, ToolDefinition } from "./agent/ollama.ts";
 import type { AnnounceReason, UnitReport } from "./comment.ts";
-import { reviewLine, type ReviewOutcome } from "./reviewer.ts";
+import type { ReviewOutcome } from "./reviewer.ts";
 import { feedbackRounds, MAX_FEEDBACK_ROUNDS, pendingAnnouncement, withAnnouncement, type AnnouncedPr, type PendingAnnouncement, type ReviewVerdict, type State } from "./state.ts";
 
 export const GIVE_UP_MS = 24 * 60 * 60_000;
@@ -39,19 +39,16 @@ export interface DecidedPr extends AnnouncedPr {
 
 export interface MessageGroup<T extends AnnouncedPr = AnnouncedPr> {
   reReview: boolean;
-  outcome: ReviewOutcome | null;
   prs: T[];
 }
 
-export function messageGroups<T extends DecidedPr>(prs: T[]): MessageGroup<T>[] {
-  const groups = new Map<string, MessageGroup<T>>();
+export function messageGroups<T extends AnnouncedPr>(prs: T[]): MessageGroup<T>[] {
+  const groups = new Map<boolean, MessageGroup<T>>();
   for (const pr of prs) {
     const reReview = pr.reason === "re-review";
-    const outcome = pr.outcome ?? null;
-    const key = `${reReview}|${outcome}`;
-    const group = groups.get(key) ?? { reReview, outcome, prs: [] };
+    const group = groups.get(reReview) ?? { reReview, prs: [] };
     group.prs.push(pr);
-    groups.set(key, group);
+    groups.set(reReview, group);
   }
   return [...groups.values()].sort((a, b) => Number(a.reReview) - Number(b.reReview));
 }
@@ -151,12 +148,11 @@ function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; reReview: boolean; urls: string[]; review?: string | null }): string {
+export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; reReview: boolean; urls: string[] }): string {
   const link = (url: string, text: string) => `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
   return [
     `${link(input.ticketUrl, String(input.ticket))} - ${escapeHtml(`${input.reReview ? "Re-review: " : ""}${input.sentence}`)}`,
     ...input.urls.map((url) => link(url, url)),
-    ...(input.review ? [escapeHtml(input.review)] : []),
   ].join("<br>");
 }
 
@@ -213,11 +209,10 @@ export async function reviewOutcome(deps: Pick<MessageDeps, "reviewer" | "verdic
   return "waiting";
 }
 
-export async function buildMessage(deps: MessageDeps, ticket: number, group: MessageGroup<DecidedPr>): Promise<string> {
+export async function buildMessage(deps: MessageDeps, ticket: number, group: MessageGroup): Promise<string> {
   const repos = [...new Set(group.prs.map((pr) => pullLocation(pr.url)?.repo ?? ""))].join(", ");
   const sentence = await deps.sentence(repos, group.prs);
-  const review = deps.reviewer && group.outcome ? reviewLine(deps.reviewer.name, group.outcome) : null;
-  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, reReview: group.reReview, urls: group.prs.map((pr) => pr.url), review });
+  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, reReview: group.reReview, urls: group.prs.map((pr) => pr.url) });
 }
 
 export interface DeliveryDeps extends MessageDeps {
@@ -255,7 +250,7 @@ export async function deliverTicket(deps: DeliveryDeps, ticket: number, pending:
       await deps.send(await buildMessage(deps, ticket, group));
       const sent = new Set(group.prs.map((pr) => pr.url));
       remaining = remaining.filter((pr) => !sent.has(pr.url));
-      deps.log(`#${ticket} announced in Teams${group.outcome ? ` (${group.outcome})` : ""}: ${group.prs.map((pr) => pr.url).join(", ")}`);
+      deps.log(`#${ticket} announced in Teams: ${group.prs.map((pr) => `${pr.url}${pr.outcome ? ` (${pr.outcome})` : ""}`).join(", ")}`);
     }
     for (const pr of waiting) options.waiting?.(pr);
     return waiting.length > 0 ? { ...pending, prs: waiting } : null;

@@ -93,10 +93,10 @@ describe("the announcement queue", () => {
 describe("the message", () => {
   it("splits re-reviews from new pull requests", () => {
     assert.deepEqual(messageGroups([LOCKFILE, { ...MAJOR, reason: "re-review" }, SECOND_MAJOR]), [
-      { reReview: false, outcome: null, prs: [LOCKFILE, SECOND_MAJOR] },
-      { reReview: true, outcome: null, prs: [{ ...MAJOR, reason: "re-review" }] },
+      { reReview: false, prs: [LOCKFILE, SECOND_MAJOR] },
+      { reReview: true, prs: [{ ...MAJOR, reason: "re-review" }] },
     ]);
-    assert.deepEqual(messageGroups([MAJOR]), [{ reReview: false, outcome: null, prs: [MAJOR] }]);
+    assert.deepEqual(messageGroups([MAJOR]), [{ reReview: false, prs: [MAJOR] }]);
   });
 
   it("falls back to the title for one pull request and to a fixed sentence for several", () => {
@@ -286,14 +286,14 @@ describe("delivering announcements", () => {
 describe("waiting for the reviewer", () => {
   const key = (url: string, head = "head1") => `${url}@${head}`;
 
-  it("announces a ready verdict without a line and merge-with-care with one, grouped by verdict", async () => {
+  it("announces ready and merge-with-care verdicts in one message that does not mention the review, logging the verdicts", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW), { verdicts: { [key(URL1)]: "ready", [key(URL2)]: "caution" } });
     await deliverAnnouncements(run.deps);
-    assert.equal(run.sent.length, 2);
-    assert.match(run.sent[0]!, new RegExp(`${URL1}</a>$`));
-    assert.match(run.sent[1]!, new RegExp(`${URL2}</a><br>reviewdo: merge with care$`));
+    assert.equal(run.sent.length, 1);
+    assert.match(run.sent[0]!, new RegExp(`${URL1}</a><br><a href="${URL2}">${URL2}</a>$`));
+    assert.doesNotMatch(run.sent[0]!, /reviewdo/);
     assert.equal(pendingAnnouncement(run.state, 12), undefined);
-    assert.match(run.log[0]!, /announced in Teams \(ready\)/);
+    assert.match(run.log[0]!, new RegExp(`announced in Teams: ${URL1} \\(ready\\), ${URL2} \\(caution\\)`));
   });
 
   it("waits while there is no verdict for the head, without counting a failed try", async () => {
@@ -311,25 +311,27 @@ describe("waiting for the reviewer", () => {
     assert.ok(pendingAnnouncement(first.state, 12));
     const second = delivery(recordFeedback(queued, 12, [URL2]), { verdicts: { [key(URL2)]: "blocked" } });
     await deliverAnnouncements(second.deps);
-    assert.match(second.sent[0]!, /reviewdo: changes requested$/);
+    assert.match(second.sent[0]!, new RegExp(`${URL2}</a>$`));
+    assert.match(second.log.at(-1)!, /announced in Teams: .*\(changes-requested\)/);
     assert.equal(pendingAnnouncement(second.state, 12), undefined);
   });
 
   it("announces with no review after a day of waiting", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE], NOW), { verdicts: {}, now: new Date(NOW.getTime() + REVIEW_WAIT_MS) });
     await deliverAnnouncements(run.deps);
-    assert.match(run.sent[0]!, /reviewdo: no review$/);
+    assert.match(run.sent[0]!, new RegExp(`${URL1}</a>$`));
+    assert.match(run.log.at(-1)!, /\(no-review\)/);
     assert.equal(pendingAnnouncement(run.state, 12), undefined);
   });
 
-  it("adds no line and never waits when no reviewer is configured", async () => {
+  it("never waits when no reviewer is configured", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE], NOW));
     await deliverAnnouncements(run.deps);
     assert.doesNotMatch(run.sent[0]!, /reviewdo/);
     assert.equal(pendingAnnouncement(run.state, 12), undefined);
   });
 
-  it("is forced past the wait by the announce command, naming the outcome honestly", async () => {
+  it("is forced past the wait by the announce command, logging the outcome honestly", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW), { verdicts: { [key(URL2)]: "blocked" } });
     const waiting: string[] = [];
     const pending = pendingAnnouncement(run.state, 12)!;
@@ -337,8 +339,9 @@ describe("waiting for the reviewer", () => {
     assert.deepEqual(waiting, [URL1, URL2]);
     assert.deepEqual(run.sent, []);
     assert.equal(await deliverTicket(run.deps, 12, pending, { force: true }), null);
-    assert.match(run.sent[0]!, /reviewdo: no review$/);
-    assert.match(run.sent[1]!, /reviewdo: changes requested$/);
+    assert.equal(run.sent.length, 1);
+    assert.doesNotMatch(run.sent[0]!, /reviewdo/);
+    assert.match(run.log.at(-1)!, new RegExp(`${URL1} \\(no-review\\), ${URL2} \\(changes-requested\\)`));
   });
 });
 

@@ -33,18 +33,6 @@ export interface ReviewFindings {
 
 export type ReviewOutcome = "ready" | "caution" | "no-review" | "changes-requested";
 
-const OUTCOME_TEXT: Record<ReviewOutcome, string | null> = {
-  ready: null,
-  caution: "merge with care",
-  "no-review": "no review",
-  "changes-requested": "changes requested",
-};
-
-export function reviewLine(name: string, outcome: ReviewOutcome): string | null {
-  const text = OUTCOME_TEXT[outcome];
-  return text ? `${name}: ${text}` : null;
-}
-
 export function parseVerdict(body: string): ReviewVerdict | null {
   const match = VERDICT_MARKER.exec(body);
   return match ? (match[1] as ReviewVerdict) : null;

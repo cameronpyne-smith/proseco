@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PullReview, PullReviewComment } from "../src/core/github.ts";
-import { collectFindings, findingsPrompt, latestReview, parseFinding, parseVerdict, replyComment, reviewLine, reviewSummary, verdictAt, type ReviewFindings } from "../src/fixer/reviewer.ts";
+import { collectFindings, findingsPrompt, latestReview, parseFinding, parseVerdict, replyComment, reviewSummary, verdictAt, type ReviewFindings } from "../src/fixer/reviewer.ts";
 
 const BODY = "<!-- reviewdo verdict=blocked -->\n## 🔴 Changes requested ⏳\n\nThe retry loop can spin forever.\n<details open>\n<summary><strong>2 findings</strong></summary>\n\n- **Critical** · x\n</details>\n\n<details>\n<summary><strong>What changed</strong></summary>\n| a | b |\n</details>\n\n<sub>Reviewed abc1234. Re-run with `@reviewdo-bot review` or the `reviewdo` label.</sub>\n";
 
@@ -99,12 +99,5 @@ describe("findings in the prompt and the reply", () => {
     );
     assert.match(replyComment(FINDINGS, "reviewdo"), /- `src\/a\.ts:10` \(critical\) Infinite retry: no response from the agent/);
     assert.match(replyComment({ ...FINDINGS, findings: [] }, "reviewdo"), /No inline findings/);
-  });
-
-  it("words the Teams line for each outcome, saying nothing when the pull request is ready", () => {
-    assert.equal(reviewLine("reviewdo", "ready"), null);
-    assert.equal(reviewLine("reviewdo", "caution"), "reviewdo: merge with care");
-    assert.equal(reviewLine("reviewdo", "no-review"), "reviewdo: no review");
-    assert.equal(reviewLine("reviewdo", "changes-requested"), "reviewdo: changes requested");
   });
 });
