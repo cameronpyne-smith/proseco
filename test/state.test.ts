@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, feedbackRounds, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, feedbackRounds, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, withoutPulls, withPull, pullState, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -211,5 +211,22 @@ describe("review feedback", () => {
     assert.deepEqual(feedbackRounds(loadState(file), 12), { [PR]: 1 });
     writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, feedback: { [PR]: "1" } } } }));
     assert.throws(() => loadState(file), /malformed feedback record/);
+  });
+});
+
+describe("pull request records", () => {
+  it("keeps a cursor and a refreshed head per pull request, removes them by url, and round-trips through the file", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "proseco-state-")), "state.json");
+    const state = withPull(withPull(recordAttempt(emptyState(), 12, attempt()), PR, { lastCommentId: 5 }), `${PR}0`, { refreshedHead: "abc" });
+    assert.deepEqual(pullState(state, PR), { lastCommentId: 5 });
+    assert.deepEqual(pullState(state, "https://github.com/acme-org/acme-api/pull/1"), {});
+    assert.deepEqual(lastAttempt(state, 12), attempt());
+    saveState(file, state);
+    assert.deepEqual(loadState(file), state);
+    assert.deepEqual(Object.keys(withoutPulls(state, (url) => url === PR).pulls!), [`${PR}0`]);
+    for (const bad of [[], { [PR]: { lastCommentId: "5" } }, { [PR]: { refreshedHead: 3 } }, { [PR]: null }]) {
+      writeFileSync(file, JSON.stringify({ version: 1, tickets: {}, pulls: bad }));
+      assert.throws(() => loadState(file), /malformed pull requests record/);
+    }
   });
 });

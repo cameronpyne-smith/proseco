@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { TicketRepo } from "../src/core/github.ts";
 import type { ExistingTicket, TicketComment } from "../src/core/types.ts";
-import { applyCommands, commandComment, fixRequests, requestFilters, type CommentApi } from "../src/fixer/requests.ts";
+import { applyCommands, commandComment, fixRequests, memoised, requestFilters, trustedCommand, type CommentApi } from "../src/fixer/requests.ts";
 import { emptyState, isIgnored, recordComment } from "../src/fixer/state.ts";
 
 const CREATORS = ["proseco-bot[bot]"];
@@ -36,16 +36,16 @@ describe("finding fix requests", () => {
 
   it("requests every open proseco ticket in ticket order, unforced until a comment says otherwise", () => {
     assert.deepEqual(fixRequests([ticket(9), ticket(3)], CREATORS), [
-      { number: 3, key: "Acme.Repo3", repo: "Acme.Repo3", force: false, ignored: false, commentId: null },
-      { number: 9, key: "Acme.Repo9", repo: "Acme.Repo9", force: false, ignored: false, commentId: null },
+      { number: 3, key: "Acme.Repo3", repo: "Acme.Repo3", force: false, ignored: false, commentId: null, pulls: [] },
+      { number: 9, key: "Acme.Repo9", repo: "Acme.Repo9", force: false, ignored: false, commentId: null, pulls: [] },
     ]);
   });
 
   it("returns the image key and the fixed-in repo of an image ticket, and the repo of an old-marker ticket", () => {
     const image = ticket(4, { body: "<!-- proseco:docker.elastic.co/kibana/kibana repo:acme-infra -->\n\nbody" });
     assert.deepEqual(fixRequests([image, ticket(5)], CREATORS), [
-      { number: 4, key: "docker.elastic.co/kibana/kibana", repo: "acme-infra", force: false, ignored: false, commentId: null },
-      { number: 5, key: "Acme.Repo5", repo: "Acme.Repo5", force: false, ignored: false, commentId: null },
+      { number: 4, key: "docker.elastic.co/kibana/kibana", repo: "acme-infra", force: false, ignored: false, commentId: null, pulls: [] },
+      { number: 5, key: "Acme.Repo5", repo: "Acme.Repo5", force: false, ignored: false, commentId: null, pulls: [] },
     ]);
   });
 
@@ -82,6 +82,28 @@ describe("comment command", () => {
     assert.equal(commandComment([comment(5, "@acme-proseco ignored")], "acme-proseco", null), null);
   });
 
+  it("keeps the text after the command as a note", () => {
+    assert.equal(commandComment([comment(5, "@acme-proseco fix keep vite on 6\nthanks")], "acme-proseco", null)?.note, "keep vite on 6\nthanks");
+    assert.equal(commandComment([comment(5, "please @acme-proseco fix")], "acme-proseco", null)?.note, "");
+    assert.equal(commandComment([comment(5, `@acme-proseco fix ${"x".repeat(3000)}`)], "acme-proseco", null)?.note.length, 2000);
+  });
+
+  it("acts only on a command from someone who can write, the newest of those", async () => {
+    const comments = [comment(5, "@acme-proseco fix"), comment(7, "@acme-proseco ignore", { author: "mallory" })];
+    const asked: string[] = [];
+    const canWrite = async (login: string) => (asked.push(login), login !== "mallory");
+    assert.equal((await trustedCommand(comments, "acme-proseco", null, canWrite))?.id, 5);
+    assert.deepEqual(asked, ["mallory", "alice"]);
+    assert.equal(await trustedCommand([comment(7, "@acme-proseco fix", { author: "mallory" })], "acme-proseco", null, canWrite), null);
+  });
+
+  it("asks once per login when memoised", async () => {
+    let calls = 0;
+    const canWrite = memoised(async () => (calls++, true));
+    await Promise.all([canWrite("Ana"), canWrite("ana"), canWrite("bo")]);
+    assert.equal(calls, 2);
+  });
+
   it("lets the newest command win", () => {
     const comments = [comment(5, "@acme-proseco ignore"), comment(8, "@acme-proseco fix"), comment(6, "@acme-proseco ignore")];
     assert.equal(commandComment(comments, "acme-proseco", null)?.command, "fix");
@@ -113,6 +135,7 @@ describe("acknowledging commands", () => {
       react: async (id, content) => {
         reactions.push([id, content]);
       },
+      canWrite: async (login) => login !== "mallory",
     };
     return { source, reactions };
   }
@@ -144,6 +167,13 @@ describe("acknowledging commands", () => {
     const result = await applyCommands(requests, source, "acme-proseco", recordComment(emptyState(), 1, 10), true);
     assert.equal(result.requests[0]!.commentId, 12);
     assert.deepEqual(reactions, [[12, "eyes"]]);
+  });
+
+  it("ignores a command from someone who cannot write to the tickets repository", async () => {
+    const { source, reactions } = api({ 1: [comment(10, "@acme-proseco fix", { author: "mallory" })] });
+    const result = await applyCommands(requests, source, "acme-proseco", emptyState(), true);
+    assert.equal(result.requests[0]!.force, false);
+    assert.deepEqual(reactions, []);
   });
 
   it("ignore reacts, records the comment and the flag, and does not force", async () => {
@@ -193,6 +223,7 @@ describe("acknowledging commands", () => {
       react: async () => {
         throw new Error("react failed");
       },
+      canWrite: async () => true,
     };
     await assert.rejects(applyCommands(requests, source, "acme-proseco", emptyState(), true), /react failed/);
   });

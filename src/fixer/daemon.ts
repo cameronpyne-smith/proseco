@@ -56,7 +56,8 @@ export async function runDaemon(deps: DaemonDeps): Promise<void> {
       deps.log(`#${number} skipped: ${reason}`);
     };
     let busy = false;
-    const ordered = [...requests].sort((a, b) => Number(b.force) - Number(a.force) || a.number - b.number);
+    const urgent = (request: FixRequest) => Number(request.force || request.pulls.length > 0);
+    const ordered = [...requests].sort((a, b) => urgent(b) - urgent(a) || a.number - b.number);
     for (const request of ordered) {
       if (deps.stopping()) break;
       const { number } = request;

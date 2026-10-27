@@ -166,3 +166,11 @@ describe("reviewer findings in the prompt", () => {
     assert.doesNotMatch(userPrompt({ ...facts, review: null }), /reviewer examined/);
   });
 });
+
+describe("maintainer note in the prompt", () => {
+  it("adds the note escaped and attributed, and nothing without one", () => {
+    const prompt = userPrompt({ ...facts, note: { author: "ana", text: "keep <vite> on 6" } });
+    assert.match(prompt, /ana, who can write to this repository, asked for this attempt[\s\S]*<maintainer-note>keep &lt;vite&gt; on 6<\/maintainer-note>\n\nBegin by looking/);
+    assert.doesNotMatch(userPrompt({ ...facts, note: null }), /maintainer-note/);
+  });
+});

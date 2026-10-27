@@ -33,9 +33,15 @@ export interface TicketState {
   feedback?: Record<string, number>;
 }
 
+export interface PullState {
+  lastCommentId?: number;
+  refreshedHead?: string;
+}
+
 export interface State {
   version: 1;
   tickets: Record<string, TicketState>;
+  pulls?: Record<string, PullState>;
 }
 
 export type ReviewVerdict = "ready" | "caution" | "blocked";
@@ -74,7 +80,21 @@ function entry(state: State, ticket: number): TicketState {
 }
 
 function withEntry(state: State, ticket: number, next: TicketState): State {
-  return { version: 1, tickets: { ...state.tickets, [String(ticket)]: next } };
+  return { ...state, tickets: { ...state.tickets, [String(ticket)]: next } };
+}
+
+export function pullState(state: State, url: string): PullState {
+  return state.pulls?.[url] ?? {};
+}
+
+export function withPull(state: State, url: string, next: PullState): State {
+  return { ...state, pulls: { ...state.pulls, [url]: next } };
+}
+
+export function withoutPulls(state: State, remove: (url: string) => boolean): State {
+  if (!state.pulls) return state;
+  const kept = Object.fromEntries(Object.entries(state.pulls).filter(([url]) => !remove(url)));
+  return Object.keys(kept).length === Object.keys(state.pulls).length ? state : { ...state, pulls: kept };
 }
 
 export function recordAttempt(state: State, ticket: number, attempt: Attempt): State {
@@ -169,6 +189,18 @@ function validFeedback(value: unknown): boolean {
   return typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value as Record<string, unknown>).every((rounds) => Number.isInteger(rounds) && (rounds as number) >= 0);
 }
 
+function validPulls(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value as Record<string, unknown>).every((raw) => {
+      const pull = raw as PullState | null;
+      return typeof pull === "object" && pull !== null && (pull.lastCommentId === undefined || Number.isInteger(pull.lastCommentId)) && (pull.refreshedHead === undefined || typeof pull.refreshedHead === "string");
+    })
+  );
+}
+
 function validate(value: unknown, file: string): State {
   const fail = (message: string): never => {
     throw new Error(`${file} is not a fixer state file: ${message}`);
@@ -176,6 +208,8 @@ function validate(value: unknown, file: string): State {
   if (typeof value !== "object" || value === null || (value as { version?: unknown }).version !== 1) fail("expected version 1");
   const tickets = (value as { tickets?: unknown }).tickets;
   if (typeof tickets !== "object" || tickets === null || Array.isArray(tickets)) fail("expected a tickets object");
+  const pulls = (value as { pulls?: unknown }).pulls;
+  if (pulls !== undefined && !validPulls(pulls)) fail("malformed pull requests record");
   for (const [number, raw] of Object.entries(tickets as Record<string, unknown>)) {
     const item = raw as Partial<TicketState> | null;
     if (typeof item !== "object" || item === null) return fail(`ticket ${number} is malformed`);

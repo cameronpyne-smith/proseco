@@ -4,6 +4,7 @@ import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 import { runAttempt, ShutdownRequested, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
+import type { PullRedo } from "../src/fixer/pulls.ts";
 import { bodyHash, emptyState, pendingAnnouncement, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
 
 function finding(overrides: Partial<Finding>): Finding {
@@ -151,9 +152,9 @@ describe("attempt", () => {
     let stop = false;
     run.deps.shouldStop = () => stop;
     const work = run.deps.workUnit;
-    run.deps.workUnit = async (unit, headSha, review) => {
+    run.deps.workUnit = async (unit, headSha, review, redo) => {
       stop = true;
-      return work(unit, headSha, review);
+      return work(unit, headSha, review, redo);
     };
     let saved = 0;
     run.deps.saveState = () => void saved++;
@@ -321,9 +322,9 @@ describe("review feedback and the turn lock", () => {
     run.deps.prStatus = async (url) => ({ url, state: "open", review: url.endsWith("/1") ? "blocked" : "ready" });
     run.deps.findings = async (unit) => (unit.source === "package-lock.json" ? blocked("https://github.com/acme-org/acme-api/pull/1") : null);
     const work = run.deps.workUnit;
-    run.deps.workUnit = async (unit, headSha, review) => {
+    run.deps.workUnit = async (unit, headSha, review, redo) => {
       given.push(review?.url ?? null);
-      return work(unit, headSha, review);
+      return work(unit, headSha, review, redo);
     };
     const result = await runAttempt(base(attempted), run.deps);
     assert.equal(result.skipped, false);
@@ -358,9 +359,9 @@ describe("review feedback and the turn lock", () => {
       return fetch();
     };
     const work = run.deps.workUnit;
-    run.deps.workUnit = async (unit, headSha, review) => {
+    run.deps.workUnit = async (unit, headSha, review, redo) => {
       order.push(`work ${unit.source}`);
-      return work(unit, headSha, review);
+      return work(unit, headSha, review, redo);
     };
     run.deps.postComment = async () => void order.push("comment");
     await runAttempt(base(), run.deps);
@@ -375,5 +376,69 @@ describe("review feedback and the turn lock", () => {
     stopping.deps.shouldStop = () => true;
     await assert.rejects(runAttempt(base(), stopping.deps), ShutdownRequested);
     assert.deepEqual(order, ["lock", "release"]);
+  });
+});
+
+describe("pull request redo", () => {
+  const WEB = "https://github.com/acme-org/acme-api/pull/8";
+  const redo = (branch: string, overrides: Partial<PullRedo> = {}): PullRedo => ({ url: WEB, number: 8, branch, headSha: "h", reason: "command", requester: "ana", note: "keep it small", ...overrides });
+  const attempted = recordAttempt(emptyState(), 12, { bodyHash: bodyHash(TWO_LOCKFILES.body), headSha: "e".repeat(40), attemptedAt: "2026-01-01T00:00:00.000Z", outcome: "pr-opened", prUrls: ["https://github.com/acme-org/acme-api/pull/7", WEB] });
+
+  function redoHarness() {
+    const run = harness({ work: async () => ({ outcome: { kind: "pr", url: WEB, draft: false } }) });
+    const merged: [string[], string][] = [];
+    const replies: [number, string][] = [];
+    const redos: (PullRedo | null)[] = [];
+    const work = run.deps.workUnit;
+    run.deps.workUnit = async (unit, headSha, review, given) => (redos.push(given), work(unit, headSha, review, given));
+    run.deps.mergeComment = async (reports, fresh) => void merged.push([reports.map((report) => report.label), fresh]);
+    run.deps.reply = async (pull, body) => void replies.push([pull.number, body]);
+    return { run, merged, replies, redos };
+  }
+
+  it("redoes only the pull request's unit while the ticket would be skipped, merging its line into the ticket comment", async () => {
+    const { run, merged, replies, redos } = redoHarness();
+    const pull = redo("proseco/web-package-lock.json");
+    const result = await runAttempt(base(attempted, { pulls: [pull] }), run.deps);
+    assert.deepEqual(result.decision, { attempt: true, reason: `ana asked for a redo of ${WEB}` });
+    assert.deepEqual(run.worked, ["web/package-lock.json"]);
+    assert.deepEqual(redos, [pull]);
+    assert.deepEqual(run.comments, []);
+    assert.deepEqual(merged.map(([labels]) => labels), [["`web/package-lock.json`"]]);
+    assert.deepEqual(replies, [[8, `proseco redid this pull request from the default branch at fffffff, as ana asked.\n\nResult: ready for review.\n`]]);
+    assert.deepEqual(result.state.tickets["12"]!.attempt, attempted.tickets["12"]!.attempt);
+  });
+
+  it("adds a new pull request url to the last attempt and keeps the rest of it", async () => {
+    const { run } = redoHarness();
+    run.deps.workUnit = async () => ({ outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/9", draft: false } });
+    const result = await runAttempt(base(attempted, { pulls: [redo("proseco/web-package-lock.json")] }), run.deps);
+    assert.deepEqual(result.state.tickets["12"]!.attempt, { ...attempted.tickets["12"]!.attempt!, prUrls: ["https://github.com/acme-org/acme-api/pull/7", WEB, "https://github.com/acme-org/acme-api/pull/9"] });
+  });
+
+  it("works nothing and says so on the pull request when its unit is no longer on the ticket", async () => {
+    const { run, replies } = redoHarness();
+    await runAttempt(base(attempted, { pulls: [redo("proseco/gone")] }), run.deps);
+    assert.deepEqual(run.worked, []);
+    assert.deepEqual(replies, [[8, "proseco did not redo this pull request: its findings are no longer on the ticket, so it can be closed.\n"]]);
+  });
+
+  it("passes the redo to its unit in a full attempt and replies on the pull request", async () => {
+    const { run, merged, replies, redos } = redoHarness();
+    const pull = redo("proseco/web-package-lock.json", { reason: "conflict", requester: null, note: null });
+    const result = await runAttempt(base(attempted, { force: true, pulls: [pull] }), run.deps);
+    assert.equal(result.decision.reason, "a comment command forces a new attempt");
+    assert.deepEqual(run.worked, ["package-lock.json", "web/package-lock.json"]);
+    assert.deepEqual(redos, [null, pull]);
+    assert.equal(run.comments.length, 1);
+    assert.deepEqual(merged, []);
+    assert.match(replies[0]![1], /because it conflicted with the default branch/);
+  });
+
+  it("skips an ignored ticket's redo", async () => {
+    const { run, replies } = redoHarness();
+    const result = await runAttempt(base(recordIgnored(attempted, 12, true), { pulls: [redo("proseco/web-package-lock.json")] }), run.deps);
+    assert.equal(result.skipped, true);
+    assert.deepEqual([run.worked, replies], [[], []]);
   });
 });

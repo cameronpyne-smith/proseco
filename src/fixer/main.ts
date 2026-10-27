@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { tokenProvider, type TokenProvider } from "../core/app.ts";
 import { loadConfig, type Config, type FixerConfig } from "../core/config.ts";
-import { TicketRepo } from "../core/github.ts";
+import { RepoApi, TicketRepo } from "../core/github.ts";
 import { isProsecoTicket, markerKey, markerRepo, parseRawTable } from "../core/ticket.ts";
 import { pruneTranscripts } from "./transcripts.ts";
 import { Advisories } from "./advisories.ts";
@@ -11,20 +11,46 @@ import { GitStore } from "./git.ts";
 import { Docker } from "./sandbox/docker.ts";
 import { exitCodeOf, formatOutcome, runInSandbox } from "./sandbox/command.ts";
 import { Sandbox } from "./sandbox/sandbox.ts";
-import { commandComment } from "./requests.ts";
-import { deliveryDeps, findTickets, localAnnouncement, messageDeps, runTicket, summarise, teamsClient } from "./run.ts";
+import { memoised, trustedCommand } from "./requests.ts";
+import { deliveryDeps, findTickets, localAnnouncement, messageDeps, runTicket, scanTicketPulls, summarise, teamsClient } from "./run.ts";
+import { isFixerPull, redoOf, ticketOfPull, type PullRedo } from "./pulls.ts";
 import { deliverAnnouncements, deliverTicket, isAnnounceable, pullLocation, type DeliveryDeps } from "./announce.ts";
 import { appendToComment } from "./comment.ts";
 import { TurnLock } from "./lock.ts";
 import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
 import { isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, saveState, withAnnouncement, type AnnouncedPr, type PendingAnnouncement } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number | pull request URL> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function pullTarget(argument: string | undefined, org: string): { repo: string; number: number } | null {
+  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(argument ?? "");
+  if (!match) return null;
+  if (match[1] !== org) throw new Error(`${argument} is not in ${org}`);
+  return { repo: match[2]!, number: Number(match[3]) };
+}
+
+async function pullRedo(config: Config, tokens: TokenProvider, target: { repo: string; number: number }): Promise<{ ticket: number; redo: PullRedo }> {
+  const api = new RepoApi(await tokens({ repositories: [target.repo], permissions: { pull_requests: "read" } }), config.org, target.repo);
+  const pull = await api.pull(target.number);
+  if (!isFixerPull(pull, config.app.bot)) throw new Error(`${pull.url} was not opened by the fixer: it needs the author ${config.app.bot}[bot] and a proseco/ branch`);
+  if (pull.state !== "open") throw new Error(`${pull.url} is ${pull.state}; reopen it to redo it`);
+  const ticket = ticketOfPull(pull.body, config.org, config.tickets.repo);
+  if (ticket === null) throw new Error(`${pull.url} does not name its ticket with a "Part of ${config.org}/${config.tickets.repo}#<n>" line`);
+  return { ticket, redo: redoOf(pull, "manual") };
+}
+
+async function ticketPulls(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, number: number, ticket: { key: string; repo: string }, acknowledge: boolean): Promise<PullRedo[]> {
+  const state = loadState(config.fixer.stateFile);
+  const request = { number, key: ticket.key, repo: ticket.repo, force: false, ignored: isIgnored(state, number), commentId: null, pulls: [] };
+  const scanned = await scanTicketPulls(config, tokens, [request], state, acknowledge, (line) => console.error(line));
+  if (acknowledge) saveState(config.fixer.stateFile, scanned.state);
+  return scanned.requests[0]!.pulls;
 }
 
 function ticketNumber(argument: string | undefined): number {
@@ -47,10 +73,11 @@ function turnLock(config: FixerConfig, log: (line: string) => void): TurnLock {
   return new TurnLock(config.turnLock, { log });
 }
 
-async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, local: boolean): Promise<void> {
+async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, local: boolean, redo: PullRedo | null = null): Promise<void> {
   const { key, repo, body } = await fixableTicket(config, tickets, number);
   const lock = turnLock(config.fixer, (line) => console.error(line));
-  const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local, lock });
+  const pulls = redo ? [redo] : local ? [] : await ticketPulls(config, tokens, number, { key, repo }, true);
+  const result = await runTicket({ config, tokens, tickets: async () => tickets, number, key, repo, body, local, lock, pulls, ...(redo ? { request: { force: false } } : {}) });
   console.log(JSON.stringify(summarise(result, number), null, 2));
   if (local) {
     for (const checkout of result.checkouts) console.log(`checkout left in place: ${checkout}`);
@@ -108,7 +135,7 @@ async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: 
   else console.log(next ? "nothing posted yet: still waiting for a review" : "nothing to post: no open, ready pull request was left in the announcement, which is now cleared");
 }
 
-async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number): Promise<void> {
+async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, number: number, redo: PullRedo | null = null): Promise<void> {
   const { key, repo, body } = await fixableTicket(config, tickets, number);
   if (key !== repo) throw new Error(`#${number} is an image ticket, and image tickets are not attempted yet`);
   const repoToken = await tokens({ repositories: [repo], permissions: { contents: "read" } });
@@ -117,8 +144,10 @@ async function dryRun(config: Config & { fixer: FixerConfig }, tokens: TokenProv
   const headSha = await store.headSha(repo);
   const advisories = new Advisories(repoToken);
   const state = loadState(config.fixer.stateFile);
-  const command = commandComment(await tickets.comments(number), config.app.bot, lastCommentId(state, number));
+  const command = redo ? null : await trustedCommand(await tickets.comments(number), config.app.bot, lastCommentId(state, number), memoised((login) => tickets.canWrite(login)));
+  const pulls = redo ? [redo] : await ticketPulls(config, tokens, number, { key, repo }, false);
   const report = await dryRunReport({
+    pulls,
     ticket: { number, repo, body, force: command?.command === "fix", ignored: command ? command.command === "ignore" : isIgnored(state, number), commandCommentId: command?.id ?? null },
     rows: parseRawTable(body),
     org: config.org,
@@ -251,7 +280,7 @@ async function serve(): Promise<void> {
   await runDaemon({
     pollMs: fixer.pollMinutes * 60_000,
     find: async () => {
-      const found = await findTickets(config, await ticketRepo());
+      const found = await findTickets(config, tokens, await ticketRepo(), stamped);
       bodies = found.bodies;
       return found.requests;
     },
@@ -266,6 +295,7 @@ async function serve(): Promise<void> {
         body: bodies.get(request.number) ?? "",
         local: false,
         request: { force: request.force },
+        pulls: request.pulls,
         lock,
         started: () => started(),
         shouldStop: () => stop.signal.aborted,
@@ -298,16 +328,17 @@ async function main(args: string[]): Promise<void> {
   const tickets = new TicketRepo(ticketToken, config.org, config.tickets.repo);
   if (command === "announce") return announceCommand({ ...config, fixer }, tokens, tickets, ticketNumber(argument), announceFlags);
   if (command === "run") {
-    const number = ticketNumber(argument);
-    if (flags.length === 0) return attemptTicket({ ...config, fixer }, tokens, tickets, number, false);
-    if (flags.length === 1 && flags[0] === "--local") return attemptTicket({ ...config, fixer }, tokens, tickets, number, true);
-    if (flags.length === 1 && flags[0] === "--dry-run") return dryRun({ ...config, fixer }, tokens, tickets, number);
+    const target = pullTarget(argument, config.org);
+    const { ticket: number, redo } = target ? await pullRedo(config, tokens, target) : { ticket: ticketNumber(argument), redo: null };
+    if (flags.length === 0) return attemptTicket({ ...config, fixer }, tokens, tickets, number, false, redo);
+    if (flags.length === 1 && flags[0] === "--local") return attemptTicket({ ...config, fixer }, tokens, tickets, number, true, redo);
+    if (flags.length === 1 && flags[0] === "--dry-run") return dryRun({ ...config, fixer }, tokens, tickets, number, redo);
     throw new Error(USAGE);
   }
 
   switch (command) {
     case "find": {
-      const found = await findTickets({ ...config, fixer }, tickets);
+      const found = await findTickets({ ...config, fixer }, tokens, tickets);
       console.log(JSON.stringify(found.requests));
       return;
     }

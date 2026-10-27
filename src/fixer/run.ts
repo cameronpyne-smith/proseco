@@ -1,19 +1,20 @@
 import type { TokenProvider } from "../core/app.ts";
 import type { Config, FixerConfig, MergeMethod } from "../core/config.ts";
-import { RepoApi, type PullRequest, type TicketRepo } from "../core/github.ts";
+import { RepoApi, TicketRepo, type PullRequest } from "../core/github.ts";
 import { announceReason, announcements, buildMessage, messageGroups, writeSentence, type DeliveryDeps, type MessageDeps } from "./announce.ts";
 import type { TurnLock } from "./lock.ts";
 import { collectFindings, verdictAt } from "./reviewer.ts";
 import { Advisories } from "./advisories.ts";
 import { OllamaClient } from "./agent/ollama.ts";
 import { runAttempt, type AttemptResult } from "./attempt.ts";
-import { applyCommands, commandComment, fixRequests, requestFilters, type FixRequest } from "./requests.ts";
+import { applyCommands, fixRequests, memoised, requestFilters, trustedCommand, type FixRequest } from "./requests.ts";
 import type { PrUnit } from "./plan.ts";
-import { appendToComment, upsertComment, type UnitReport } from "./comment.ts";
+import { appendToComment, mergeIntoComment, upsertComment, type UnitReport } from "./comment.ts";
+import { scanPulls, type PullRedo, type PullSource } from "./pulls.ts";
 import { GitStore } from "./git.ts";
 import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type ReviewVerdict } from "./state.ts";
+import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type ReviewVerdict, type State } from "./state.ts";
 import { readTeamsCredential, TeamsClient } from "./teams.ts";
 import { workUnit, type Published, type PublishRequest, type Publisher } from "./unit.ts";
 
@@ -29,6 +30,7 @@ export interface RunTicket {
   body: string;
   local: boolean;
   request?: { force: boolean };
+  pulls?: PullRedo[];
   lock?: TurnLock;
   started?(decision: Decision): void;
   shouldStop?(): boolean;
@@ -93,9 +95,40 @@ export async function localAnnouncement(config: Config & { fixer: FixerConfig },
   return messages;
 }
 
-export async function findTickets(config: Config & { fixer: FixerConfig }, tickets: TicketRepo): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
+export function pullSource(org: string, tokens: TokenProvider): PullSource {
+  const minted = new Map<string, Promise<string>>();
+  const token = (repo: string) => {
+    if (!minted.has(repo)) minted.set(repo, tokens({ repositories: [repo], permissions: { pull_requests: "write" } }));
+    return minted.get(repo)!;
+  };
+  const repoApi = async (repo: string) => new RepoApi(await token(repo), org, repo);
+  const issues = async (repo: string) => new TicketRepo(await token(repo), org, repo);
+  return {
+    openPulls: async (repo) => (await repoApi(repo)).openPulls(),
+    conflicted: async (repo, number) => (await repoApi(repo)).conflicted(number),
+    comments: async (repo, number) => (await issues(repo)).comments(number),
+    react: async (repo, commentId) => (await issues(repo)).react(commentId, "eyes"),
+    reply: async (repo, number, body) => (await repoApi(repo)).commentOnPull(number, body),
+    canWrite: async (repo, login) => (await issues(repo)).canWrite(login),
+  };
+}
+
+export async function scanTicketPulls(
+  config: Config & { fixer: FixerConfig },
+  tokens: TokenProvider,
+  requests: FixRequest[],
+  state: State,
+  acknowledge: boolean,
+  log?: (line: string) => void,
+): Promise<{ requests: FixRequest[]; state: State }> {
+  return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(log ? { log } : {}) });
+}
+
+export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, log?: (line: string) => void): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
   const open = await tickets.list(requestFilters(config.tickets.find));
-  const found = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, loadState(config.fixer.stateFile), true);
+  const commanded = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, loadState(config.fixer.stateFile), true);
+  saveState(config.fixer.stateFile, commanded.state);
+  const found = await scanTicketPulls(config, tokens, commanded.requests, commanded.state, true, log);
   saveState(config.fixer.stateFile, found.state);
   return { requests: found.requests, bodies: new Map(open.map((ticket) => [ticket.number, ticket.body])) };
 }
@@ -198,11 +231,12 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const releases = new Releases(readToken);
   const readApi = new RepoApi(readToken, config.org, repo);
   let state = loadState(fixer.stateFile);
-  const command = input.request ? null : commandComment(await (await tickets()).comments(number), config.app.bot, lastCommentId(state, number));
+  const ticketRepo = input.request ? null : await tickets();
+  const command = ticketRepo ? await trustedCommand(await ticketRepo.comments(number), config.app.bot, lastCommentId(state, number), memoised((login) => ticketRepo.canWrite(login))) : null;
   if (command) {
     const next = recordIgnored(recordComment(state, number, command.id), number, command.command === "ignore");
     if (!local) {
-      await (await tickets()).react(command.id, "eyes");
+      await ticketRepo!.react(command.id, "eyes");
       saveState(fixer.stateFile, next);
     }
     state = next;
@@ -214,7 +248,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const checkouts: string[] = [];
   const verdictOf = async (number: number, headSha: string): Promise<ReviewVerdict | null> => (reviewer ? verdictAt(await readApi.reviews(number), reviewer.bot, headSha) : null);
   const result = await runAttempt(
-    { ticket: { number, key, repo, body: input.body }, force: input.request ? input.request.force : command?.command === "fix", state, local },
+    { ticket: { number, key, repo, body: input.body }, force: input.request ? input.request.force : command?.command === "fix", pulls: input.pulls ?? [], state, local },
     {
       org: config.org,
       fetch: async () => {
@@ -234,7 +268,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
           }
         : {}),
       ...(input.lock ? { lock: () => input.lock!.acquire() } : {}),
-      workUnit: async (unit, headSha, review) => {
+      workUnit: async (unit, headSha, review, redo) => {
         const outcome = await workUnit(
           {
             org: config.org,
@@ -256,11 +290,17 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
           unit,
           headSha,
           review,
+          redo,
         );
         if (outcome.checkout) checkouts.push(outcome.checkout);
         return outcome;
       },
       postComment: async (body) => void (await upsertComment(await tickets(), number, config.app.bot, body)),
+      mergeComment: async (reports, fresh) => mergeIntoComment(await tickets(), number, config.app.bot, reports, fresh),
+      reply: async (pull, body) => {
+        const writeToken = await tokens({ repositories: [repo], permissions: { pull_requests: "write" } });
+        await new RepoApi(writeToken, config.org, repo).commentOnPull(pull.number, body);
+      },
       saveState: (next) => saveState(fixer.stateFile, next),
       ...(input.started ? { started: input.started } : {}),
       ...(input.shouldStop ? { shouldStop: input.shouldStop } : {}),

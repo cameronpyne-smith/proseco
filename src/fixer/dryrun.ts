@@ -4,11 +4,13 @@ import type { Advisory } from "./advisories.ts";
 import { alreadyFixed, checkedFix, type CheckedFix } from "./check.ts";
 import { ecosystemFor, type Ecosystem } from "./ecosystems/ecosystem.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
+import { redoDecision, type PullRedo } from "./pulls.ts";
 import { bodyHash, decide, type Attempt, type Decision } from "./state.ts";
 
 export interface DryRunInput {
   ticket: { number: number; repo: string; body: string; force: boolean; ignored: boolean; commandCommentId: number | null };
   rows: TicketRow[];
+  pulls: PullRedo[];
   org: string;
   headSha: string;
   last: Attempt | undefined;
@@ -20,6 +22,7 @@ export interface DryRunReport {
   ticket: { number: number; repo: string; bodyHash: string; force: boolean; ignored: boolean; commandCommentId: number | null };
   headSha: string;
   openPullRequests: "not checked";
+  redo: { url: string; branch: string; reason: PullRedo["reason"]; requester: string | null; note: string | null }[];
   decision: Decision;
   units: {
     kind: PrUnit["kind"];
@@ -88,11 +91,14 @@ export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
       fixes,
     });
   }
+  const decision = decide(input.last, { bodyHash: hash, force: input.ticket.force, prs: [], ignored: input.ticket.ignored });
+  const redoOnly = input.pulls.length > 0 && !input.ticket.ignored && !decision.attempt;
   return {
     ticket: { number: input.ticket.number, repo: input.ticket.repo, bodyHash: hash, force: input.ticket.force, ignored: input.ticket.ignored, commandCommentId: input.ticket.commandCommentId },
     headSha: input.headSha,
     openPullRequests: "not checked",
-    decision: decide(input.last, { bodyHash: hash, force: input.ticket.force, prs: [], ignored: input.ticket.ignored }),
-    units,
+    redo: input.pulls.map((pull) => ({ url: pull.url, branch: pull.branch, reason: pull.reason, requester: pull.requester, note: pull.note })),
+    decision: redoOnly ? redoDecision(input.pulls) : decision,
+    units: redoOnly ? units.filter((unit) => input.pulls.some((pull) => pull.branch === unit.branch)) : units,
   };
 }

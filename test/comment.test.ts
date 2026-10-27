@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { TicketComment } from "../src/core/types.ts";
-import { appendToComment, renderComment, upsertComment, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
+import { appendToComment, mergeIntoComment, mergeUnitLines, renderComment, upsertComment, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
 
 const REPORTS: UnitReport[] = [
   { label: "`package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/7", draft: false } },
@@ -80,5 +80,38 @@ describe("ticket comment", () => {
     await appendToComment(none, 5, "acme-proseco", "- line");
     assert.deepEqual(none.edited, []);
     assert.deepEqual(none.created, []);
+  });
+});
+
+describe("merging a redo into the ticket comment", () => {
+  const existing = `${renderComment("h", REPORTS)}- Not announced in Teams: \`timeout\`\n`;
+  const redone: UnitReport = { label: "`web/package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/8", draft: false } };
+
+  it("replaces only the redone unit's line and keeps the rest, including later notes", () => {
+    const merged = mergeUnitLines(existing, [redone])!;
+    assert.equal(merged, existing.replace("- `web/package-lock.json`: draft: https", "- `web/package-lock.json`: ready for review: https"));
+    assert.notEqual(merged, existing);
+  });
+
+  it("adds a unit that had no line after the last unit line", () => {
+    const added: UnitReport = { label: "`api/package-lock.json`", outcome: { kind: "none", reason: "already fixed on the default branch" } };
+    const lines = mergeUnitLines(existing, [added])!.trimEnd().split("\n");
+    assert.equal(lines.at(-2), "- `api/package-lock.json`: no pull request: already fixed on the default branch");
+    assert.equal(lines.at(-1), "- Not announced in Teams: `timeout`");
+  });
+
+  it("writes a fresh comment when there is none or it has no unit lines, and edits only on a change", async () => {
+    const none = writer([]);
+    await mergeIntoComment(none, 12, "acme-proseco", [redone], "fresh");
+    assert.deepEqual(none.created, ["fresh"]);
+    const empty = writer([comment(3, "acme-proseco[bot]", renderComment("h", []))]);
+    await mergeIntoComment(empty, 12, "acme-proseco", [redone], "fresh");
+    assert.deepEqual(empty.edited, [[3, "fresh"]]);
+    const same = writer([comment(3, "acme-proseco[bot]", existing)]);
+    await mergeIntoComment(same, 12, "acme-proseco", [REPORTS[1]!], "fresh");
+    assert.deepEqual([same.created, same.edited], [[], []]);
+    const changed = writer([comment(3, "acme-proseco[bot]", existing)]);
+    await mergeIntoComment(changed, 12, "acme-proseco", [redone], "fresh");
+    assert.deepEqual(changed.edited, [[3, mergeUnitLines(existing, [redone])]]);
   });
 });

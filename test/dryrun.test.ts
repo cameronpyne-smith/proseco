@@ -39,6 +39,7 @@ function input(rows: TicketRow[], files: Record<string, string>, overrides = {})
     org: "acme-org",
     headSha: "f".repeat(40),
     last: undefined,
+    pulls: [],
     readFile: async (path: string) => files[path] ?? null,
     advisory: async (cve: string) => (cve === "CVE-2026-0001" ? ADVISORY : null),
     ...overrides,
@@ -110,5 +111,18 @@ describe("dry run report", () => {
     );
     assert.equal(report.decision.attempt, false);
     assert.match(report.decision.reason, /already attempted/);
+  });
+
+  it("shows the pull request redos and only their units when the ticket itself would be skipped", async () => {
+    const last = { bodyHash: bodyHash("body"), headSha: "a", attemptedAt: "t", outcome: "pr-opened" as const, prUrls: [] };
+    const redo = { url: "https://github.com/acme-org/acme-api/pull/8", number: 8, branch: "proseco/acme-web-3.0.0", headSha: "h", reason: "conflict" as const, requester: null, note: null };
+    const rows = [row(), row({ cve: "CVE-2026-0002", package: "acme-web", installed: "2.1.0", fixedIn: "3.0.0" })];
+    const report = await dryRunReport(input(rows, { "package-lock.json": NPM_LOCK }, { last, pulls: [redo] }));
+    assert.deepEqual(report.decision, { attempt: true, reason: `${redo.url} conflicts with the default branch` });
+    assert.deepEqual(report.units.map((unit) => unit.branch), ["proseco/acme-web-3.0.0"]);
+    assert.deepEqual(report.redo, [{ url: redo.url, branch: redo.branch, reason: "conflict", requester: null, note: null }]);
+    const ignored = await dryRunReport(input(rows, { "package-lock.json": NPM_LOCK }, { last, pulls: [redo], ticket: { number: 5, repo: "acme-api", body: "body", force: false, ignored: true, commandCommentId: null } }));
+    assert.equal(ignored.decision.attempt, false);
+    assert.equal(ignored.units.length, 2);
   });
 });

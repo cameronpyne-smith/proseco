@@ -9,7 +9,7 @@ This document is the design. The README describes what is built.
 | Area | Decision |
 | --- | --- |
 | Shape | A long-running daemon, like reviewdo. No GitHub Actions. TypeScript in this repository, no runtime dependencies. |
-| Trigger | Every open proseco ticket is worked automatically. A person forces a fresh attempt by commenting `@<bot> fix` on the ticket, as with `@reviewdo-bot review`. The fixer reacts with eyes on the comment. |
+| Trigger | Every open proseco ticket is worked automatically. A person forces a fresh attempt by commenting `@<bot> fix` on the ticket, as with `@reviewdo-bot review`, or redoes one pull request by commenting it there, with an optional note for the agent. A pull request that conflicts with the default branch is redone unasked, once per head. Commands count only from people with write access. The fixer reacts with eyes on the comment. |
 | Model | Ollama on the host. Default `qwen3.8:27b`. The daemon drives its own tool-call loop. |
 | Agency | A full coding agent: it reads, edits and runs commands in the container, for every ticket. |
 | Isolation | Rootless Docker under a dedicated `proseco` user. The daemon runs as that user under systemd. |
@@ -62,6 +62,7 @@ src/fixer/
   releases.ts     release notes between the installed and target versions, from the registry and GitHub
   dryrun.ts       the dry-run report
   requests.ts     fix requests and the comment command
+  pulls.ts        pull request redos: commands and conflicts on the fixer's own pull requests
   check.ts        the deterministic lockfile check
   publish.ts      the commit guard: allowed files, discard, commit
   pr.ts           commit message, pull request body

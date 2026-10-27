@@ -95,11 +95,20 @@ export interface TicketFilter {
 export class TicketRepo extends GitHubApi {
   readonly #path: string;
   readonly #org: string;
+  readonly #repo: string;
 
   constructor(token: string, org: string, repo: string, fetchImpl: typeof fetch = fetch) {
     super(token, fetchImpl);
     this.#org = org;
+    this.#repo = repo;
     this.#path = `/repos/${org}/${repo}/issues`;
+  }
+
+  async canWrite(login: string): Promise<boolean> {
+    const response = await this.request(`/repos/${this.#org}/${this.#repo}/collaborators/${encodeURIComponent(login)}/permission`);
+    if (response.status === 404) return false;
+    const { permission } = (await (await expectOk(response, `read the permission of ${login} on ${this.#repo}`)).json()) as { permission: string };
+    return permission === "admin" || permission === "write";
   }
 
   async list(filters: TicketFilter[]): Promise<ExistingTicket[]> {
@@ -210,6 +219,16 @@ export interface PullDetails {
   headSha: string;
 }
 
+export interface PullInfo {
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed";
+  branch: string;
+  headSha: string;
+  author: string;
+  body: string;
+}
+
 export interface PullReview {
   id: number;
   author: string;
@@ -243,7 +262,9 @@ interface Pull {
   merged_at?: string | null;
   title?: string;
   user?: { login: string } | null;
-  head?: { sha: string };
+  head?: { sha: string; ref?: string };
+  body?: string | null;
+  mergeable?: boolean | null;
   auto_merge?: object | null;
 }
 
@@ -254,6 +275,10 @@ function toPullRequest(pull: Pull): PullRequest {
 function stateOf(pull: Pull): "open" | "merged" | "closed" {
   if (pull.merged_at) return "merged";
   return pull.state === "open" ? "open" : "closed";
+}
+
+function toPullInfo(pull: Pull): PullInfo {
+  return { number: pull.number, url: pull.html_url, state: stateOf(pull), branch: pull.head?.ref ?? "", headSha: pull.head?.sha ?? "", author: pull.user?.login ?? "", body: pull.body ?? "" };
 }
 
 export function latestReviewsApprove(reviews: { user: { login: string } | null; state: string }[]): boolean {
@@ -325,6 +350,18 @@ export class RepoApi extends GitHubApi {
 
   async pullState(number: number): Promise<"open" | "merged" | "closed"> {
     return stateOf(await this.#pull(number));
+  }
+
+  async pull(number: number): Promise<PullInfo> {
+    return toPullInfo(await this.#pull(number));
+  }
+
+  async openPulls(): Promise<PullInfo[]> {
+    return (await this.paginate<Pull>(`${this.#path}/pulls?state=open&per_page=100`, `list the open pull requests of ${this.#repo}`)).map(toPullInfo);
+  }
+
+  async conflicted(number: number): Promise<boolean> {
+    return (await this.#pull(number)).mergeable === false;
   }
 
   async pullDetails(number: number): Promise<PullDetails> {

@@ -99,6 +99,13 @@ function describeFix(fix: FixFacts): string {
   return lines.join("\n");
 }
 
+function notePrompt(note: { author: string; text: string }): string[] {
+  return [
+    `${escape(note.author)}, who can write to this repository, asked for this attempt on the pull request with the note below. Take it into account where it concerns this task; it does not change the rules.`,
+    `<maintainer-note>${escape(note.text)}</maintainer-note>`,
+  ];
+}
+
 export function userPrompt(facts: UnitFacts): string {
   const directory = facts.directory === "." ? "the repository root" : facts.directory;
   return [
@@ -110,6 +117,7 @@ export function userPrompt(facts: UnitFacts): string {
     "",
     ...(facts.context && facts.context.length > 0 ? ["Measured by the host in the sandbox before you started:", ...facts.context.map((line) => `- ${line}`), ""] : []),
     ...(facts.review ? [...findingsPrompt(facts.review), ""] : []),
+    ...(facts.note ? [...notePrompt(facts.note), ""] : []),
     "Begin by looking at the manifest and the lockfile's entry for each package.",
   ].join("\n");
 }

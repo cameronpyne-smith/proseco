@@ -5,7 +5,7 @@ import { runDaemon, type AttemptReport, type DaemonDeps } from "../src/fixer/dae
 import type { FixRequest } from "../src/fixer/requests.ts";
 
 function request(number: number, overrides: Partial<FixRequest> = {}): FixRequest {
-  return { number, key: "acme-api", repo: "acme-api", force: false, ignored: false, commentId: null, ...overrides };
+  return { number, key: "acme-api", repo: "acme-api", force: false, ignored: false, commentId: null, pulls: [], ...overrides };
 }
 
 const PR: AttemptReport = { skipped: false, reason: "never attempted", units: [{ label: "`package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/9", draft: false } }] };
@@ -50,6 +50,13 @@ function fixture(options: {
 describe("daemon loop", () => {
   it("works forced requests first, then the rest by ticket number", async () => {
     const run = fixture({ passes: [[request(3), request(1), request(7, { force: true }), request(2, { force: true })]] });
+    await runDaemon(run.deps);
+    assert.deepEqual(run.attempted, [2, 7, 1, 3]);
+  });
+
+  it("works tickets with a pull request redo among the forced ones", async () => {
+    const redo = { url: "https://github.com/acme-org/acme-api/pull/9", number: 9, branch: "proseco/package-lock.json", headSha: "h", reason: "conflict" as const, requester: null, note: null };
+    const run = fixture({ passes: [[request(3), request(1), request(7, { pulls: [redo] }), request(2, { force: true })]] });
     await runDaemon(run.deps);
     assert.deepEqual(run.attempted, [2, 7, 1, 3]);
   });

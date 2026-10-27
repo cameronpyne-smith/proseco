@@ -27,6 +27,7 @@ import type { PrUnit } from "./plan.ts";
 import { allowedFiles, commitAllowed, discardOthers, highRiskPaths, majorGuard, type Allowed, type CommitResult } from "./publish.ts";
 import type { ReleaseNotes } from "./releases.ts";
 import { replyComment, type ReviewFindings } from "./reviewer.ts";
+import type { PullRedo } from "./pulls.ts";
 import { Docker, type ExecOptions, type ExecResult } from "./sandbox/docker.ts";
 import { ensureImage, imageFor } from "./sandbox/images.ts";
 import { Sandbox, WORK, type StartOptions } from "./sandbox/sandbox.ts";
@@ -267,7 +268,7 @@ function transcriptPath(ctx: UnitContext, unit: PrUnit): string {
   return join(directory, `${ctx.ticket}-${unit.branch.replace(/[^A-Za-z0-9._-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`);
 }
 
-export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string, review: ReviewFindings | null = null): Promise<UnitResult> {
+export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string, review: ReviewFindings | null = null, redo: PullRedo | null = null): Promise<UnitResult> {
   const ecosystem = (ctx.ecosystemFor ?? ecosystemFor)(unit.source);
   if (!ecosystem) return none("unsupported ecosystem: unknown lockfile type");
   const readFile = (path: string) => ctx.store.tryShow(ctx.repo, headSha, path);
@@ -316,6 +317,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string, 
     if (baseline.kind === "failed") context.push(...baselineContext(baseline));
     facts.context = context;
     facts.review = review;
+    facts.note = redo?.note && redo.requester ? { author: redo.requester, text: redo.note } : null;
     const transcript = transcriptPath(ctx, unit);
     ctx.log(`transcript: ${transcript}`);
     const written = new Set<string>();

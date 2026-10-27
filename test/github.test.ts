@@ -128,6 +128,30 @@ describe("ticket repo comments", () => {
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-tickets/issues/comments/99");
     assert.deepEqual(calls[0]!.body, { body: "new body" });
   });
+
+  it("can write when the permission is write or admin, not read or for an unknown login", async () => {
+    const { fetch, calls } = recorder({ permission: "write", role_name: "maintain" }, { permission: "admin" }, { permission: "read", role_name: "triage" }, new Response("", { status: 404 }));
+    const repo = new TicketRepo("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual([await repo.canWrite("ana"), await repo.canWrite("bo"), await repo.canWrite("cy"), await repo.canWrite("ghost")], [true, true, false, false]);
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/collaborators/ana/permission");
+    await assert.rejects(new TicketRepo("tok", "acme-org", "acme-api", recorder(new Response("boom", { status: 500 })).fetch).canWrite("ana"), /500/);
+  });
+});
+
+describe("repo api pull listing", () => {
+  it("lists open pull requests with their branch, head, author and body", async () => {
+    const { fetch, calls } = recorder([{ ...PULL, body: "Part of acme-org/acme-tickets#4", head: { sha: "abc123", ref: "proseco/package-lock.json" } }]);
+    assert.deepEqual(await new RepoApi("tok", "acme-org", "acme-api", fetch).openPulls(), [
+      { number: 7, url: PULL.html_url, state: "open", branch: "proseco/package-lock.json", headSha: "abc123", author: "acme-proseco[bot]", body: "Part of acme-org/acme-tickets#4" },
+    ]);
+    assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls?state=open&per_page=100");
+  });
+
+  it("is conflicted only when GitHub says it cannot merge, not while it is still computing", async () => {
+    const { fetch } = recorder({ ...PULL, mergeable: false }, { ...PULL, mergeable: null }, { ...PULL, mergeable: true });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    assert.deepEqual([await api.conflicted(7), await api.conflicted(7), await api.conflicted(7)], [true, false, false]);
+  });
 });
 
 describe("repo api reviews, labels and comments", () => {

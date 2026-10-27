@@ -31,6 +31,7 @@ export interface UnitFacts {
   fixes: FixFacts[];
   context?: string[];
   review?: ReviewFindings | null;
+  note?: { author: string; text: string } | null;
 }
 
 export async function buildFacts(
