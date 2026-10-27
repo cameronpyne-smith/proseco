@@ -98,7 +98,11 @@ export interface FixerConfig {
   teams: TeamsConfig | null;
   reviewer: ReviewerConfig | null;
   turnLock: string | null;
+  autoMerge: MergeMethod | null;
 }
+
+export const MERGE_METHODS = ["merge", "squash", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
 
 export interface Config {
   org: string;
@@ -144,6 +148,11 @@ function positiveNumber(value: unknown, path: string): number {
 function thinkLevel(value: unknown, path: string): Think {
   if (typeof value === "boolean" || value === "low" || value === "medium" || value === "high") return value;
   throw new ConfigError(`${path} must be true, false, "low", "medium" or "high"`);
+}
+
+function mergeMethod(value: unknown, path: string): MergeMethod {
+  if (typeof value === "string" && (MERGE_METHODS as readonly string[]).includes(value)) return value as MergeMethod;
+  throw new ConfigError(`${path} must be "merge", "squash" or "rebase"`);
 }
 
 function temperature(value: unknown, path: string): number {
@@ -269,7 +278,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
   }
   let fixer: FixerConfig | null = null;
   if (root["fixer"] !== undefined) {
-    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts", "teams", "reviewer", "turnLock"]);
+    const raw = object(root["fixer"], "fixer", ["cloneDir", "stateFile", "pollMinutes", "proxy", "sandbox", "ollama", "budget", "transcripts", "teams", "reviewer", "turnLock", "autoMerge"]);
     const proxy = raw["proxy"] === undefined ? {} : object(raw["proxy"], "fixer.proxy", ["allow"]);
     const sandbox = raw["sandbox"] === undefined ? {} : object(raw["sandbox"], "fixer.sandbox", ["memory", "cpus"]);
     const ollama = raw["ollama"] === undefined ? {} : object(raw["ollama"], "fixer.ollama", ["url", "model", "numCtx", "numPredict", "think", "temperature", "timeoutMinutes"]);
@@ -308,6 +317,7 @@ export function parseConfig(raw: unknown, readJson: (relativePath: string) => un
       teams: raw["teams"] === undefined ? null : teamsSection(raw["teams"]),
       reviewer: raw["reviewer"] === undefined ? null : reviewerSection(raw["reviewer"]),
       turnLock: option(raw, "turnLock", "fixer", null, text),
+      autoMerge: option(raw, "autoMerge", "fixer", null, mergeMethod),
     };
   }
   return {

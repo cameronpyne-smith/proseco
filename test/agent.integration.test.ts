@@ -173,7 +173,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
     ollama: DEFAULT_OLLAMA,
     transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...scenario.budget },
-    teams: null, reviewer: null, turnLock: null
+    teams: null, reviewer: null, turnLock: null, autoMerge: null
   };
   const store = new GitStore({ cloneDir: fixer.cloneDir, remoteUrl: () => bare });
   const llm = new OllamaClient({

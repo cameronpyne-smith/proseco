@@ -58,6 +58,7 @@ describe("config", () => {
       teams: null,
       reviewer: null,
       turnLock: null,
+      autoMerge: null,
     });
   });
 
@@ -269,6 +270,8 @@ describe("the reviewer and the turn lock", () => {
     assert.equal(parseConfig(set({ turnLock: "/run/lock/ollama" }), mapping).fixer!.turnLock, "/run/lock/ollama");
     assert.equal(parseConfig(full(), mapping).fixer!.reviewer, null);
     assert.equal(parseConfig(full(), mapping).fixer!.turnLock, null);
+    assert.equal(parseConfig(set({ autoMerge: "squash" }), mapping).fixer!.autoMerge, "squash");
+    assert.equal(parseConfig(full(), mapping).fixer!.autoMerge, null);
   });
 
   it("validates them", () => {
@@ -279,5 +282,7 @@ describe("the reviewer and the turn lock", () => {
     bad({ reviewer: { bot: "r", label: 1 } }, /fixer.reviewer.label must be a non-empty string/);
     bad({ reviewer: { bot: "r", login: "x" } }, /fixer.reviewer has unknown keys: login/);
     bad({ turnLock: "" }, /fixer.turnLock must be a non-empty string/);
+    bad({ autoMerge: "fast-forward" }, /fixer.autoMerge must be "merge", "squash" or "rebase"/);
+    bad({ autoMerge: true }, /fixer.autoMerge must be "merge", "squash" or "rebase"/);
   });
 });

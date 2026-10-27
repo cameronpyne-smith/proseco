@@ -1,6 +1,6 @@
 import type { TokenProvider } from "../core/app.ts";
-import type { Config, FixerConfig } from "../core/config.ts";
-import { RepoApi, type TicketRepo } from "../core/github.ts";
+import type { Config, FixerConfig, MergeMethod } from "../core/config.ts";
+import { RepoApi, type PullRequest, type TicketRepo } from "../core/github.ts";
 import { announceReason, announcements, buildMessage, messageGroups, writeSentence, type DeliveryDeps, type MessageDeps } from "./announce.ts";
 import type { TurnLock } from "./lock.ts";
 import { collectFindings, verdictAt } from "./reviewer.ts";
@@ -111,6 +111,8 @@ export interface LivePublisherOptions {
   tokens: TokenProvider;
   store: Pick<GitStore, "push" | "inCheckout">;
   reviewLabel?: string | null;
+  autoMerge?: MergeMethod | null;
+  log?(line: string): void;
   api?(token: string, repo: string): RepoApi;
 }
 
@@ -134,6 +136,16 @@ export class LivePublisher implements Publisher {
     await api.addLabels(number, [label]);
   }
 
+  async #enableAutoMerge(api: RepoApi, pull: PullRequest): Promise<void> {
+    const method = this.#options.autoMerge;
+    if (!method || pull.autoMerge) return;
+    try {
+      await api.enableAutoMerge(pull.nodeId, method);
+    } catch (error) {
+      this.#options.log?.(`could not enable auto-merge on ${pull.url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async publish(request: PublishRequest): Promise<Published> {
     const { org, tokens, store } = this.#options;
     const token = await tokens({ repositories: [request.repo], permissions: { contents: "write", pull_requests: "write" } });
@@ -143,7 +155,10 @@ export class LivePublisher implements Publisher {
       await store.push(request.checkout, request.repo, request.branch, token);
       const created = await api.createPull({ title: request.title, body: request.body, head: request.branch, base: await api.defaultBranch(), draft: request.draft });
       if (request.reviewReply) await api.commentOnPull(created.number, request.reviewReply);
-      if (!request.draft) await this.#requestReview(api, request.repo, created.number);
+      if (!request.draft) {
+        await this.#requestReview(api, request.repo, created.number);
+        await this.#enableAutoMerge(api, created);
+      }
       return { url: created.url, draft: request.draft, announce: announceReason(null, request.draft) };
     }
     const tree = (await store.inCheckout(request.checkout, ["rev-parse", `${request.commit.sha}^{tree}`], "git rev-parse")).trim();
@@ -154,6 +169,7 @@ export class LivePublisher implements Publisher {
     if (existing.draft !== request.draft) await api.setDraft(existing.nodeId, request.draft);
     if (request.reviewReply) await api.commentOnPull(existing.number, request.reviewReply);
     if (!request.draft && (changed || existing.draft)) await this.#requestReview(api, request.repo, existing.number);
+    if (!request.draft) await this.#enableAutoMerge(api, existing);
     return { url: existing.url, draft: request.draft, announce: announceReason({ draft: existing.draft, approved, changed }, request.draft) };
   }
 }
@@ -194,7 +210,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const llm = ollamaClient(fixer);
   const docker = new Docker();
   const reviewer = fixer.reviewer;
-  const publisher = local ? new LocalPublisher() : new LivePublisher({ org: config.org, tokens, store, reviewLabel: reviewer?.label ?? null });
+  const publisher = local ? new LocalPublisher() : new LivePublisher({ org: config.org, tokens, store, reviewLabel: reviewer?.label ?? null, autoMerge: fixer.autoMerge, log: (line) => console.error(line) });
   const checkouts: string[] = [];
   const verdictOf = async (number: number, headSha: string): Promise<ReviewVerdict | null> => (reviewer ? verdictAt(await readApi.reviews(number), reviewer.bot, headSha) : null);
   const result = await runAttempt(

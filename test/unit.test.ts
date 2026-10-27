@@ -133,7 +133,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     ollama: DEFAULT_OLLAMA,
     transcripts: DEFAULT_TRANSCRIPTS,
     budget: { ...DEFAULT_BUDGET, ...options.budget },
-    teams: null, reviewer: null, turnLock: null
+    teams: null, reviewer: null, turnLock: null, autoMerge: null
   };
   const ctx: UnitContext = {
     org: "acme-org",

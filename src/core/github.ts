@@ -1,3 +1,4 @@
+import type { MergeMethod } from "./config.ts";
 import type { ExistingTicket, TicketComment } from "./types.ts";
 
 export async function expectOk(response: Response, what: string): Promise<Response> {
@@ -197,6 +198,7 @@ export interface PullRequest {
   nodeId: string;
   draft: boolean;
   headSha: string;
+  autoMerge: boolean;
 }
 
 export interface PullDetails {
@@ -242,10 +244,11 @@ interface Pull {
   title?: string;
   user?: { login: string } | null;
   head?: { sha: string };
+  auto_merge?: object | null;
 }
 
 function toPullRequest(pull: Pull): PullRequest {
-  return { number: pull.number, url: pull.html_url, nodeId: pull.node_id, draft: pull.draft === true, headSha: pull.head?.sha ?? "" };
+  return { number: pull.number, url: pull.html_url, nodeId: pull.node_id, draft: pull.draft === true, headSha: pull.head?.sha ?? "", autoMerge: pull.auto_merge != null };
 }
 
 function stateOf(pull: Pull): "open" | "merged" | "closed" {
@@ -308,6 +311,11 @@ export class RepoApi extends GitHubApi {
       ? "mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id } } }"
       : "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }";
     await this.graphql(mutation, { id: nodeId });
+  }
+
+  async enableAutoMerge(nodeId: string, method: MergeMethod): Promise<void> {
+    const mutation = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: $method }) { pullRequest { id } } }";
+    await this.graphql(mutation, { id: nodeId, method: method.toUpperCase() });
   }
 
   async #pull(number: number): Promise<Pull> {

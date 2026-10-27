@@ -7,14 +7,16 @@ import type { PublishRequest } from "../src/fixer/unit.ts";
 const URL7 = "https://github.com/acme-org/acme-api/pull/7";
 
 interface World {
-  open: { draft: boolean; headSha: string } | null;
+  open: { draft: boolean; headSha: string; autoMerge?: boolean } | null;
+  autoMergeRefused?: string;
   trees: Record<string, string>;
   reviews: { user: { login: string }; state: string }[];
 }
 
-function harness(world: World, localTree: string, reviewLabel: string | null = null) {
+function harness(world: World, localTree: string, reviewLabel: string | null = null, autoMerge: "merge" | "squash" | "rebase" | null = null) {
   const calls: string[] = [];
   const pushes: string[] = [];
+  const log: string[] = [];
   const bodies: Record<string, unknown> = {};
   const route = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input).replace("https://api.github.com/repos/acme-org/acme-api", "");
@@ -22,13 +24,17 @@ function harness(world: World, localTree: string, reviewLabel: string | null = n
     calls.push(`${method} ${url}`);
     if (init?.body) bodies[`${method} ${url}`] = JSON.parse(String(init.body));
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
-    if (method === "GET" && url.startsWith("/pulls?")) return json(world.open ? [{ number: 7, html_url: URL7, node_id: "PR_7", draft: world.open.draft, state: "open", head: { sha: world.open.headSha } }] : []);
+    if (method === "GET" && url.startsWith("/pulls?")) return json(world.open ? [{ number: 7, html_url: URL7, node_id: "PR_7", draft: world.open.draft, state: "open", head: { sha: world.open.headSha }, auto_merge: world.open.autoMerge ? {} : null }] : []);
     if (method === "GET" && url.startsWith("/git/commits/")) return json({ tree: { sha: world.trees[url.slice("/git/commits/".length)] } });
     if (method === "GET" && url.startsWith("/pulls/7/reviews")) return json(world.reviews);
     if (method === "POST" && url === "/pulls") return json({ number: 8, html_url: "https://github.com/acme-org/acme-api/pull/8", node_id: "PR_8", draft: false, state: "open", head: { sha: "new" } });
     if (method === "GET" && url === "") return json({ default_branch: "main" });
     if (method === "GET" && url === "/labels/reviewdo") return new Response("", { status: 404 });
-    if (String(input).endsWith("/graphql")) return json({ data: {} });
+    if (String(input).endsWith("/graphql")) {
+      const query = (JSON.parse(String(init?.body)) as { query: string }).query;
+      if (query.includes("enablePullRequestAutoMerge")) calls[calls.length - 1] = "AUTOMERGE";
+      return json(query.includes("enablePullRequestAutoMerge") && world.autoMergeRefused ? { data: null, errors: [{ message: world.autoMergeRefused }] } : { data: {} });
+    }
     return json({});
   };
   const publisher = new LivePublisher({
@@ -39,9 +45,11 @@ function harness(world: World, localTree: string, reviewLabel: string | null = n
       inCheckout: async (_path, args) => (args[0] === "rev-parse" ? `${localTree}\n` : ""),
     },
     reviewLabel,
+    autoMerge,
+    log: (line) => void log.push(line),
     api: (token, repo) => new RepoApi(token, "acme-org", repo, route as typeof fetch),
   });
-  return { publisher, calls, pushes, bodies };
+  return { publisher, calls, pushes, bodies, log };
 }
 
 function request(draft: boolean): PublishRequest {
@@ -142,5 +150,34 @@ describe("live publisher with a reviewer", () => {
     const created = harness({ open: null, trees: {}, reviews: [] }, "t1");
     await created.publisher.publish({ ...request(false), reviewReply: "r" });
     assert.deepEqual(created.bodies["POST /issues/8/comments"], { body: "r" });
+  });
+});
+
+describe("live publisher with auto-merge", () => {
+  it("enables it on a new ready pull request and on an existing one that lacks it, never on a draft", async () => {
+    const created = harness({ open: null, trees: {}, reviews: [] }, "t1", null, "squash");
+    await created.publisher.publish(request(false));
+    assert.equal(created.calls.filter((call) => call === "AUTOMERGE").length, 1);
+    assert.deepEqual(created.log, []);
+    const draft = harness({ open: null, trees: {}, reviews: [] }, "t1", null, "squash");
+    await draft.publisher.publish(request(true));
+    assert.equal(draft.calls.includes("AUTOMERGE"), false);
+    const existing = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t1" }, reviews: [] }, "t1", null, "squash");
+    await existing.publisher.publish(request(false));
+    assert.equal(existing.calls.includes("AUTOMERGE"), true);
+    const already = harness({ open: { draft: false, headSha: "old", autoMerge: true }, trees: { old: "t0" }, reviews: [] }, "t1", null, "squash");
+    await already.publisher.publish(request(false));
+    assert.equal(already.calls.includes("AUTOMERGE"), false);
+    const off = harness({ open: null, trees: {}, reviews: [] }, "t1");
+    await off.publisher.publish(request(false));
+    assert.equal(off.calls.includes("AUTOMERGE"), false);
+  });
+
+  it("logs a refusal and still publishes", async () => {
+    const run = harness({ open: null, trees: {}, reviews: [], autoMergeRefused: "Pull request Auto merge is not allowed for this repository" }, "t1", "reviewdo", "squash");
+    const published = await run.publisher.publish(request(false));
+    assert.equal(published.announce, "new");
+    assert.deepEqual(run.log, ["could not enable auto-merge on https://github.com/acme-org/acme-api/pull/8: graphql failed: [{\"message\":\"Pull request Auto merge is not allowed for this repository\"}]"]);
+    assert.ok(run.calls.includes("POST /issues/8/labels"));
   });
 });

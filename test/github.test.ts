@@ -38,7 +38,9 @@ describe("repo api", () => {
   it("finds an open pull request by head and returns null when there is none", async () => {
     const { fetch, calls } = recorder([PULL], []);
     const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
-    assert.deepEqual(await api.findOpenPull("proseco/package-lock.json"), { number: 7, url: PULL.html_url, nodeId: "PR_node", draft: false, headSha: "abc123" });
+    assert.deepEqual(await api.findOpenPull("proseco/package-lock.json"), { number: 7, url: PULL.html_url, nodeId: "PR_node", draft: false, headSha: "abc123", autoMerge: false });
+    const { fetch: again } = recorder([{ ...PULL, auto_merge: { merge_method: "squash" } }]);
+    assert.equal((await new RepoApi("tok", "acme-org", "acme-api", again).findOpenPull("proseco/package-lock.json"))!.autoMerge, true);
     assert.equal(await api.findOpenPull("proseco/other"), null);
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls?head=acme-org%3Aproseco%2Fpackage-lock.json&state=open");
   });
@@ -95,6 +97,15 @@ describe("repo api", () => {
     assert.match((calls[0]!.body as { query: string }).query, /convertPullRequestToDraft/);
     assert.match((calls[1]!.body as { query: string }).query, /markPullRequestReadyForReview/);
     assert.deepEqual((calls[1]!.body as { variables: unknown }).variables, { id: "PR_node" });
+  });
+
+  it("enables auto-merge through the graphql mutation with the method in upper case, and surfaces a refusal", async () => {
+    const { fetch, calls } = recorder({ data: {} }, { data: null, errors: [{ message: "Pull request Auto merge is not allowed for this repository" }] });
+    const api = new RepoApi("tok", "acme-org", "acme-api", fetch);
+    await api.enableAutoMerge("PR_node", "squash");
+    assert.match((calls[0]!.body as { query: string }).query, /enablePullRequestAutoMerge/);
+    assert.deepEqual((calls[0]!.body as { variables: unknown }).variables, { id: "PR_node", method: "SQUASH" });
+    await assert.rejects(api.enableAutoMerge("PR_node", "merge"), /Auto merge is not allowed/);
   });
 
   it("reads a pull request's state: open, merged by merged_at, or closed", async () => {
