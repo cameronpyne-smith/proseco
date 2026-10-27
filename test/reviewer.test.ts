@@ -101,8 +101,8 @@ describe("findings in the prompt and the reply", () => {
     assert.match(replyComment({ ...FINDINGS, findings: [] }, "reviewdo"), /No inline findings/);
   });
 
-  it("words the Teams line for each outcome", () => {
-    assert.equal(reviewLine("reviewdo", "ready"), "reviewdo: ready to merge");
+  it("words the Teams line for each outcome, saying nothing when the pull request is ready", () => {
+    assert.equal(reviewLine("reviewdo", "ready"), null);
     assert.equal(reviewLine("reviewdo", "caution"), "reviewdo: merge with care");
     assert.equal(reviewLine("reviewdo", "no-review"), "reviewdo: no review");
     assert.equal(reviewLine("reviewdo", "changes-requested"), "reviewdo: changes requested");

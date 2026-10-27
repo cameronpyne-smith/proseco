@@ -286,11 +286,11 @@ describe("delivering announcements", () => {
 describe("waiting for the reviewer", () => {
   const key = (url: string, head = "head1") => `${url}@${head}`;
 
-  it("announces ready and merge-with-care verdicts with a line each, grouped by verdict", async () => {
+  it("announces a ready verdict without a line and merge-with-care with one, grouped by verdict", async () => {
     const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW), { verdicts: { [key(URL1)]: "ready", [key(URL2)]: "caution" } });
     await deliverAnnouncements(run.deps);
     assert.equal(run.sent.length, 2);
-    assert.match(run.sent[0]!, new RegExp(`${URL1}</a><br>reviewdo: ready to merge$`));
+    assert.match(run.sent[0]!, new RegExp(`${URL1}</a>$`));
     assert.match(run.sent[1]!, new RegExp(`${URL2}</a><br>reviewdo: merge with care$`));
     assert.equal(pendingAnnouncement(run.state, 12), undefined);
     assert.match(run.log[0]!, /announced in Teams \(ready\)/);
