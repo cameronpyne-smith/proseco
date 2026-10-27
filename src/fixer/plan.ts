@@ -12,7 +12,7 @@ export interface PlannedFix {
 }
 
 export interface PrUnit {
-  kind: "lockfile" | "major";
+  kind: "lockfile" | "major" | "image";
   source: string;
   ecosystem: EcosystemName | null;
   branch: string;
@@ -30,6 +30,10 @@ export function slug(text: string): string {
 
 function refSafe(text: string): string {
   return slug(text).replace(/\.lock$/, "-lock");
+}
+
+export function isImageSource(source: string): boolean {
+  return ecosystemFor(source) === null && /^(?:localhost|[^/]*[.:][^/]*)\//.test(source);
 }
 
 function findingOf(row: TicketRow): Finding {
@@ -72,17 +76,29 @@ export function planUnits(rows: TicketRow[], org: string): PrUnit[] {
     } satisfies PlannedFix,
   }));
 
-  const lockfileUnits = [...new Set(planned.filter((item) => !item.major).map((item) => item.source))]
+  const images = planned.filter((item) => isImageSource(item.source));
+  const imageUnits = [...new Set(images.map((item) => item.source))].sort(compareText).map(
+    (source): PrUnit => ({
+      kind: "image",
+      source,
+      ecosystem: null,
+      branch: `proseco/${refSafe(source)}`,
+      fixes: images.filter((item) => item.source === source).map((item) => item.fix),
+    }),
+  );
+  const files = planned.filter((item) => !isImageSource(item.source));
+
+  const lockfileUnits = [...new Set(files.filter((item) => !item.major).map((item) => item.source))]
     .sort(compareText)
     .map((source): PrUnit => ({
       kind: "lockfile",
       source,
       ecosystem: ecosystemFor(source)?.name ?? null,
       branch: `proseco/${refSafe(source)}`,
-      fixes: planned.filter((item) => !item.major && item.source === source).map((item) => item.fix),
+      fixes: files.filter((item) => !item.major && item.source === source).map((item) => item.fix),
     }));
 
-  const majors = planned.filter((item) => item.major);
+  const majors = files.filter((item) => item.major);
   const base = (item: (typeof majors)[number]) => refSafe(`${item.fix.package}-${item.fix.target[0]}`);
   const majorUnits = majors.map((item): PrUnit => {
     const shared = majors.filter((other) => base(other) === base(item)).length > 1;
@@ -95,5 +111,5 @@ export function planUnits(rows: TicketRow[], org: string): PrUnit[] {
       fixes: [item.fix],
     };
   });
-  return [...lockfileUnits, ...majorUnits];
+  return [...lockfileUnits, ...majorUnits, ...imageUnits];
 }

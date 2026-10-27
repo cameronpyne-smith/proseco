@@ -59,8 +59,12 @@ export interface AttemptResult {
 
 function labelOf(unit: PrUnit): string {
   if (unit.kind === "major") return `\`${unit.source}\` (${unit.fixes.map((fix) => fix.package).join(", ")}, major upgrade)`;
+  if (unit.kind === "image") return `\`${unit.source}\` (image)`;
   return `\`${unit.source}\``;
 }
+
+const REBUILD =
+  "these findings are in the built image, not in a file in this repository. Rebuild and push the image, after merging any pull request above, so it picks up the patched packages from its base image; if the Dockerfile pins the base image to a digest or a patch version, bump it first";
 
 function none(reason: string): UnitResult {
   return { outcome: { kind: "none", reason } };
@@ -68,6 +72,7 @@ function none(reason: string): UnitResult {
 
 async function work(unit: PrUnit, headSha: string, imageTicket: boolean, deps: AttemptDeps): Promise<{ result: UnitResult; review: ReviewFindings | null }> {
   if (imageTicket) return { result: none("image tickets are not attempted yet"), review: null };
+  if (unit.kind === "image") return { result: none(REBUILD), review: null };
   if (unit.ecosystem === null) return { result: none("unsupported ecosystem: unknown lockfile type"), review: null };
   let review: ReviewFindings | null = null;
   try {

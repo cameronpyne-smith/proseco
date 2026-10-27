@@ -269,6 +269,16 @@ describe("attempt", () => {
     assert.equal(result.state.tickets["13"]!.attempt!.outcome, "gave-up");
   });
 
+  it("tells the ticket to rebuild an image built from the repository, without working it, and still works the lockfile", async () => {
+    const own = ticket([finding({}), finding({ cve: "CVE-2026-0021", ecosystem: "os", package: "zlib1g", installed: "1:1.3.dfsg-3.1ubuntu2.2", fixedIn: "1:1.3.dfsg-3.1ubuntu2.3", source: "ghcr.io/acme-org/acme-api" })]);
+    const run = harness();
+    const result = await runAttempt({ ticket: own, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(run.worked, ["package-lock.json"]);
+    assert.deepEqual(result.reports.map((report) => report.unit.kind), ["lockfile", "image"]);
+    assert.match(run.comments[0]!, /- `ghcr\.io\/acme-org\/acme-api` \(image\): no pull request: these findings are in the built image, not in a file in this repository\. Rebuild and push the image, after merging any pull request above/);
+    assert.doesNotMatch(run.comments[0]!, /unsupported ecosystem/);
+  });
+
   it("does nothing for an ignored ticket: no fetch, no unit, no comment, no state change", async () => {
     const ignored = recordIgnored(emptyState(), 12, true);
     const run = harness();

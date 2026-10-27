@@ -83,11 +83,12 @@ describe("dry run report", () => {
     assert.equal((await dryRunReport(input([row({ source: "web/package-lock.json" })], mixed))).units[0]!.toolchain, ">=18");
   });
 
-  it("says when the lockfile is missing at head or has no supported ecosystem", async () => {
-    const report = await dryRunReport(input([row(), row({ source: "yarn.lock" })], {}));
+  it("says when the lockfile is missing at head, has no supported ecosystem, or is an image", async () => {
+    const report = await dryRunReport(input([row(), row({ source: "yarn.lock" }), row({ source: "ghcr.io/acme-org/acme-api" })], {}));
     assert.deepEqual(report.units.map((unit) => [unit.source, unit.lockfile]), [
       ["package-lock.json", "missing at head"],
       ["yarn.lock", "unsupported ecosystem"],
+      ["ghcr.io/acme-org/acme-api", "not a lockfile: rebuild the image"],
     ]);
     assert.equal(report.units[0]!.fixes[0]!.chain, null);
   });

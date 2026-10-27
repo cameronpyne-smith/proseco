@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import type { TicketRow } from "../src/core/ticket.ts";
-import { planUnits, slug } from "../src/fixer/plan.ts";
+import { isImageSource, planUnits, slug } from "../src/fixer/plan.ts";
 
 function row(overrides: Partial<TicketRow> = {}): TicketRow {
   return {
@@ -104,6 +104,34 @@ describe("PR units", () => {
   it("treats a row whose fix cannot be compared as non-major", () => {
     const [unit] = planUnits([row({ fixedIn: "1.0.9" }), row({ cve: "CVE-2", fixedIn: "weird" })], "acme-org");
     assert.equal(unit!.kind, "lockfile");
+  });
+
+  it("puts an image's rows, major or not, in one image unit after the file units", () => {
+    const all = planUnits(
+      [
+        row(),
+        row({ cve: "CVE-2026-0021", package: "zlib1g", installed: "1:1.3.dfsg-3.1ubuntu2.2", fixedIn: "1:1.3.dfsg-3.1ubuntu2.3", source: "ghcr.io/acme-org/acme-api" }),
+        row({ cve: "CVE-2026-0022", package: "libssl3", installed: "3.0.2", fixedIn: "4.0.0", source: "ghcr.io/acme-org/acme-api" }),
+        row({ cve: "CVE-2026-0023", package: "busybox", installed: "1.36.0", fixedIn: "1.36.1", source: "localhost/acme-tools" }),
+      ],
+      "acme-org",
+    );
+    assert.deepEqual(
+      all.map((unit) => [unit.kind, unit.source, unit.ecosystem, unit.fixes.map((fix) => fix.package)]),
+      [
+        ["lockfile", "package-lock.json", "npm", ["acme-parse"]],
+        ["image", "ghcr.io/acme-org/acme-api", null, ["libssl3", "zlib1g"]],
+        ["image", "localhost/acme-tools", null, ["busybox"]],
+      ],
+    );
+  });
+
+  it("does not take a lockfile in a dotted directory, or an unknown lockfile, for an image", () => {
+    assert.equal(isImageSource("web.app/package-lock.json"), false);
+    assert.equal(isImageSource("Gemfile.lock"), false);
+    assert.equal(isImageSource("src/Gemfile.lock"), false);
+    assert.equal(isImageSource("acme.azurecr.io/acme-api"), true);
+    assert.equal(isImageSource("registry:5000/acme-api"), true);
   });
 
   it("returns no units for no rows", () => {
