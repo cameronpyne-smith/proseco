@@ -1,4 +1,5 @@
 import { compareVersions, inRange, isMajorUpgrade, packageKey } from "../core/versions.ts";
+import type { Advisory } from "./advisories.ts";
 import type { Ecosystem } from "./ecosystems/ecosystem.ts";
 
 export interface CheckedFix {
@@ -102,6 +103,20 @@ export function checkLockfile(ecosystem: Pick<Ecosystem, "installedVersions" | "
   return fixes.map((fix) => checkOne(installed, ecosystem.findingEcosystem, ecosystem.absentIsFixed ?? true, fix, fixes.filter((other) => packageKey(ecosystem.findingEcosystem, other.package) === packageKey(ecosystem.findingEcosystem, fix.package))));
 }
 
+export function checkedFix(fix: { package: string; installed: string; target: string[] }, advisories: (Advisory | null)[]): CheckedFix {
+  const ranges = advisories.map((advisory) => advisory?.vulnerableRange ?? null);
+  const known = ranges.length > 0 && ranges.every((range) => range !== null);
+  return { package: fix.package, installed: fix.installed, target: fix.target, vulnerable: known ? ranges.flatMap((range) => range!.split(" or ")) : null };
+}
+
 export function checkPassed(results: PackageCheck[]): boolean {
   return results.every((result) => result.ok);
+}
+
+export function alreadyFixed(ecosystem: Parameters<typeof checkLockfile>[0], lockfileText: string, fixes: CheckedFix[]): boolean {
+  try {
+    return checkPassed(checkLockfile(ecosystem, lockfileText, fixes));
+  } catch {
+    return false;
+  }
 }

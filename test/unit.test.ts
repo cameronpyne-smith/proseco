@@ -226,6 +226,23 @@ describe("workUnit with an ecosystem behind the interface", () => {
     assert.deepEqual(seen.images, []);
   });
 
+  it("reports a unit already fixed at the default branch head without any sandbox work", async () => {
+    const fixed = { ...UNIT, fixes: [{ ...UNIT.fixes[0]!, installed: "0.9.0", target: ["1.0.0"] }] };
+    for (const unit of [fixed, { ...fixed, kind: "major" as const, branch: "proseco/pkg-1.0.0" }]) {
+      const { result, seen } = await run({ ecosystem: fakeEcosystem(), unit });
+      assert.deepEqual(result.outcome, { kind: "none", reason: "already fixed on the default branch" });
+      assert.equal(seen.started, 0);
+      assert.deepEqual(seen.images, []);
+      assert.deepEqual(seen.published, []);
+    }
+  });
+
+  it("carries on when the head lockfile cannot be checked", async () => {
+    const { result, seen } = await run({ ecosystem: fakeEcosystem({ installedVersions: () => { throw new Error("unreadable"); } }), edits: [write(LOCKFILE, "pkg==2.0.0\n")] });
+    assert.equal(seen.started, 1);
+    assert.notEqual((result.outcome as { reason?: string }).reason, "already fixed on the default branch");
+  });
+
   it("publishes nothing when the ecosystem's check fails after the agent's edit", async () => {
     const { result, seen } = await run({ ecosystem: fakeEcosystem(), edits: [write(LOCKFILE, "pkg==1.5.0\n")] });
     assert.equal(result.outcome.kind, "none");

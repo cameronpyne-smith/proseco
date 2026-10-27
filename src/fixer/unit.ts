@@ -6,7 +6,7 @@ import type { FixerConfig } from "../core/config.ts";
 import type { Advisory } from "./advisories.ts";
 import type { UnitResult } from "./attempt.ts";
 import type { AnnounceReason } from "./comment.ts";
-import { checkLockfile, checkPassed, type CheckedFix, type PackageCheck } from "./check.ts";
+import { alreadyFixed, checkedFix, checkLockfile, checkPassed, type CheckedFix, type PackageCheck } from "./check.ts";
 import { declaredToolchain } from "./dryrun.ts";
 import { ecosystemFor, type Ecosystem, type ManifestPair, type ResolverReference, type Verification } from "./ecosystems/ecosystem.ts";
 import { buildFacts, type UnitFacts } from "./facts.ts";
@@ -154,11 +154,7 @@ const GATE_SHARE = 8;
 const MAX_REFUSALS = 2;
 
 function checkedFixes(unit: PrUnit, facts: UnitFacts): CheckedFix[] {
-  return unit.fixes.map((fix, index) => {
-    const ranges = (facts.fixes[index]?.rows ?? []).map((row) => row.advisory?.vulnerableRange ?? null);
-    const known = ranges.length > 0 && ranges.every((range) => range !== null);
-    return { package: fix.package, installed: fix.installed, target: fix.target, vulnerable: known ? ranges.flatMap((range) => range!.split(" or ")) : null };
-  });
+  return unit.fixes.map((fix, index) => checkedFix(fix, (facts.fixes[index]?.rows ?? []).map((row) => row.advisory)));
 }
 
 async function readWorkFile(box: SandboxHandle, path: string): Promise<string> {
@@ -284,6 +280,7 @@ export async function workUnit(ctx: UnitContext, unit: PrUnit, headSha: string, 
   const major = unit.kind === "major";
   const facts = await buildFacts(unit, ecosystem, lockfileText, toolchain, ctx.advisory, ctx.releases);
   const checked = checkedFixes(unit, facts);
+  if (alreadyFixed(ecosystem, lockfileText, checked)) return none("already fixed on the default branch");
   const image = await ensureImage(ctx.docker, imageFor(ecosystem.imageFamily, toolchain));
   const checkout = await ctx.store.checkout(ctx.repo, headSha);
   let sandbox: SandboxHandle | undefined;

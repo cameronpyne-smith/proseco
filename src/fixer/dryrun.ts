@@ -1,6 +1,7 @@
 import { dirname } from "node:path/posix";
 import type { TicketRow } from "../core/ticket.ts";
 import type { Advisory } from "./advisories.ts";
+import { alreadyFixed, checkedFix, type CheckedFix } from "./check.ts";
 import { ecosystemFor, type Ecosystem } from "./ecosystems/ecosystem.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
 import { bodyHash, decide, type Attempt, type Decision } from "./state.ts";
@@ -25,7 +26,7 @@ export interface DryRunReport {
     branch: string;
     source: string;
     ecosystem: string | null;
-    lockfile: "read" | "missing at head" | "unsupported ecosystem" | "not a lockfile: rebuild the image";
+    lockfile: "read" | "already fixed at head" | "missing at head" | "unsupported ecosystem" | "not a lockfile: rebuild the image";
     toolchain: string | null;
     fixes: {
       package: string;
@@ -61,11 +62,13 @@ export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
     const lockfile = ecosystem ? await input.readFile(unit.source) : null;
     const toolchain = ecosystem ? await declaredToolchain(ecosystem, unit.source, input.readFile) : null;
     const fixes: DryRunReport["units"][number]["fixes"] = [];
+    const checked: CheckedFix[] = [];
     for (const fix of unit.fixes) {
       const rows = [];
       for (const row of fix.rows) {
         rows.push({ cve: row.cve, severity: row.severity, fixedIn: row.fixedIn, advisory: await input.advisory(row.cve, row.package, row.installed) });
       }
+      checked.push(checkedFix(fix, rows.map((row) => row.advisory)));
       fixes.push({
         package: fix.package,
         installed: fix.installed,
@@ -80,7 +83,7 @@ export async function dryRunReport(input: DryRunInput): Promise<DryRunReport> {
       branch: unit.branch,
       source: unit.source,
       ecosystem: ecosystem?.name ?? null,
-      lockfile: unit.kind === "image" ? "not a lockfile: rebuild the image" : !ecosystem ? "unsupported ecosystem" : lockfile === null ? "missing at head" : "read",
+      lockfile: unit.kind === "image" ? "not a lockfile: rebuild the image" : !ecosystem ? "unsupported ecosystem" : lockfile === null ? "missing at head" : !ecosystem.unsupported(lockfile) && alreadyFixed(ecosystem, lockfile, checked) ? "already fixed at head" : "read",
       toolchain,
       fixes,
     });

@@ -93,6 +93,15 @@ describe("dry run report", () => {
     assert.equal(report.units[0]!.fixes[0]!.chain, null);
   });
 
+  it("says when the lockfile at head already has every package at or above its fixed-in version", async () => {
+    const files = { "package-lock.json": NPM_LOCK };
+    const http = row({ cve: "CVE-2026-0003", package: "acme-http", installed: "1.3.0", fixedIn: "1.4.0" });
+    const open = await dryRunReport(input([row(), http], files));
+    assert.equal(open.units[0]!.lockfile, "read");
+    const fixed = await dryRunReport(input([row({ cve: "CVE-2026-0004", package: "acme-test", installed: "3.0.0", fixedIn: "3.1.0" }), http], files));
+    assert.equal(fixed.units[0]!.lockfile, "already fixed at head");
+  });
+
   it("reports why a ticket would not be attempted", async () => {
     const report = await dryRunReport(
       input([row()], { "package-lock.json": NPM_LOCK }, {
