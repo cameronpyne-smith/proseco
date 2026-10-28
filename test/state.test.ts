@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, feedbackRounds, forgetClosedTickets, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, withoutPulls, withPull, pullState, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, feedbackRounds, forgetClosedTickets, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordShown, shownInComment, recordIgnored, saveState, withAnnouncement, withoutPulls, withPull, pullState, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -213,6 +213,18 @@ describe("review feedback", () => {
     assert.deepEqual(feedbackRounds(loadState(file), 12), { [PR]: 1 });
     writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, feedback: { [PR]: "1" } } } }));
     assert.throws(() => loadState(file), /malformed feedback record/);
+  });
+
+  it("records what the ticket comment shows, clears it with null, and refuses a malformed record", () => {
+    const shown = recordShown(emptyState(), 12, `${PR} merged`);
+    assert.equal(shownInComment(shown, 12), `${PR} merged`);
+    assert.equal(shownInComment(recordShown(shown, 12, null), 12), null);
+    assert.equal("shown" in recordShown(shown, 12, null).tickets["12"]!, false);
+    const file = join(mkdtempSync(join(tmpdir(), "proseco-state-")), "state.json");
+    saveState(file, shown);
+    assert.equal(shownInComment(loadState(file), 12), `${PR} merged`);
+    writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, shown: 3 } } }));
+    assert.throws(() => loadState(file), /malformed shown record/);
   });
 });
 

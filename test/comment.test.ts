@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { TicketComment } from "../src/core/types.ts";
-import { appendToComment, mergeIntoComment, mergeUnitLines, renderComment, upsertComment, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
+import { appendToComment, editStatus, mergeIntoComment, mergeUnitLines, renderComment, statusLine, upsertComment, withPulls, withStatus, WORKING, type CommentWriter, type UnitReport } from "../src/fixer/comment.ts";
 
 const REPORTS: UnitReport[] = [
   { label: "`package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/7", draft: false } },
@@ -28,7 +28,7 @@ function writer(existing: TicketComment[]): CommentWriter & { created: string[];
 
 describe("ticket comment", () => {
   it("starts with the attempt marker and the body hash, then lists each unit's pull request or the reason there is none", () => {
-    const body = renderComment("abc123", REPORTS);
+    const body = renderComment("abc123", REPORTS, "**Status**");
     assert.equal(body.split("\n")[0], "<!-- proseco:attempt abc123 -->");
     assert.match(body, /- `package-lock\.json`: ready for review: https:\/\/github\.com\/acme-org\/acme-api\/pull\/7/);
     assert.match(body, /- `web\/package-lock\.json`: draft: https:\/\/github\.com\/acme-org\/acme-api\/pull\/8/);
@@ -37,7 +37,7 @@ describe("ticket comment", () => {
   });
 
   it("says so when there was nothing to attempt", () => {
-    assert.match(renderComment("h", []), /nothing to attempt/i);
+    assert.match(renderComment("h", [], "**Status**"), /nothing to attempt/i);
   });
 
   it("creates the comment when the bot has none", async () => {
@@ -84,7 +84,7 @@ describe("ticket comment", () => {
 });
 
 describe("merging a redo into the ticket comment", () => {
-  const existing = `${renderComment("h", REPORTS)}- Not announced in Teams: \`timeout\`\n`;
+  const existing = `${renderComment("h", REPORTS, "**Status**")}- Not announced in Teams: \`timeout\`\n`;
   const redone: UnitReport = { label: "`web/package-lock.json`", outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/8", draft: false } };
 
   it("replaces only the redone unit's line and keeps the rest, including later notes", () => {
@@ -102,16 +102,64 @@ describe("merging a redo into the ticket comment", () => {
 
   it("writes a fresh comment when there is none or it has no unit lines, and edits only on a change", async () => {
     const none = writer([]);
-    await mergeIntoComment(none, 12, "acme-proseco", [redone], "fresh");
+    await mergeIntoComment(none, 12, "acme-proseco", [redone], "fresh", "**Status**");
     assert.deepEqual(none.created, ["fresh"]);
-    const empty = writer([comment(3, "acme-proseco[bot]", renderComment("h", []))]);
-    await mergeIntoComment(empty, 12, "acme-proseco", [redone], "fresh");
+    const empty = writer([comment(3, "acme-proseco[bot]", renderComment("h", [], "**Status**"))]);
+    await mergeIntoComment(empty, 12, "acme-proseco", [redone], "fresh", "**Status**");
     assert.deepEqual(empty.edited, [[3, "fresh"]]);
     const same = writer([comment(3, "acme-proseco[bot]", existing)]);
-    await mergeIntoComment(same, 12, "acme-proseco", [REPORTS[1]!], "fresh");
+    await mergeIntoComment(same, 12, "acme-proseco", [REPORTS[1]!], "fresh", "**Status**");
     assert.deepEqual([same.created, same.edited], [[], []]);
     const changed = writer([comment(3, "acme-proseco[bot]", existing)]);
-    await mergeIntoComment(changed, 12, "acme-proseco", [redone], "fresh");
+    await mergeIntoComment(changed, 12, "acme-proseco", [redone], "fresh", "**Status**");
     assert.deepEqual(changed.edited, [[3, mergeUnitLines(existing, [redone])]]);
+  });
+});
+
+describe("ticket comment status", () => {
+  const PR7 = "https://github.com/acme-org/acme-api/pull/7";
+  const PR8 = "https://github.com/acme-org/acme-api/pull/8";
+
+  it("waits while any pull request is open, is done once none is open and one merged, and otherwise points at the reasons", () => {
+    assert.match(statusLine([{ url: PR7, state: "merged", draft: false }, { url: PR8, state: "open", draft: true }]), /^\*\*Waiting for review:\*\*/);
+    assert.match(statusLine([{ url: PR7, state: "merged", draft: false }, { url: PR8, state: "closed", draft: false }]), /^\*\*Done on proseco's side:\*\* nothing is left open\. This ticket closes when the scanner no longer sees its alerts\.$/);
+    assert.match(statusLine([{ url: PR8, state: "closed", draft: false }]), /^\*\*No pull request open:\*\*/);
+    assert.match(statusLine([]), /^\*\*No pull request open:\*\*/);
+  });
+
+  it("puts the status on the line after the marker, replacing the old header or status", () => {
+    const body = renderComment("h", REPORTS, "**Waiting**");
+    assert.deepEqual(body.split("\n").slice(0, 4), ["<!-- proseco:attempt h -->", "", "**Waiting**", ""]);
+    assert.equal(withStatus(body, WORKING), body.replace("**Waiting**", WORKING));
+    assert.equal(withStatus("<!-- proseco:attempt h -->\n\nproseco attempted this ticket:\n\n- `a`: draft: x\n", "**Done**"), "<!-- proseco:attempt h -->\n\n**Done**\n\n- `a`: draft: x\n");
+    assert.equal(withStatus("<!-- proseco:attempt h -->", "**Done**"), "<!-- proseco:attempt h -->\n\n**Done**\n");
+  });
+
+  it("rewrites each pull request's line to its current state and leaves other lines alone", () => {
+    const body = `${renderComment("h", REPORTS, "**Waiting**")}- Not announced in Teams: \`timeout\`\n`;
+    const next = withPulls(body, [{ url: PR7, state: "merged", draft: false }, { url: PR8, state: "closed", draft: true }]);
+    assert.equal(next, body.replace(`ready for review: ${PR7}`, `merged: ${PR7}`).replace(`draft: ${PR8}`, `closed without merging: ${PR8}`));
+    assert.equal(withPulls(next, [{ url: PR7, state: "open", draft: true }]), next.replace(`merged: ${PR7}`, `draft: ${PR7}`));
+  });
+
+  it("edits the bot's comment only on a change, and creates one only when given a fresh body", async () => {
+    const existing = writer([comment(3, "acme-proseco[bot]", "<!-- proseco:attempt h -->\n\n**Waiting**\n")]);
+    await editStatus(existing, 5, "acme-proseco", (body) => withStatus(body, WORKING), "fresh");
+    assert.deepEqual([existing.edited, existing.created], [[[3, `<!-- proseco:attempt h -->\n\n${WORKING}\n`]], []]);
+    const same = writer([comment(3, "acme-proseco[bot]", "<!-- proseco:attempt h -->\n\n**Waiting**\n")]);
+    await editStatus(same, 5, "acme-proseco", (body) => withStatus(body, "**Waiting**"), "fresh");
+    assert.deepEqual(same.edited, []);
+    const none = writer([]);
+    await editStatus(none, 5, "acme-proseco", (body) => body, null);
+    await editStatus(none, 5, "acme-proseco", (body) => body, "fresh");
+    assert.deepEqual(none.created, ["fresh"]);
+  });
+
+  it("sets the status when merging a redo into the comment", async () => {
+    const redone: UnitReport = { label: "`web/package-lock.json`", outcome: { kind: "pr", url: PR8, draft: false } };
+    const api = writer([comment(3, "acme-proseco[bot]", renderComment("h", REPORTS, WORKING))]);
+    await mergeIntoComment(api, 12, "acme-proseco", [redone], "fresh", "**Waiting**");
+    assert.equal(api.edited[0]![1].split("\n")[2], "**Waiting**");
+    assert.match(api.edited[0]![1], /`web\/package-lock\.json`: ready for review/);
   });
 });

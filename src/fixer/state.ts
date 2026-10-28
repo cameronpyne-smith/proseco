@@ -31,6 +31,7 @@ export interface TicketState {
   announcement?: PendingAnnouncement;
   announced?: string[];
   feedback?: Record<string, number>;
+  shown?: string;
 }
 
 export interface PullState {
@@ -117,6 +118,15 @@ export function recordIgnored(state: State, ticket: number, ignored: boolean): S
 export function withAnnouncement(state: State, ticket: number, announcement: PendingAnnouncement | null): State {
   const { announcement: _, ...rest } = entry(state, ticket);
   return withEntry(state, ticket, announcement ? { ...rest, announcement } : rest);
+}
+
+export function shownInComment(state: State, ticket: number): string | null {
+  return entry(state, ticket).shown ?? null;
+}
+
+export function recordShown(state: State, ticket: number, shown: string | null): State {
+  const { shown: _, ...rest } = entry(state, ticket);
+  return withEntry(state, ticket, shown === null ? rest : { ...rest, shown });
 }
 
 export function announcedPrs(state: State, ticket: number): string[] {
@@ -226,6 +236,7 @@ function validate(value: unknown, file: string): State {
     if (item.announcement !== undefined && !validAnnouncement(item.announcement)) fail(`ticket ${number} has a malformed announcement`);
     if (item.announced !== undefined && !(Array.isArray(item.announced) && item.announced.every((url) => typeof url === "string"))) fail(`ticket ${number} has a malformed announced list`);
     if (item.feedback !== undefined && !validFeedback(item.feedback)) fail(`ticket ${number} has a malformed feedback record`);
+    if (item.shown !== undefined && typeof item.shown !== "string") fail(`ticket ${number} has a malformed shown record`);
     const attempt = item.attempt;
     if (attempt === null) continue;
     const valid =

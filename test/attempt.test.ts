@@ -3,9 +3,10 @@ import { describe, it } from "node:test";
 import { renderBody } from "../src/core/ticket.ts";
 import type { Enrichment, Finding } from "../src/core/types.ts";
 import { runAttempt, ShutdownRequested, type AttemptDeps, type UnitResult } from "../src/fixer/attempt.ts";
+import type { PullState } from "../src/fixer/comment.ts";
 import type { PrUnit } from "../src/fixer/plan.ts";
 import type { PullRedo } from "../src/fixer/pulls.ts";
-import { bodyHash, emptyState, pendingAnnouncement, recordAttempt, recordIgnored, type PullRequestStatus, type State } from "../src/fixer/state.ts";
+import { bodyHash, emptyState, pendingAnnouncement, recordAttempt, recordIgnored, recordShown, shownInComment, type State } from "../src/fixer/state.ts";
 
 function finding(overrides: Partial<Finding>): Finding {
   return { origin: "dependabot", repo: "acme-api", cve: "CVE-2026-0001", severity: "high", ecosystem: "npm", package: "minimist", installed: "1.2.5", fixedIn: "1.2.6", source: "package-lock.json", relationship: null, scope: null, imageKey: null, ...overrides };
@@ -30,7 +31,7 @@ interface Harness {
   statusCalls: string[];
 }
 
-function harness(options: { work?: (unit: PrUnit) => Promise<UnitResult>; statuses?: Record<string, PullRequestStatus["state"]>; commentFails?: boolean } = {}): Harness {
+function harness(options: { work?: (unit: PrUnit) => Promise<UnitResult>; statuses?: Record<string, PullState["state"]>; commentFails?: boolean } = {}): Harness {
   const result: Harness = { worked: [], fetched: 0, comments: [], statusCalls: [], deps: undefined as never };
   result.deps = {
     org: "acme-org",
@@ -40,7 +41,7 @@ function harness(options: { work?: (unit: PrUnit) => Promise<UnitResult>; status
     },
     prStatus: async (url) => {
       result.statusCalls.push(url);
-      return { url, state: options.statuses?.[url] ?? "open" };
+      return { url, state: options.statuses?.[url] ?? "open", draft: false };
     },
     workUnit: async (unit) => {
       result.worked.push(unit.source);
@@ -184,6 +185,48 @@ describe("attempt", () => {
     assert.equal(result.skipped, true);
     assert.match(result.decision.reason, /already attempted/);
     assert.deepEqual(run.worked, []);
+  });
+
+  it("marks the comment as working before the first unit, forgetting what it showed so an interrupted attempt is refreshed, and posts the status with the result", async () => {
+    const run = harness();
+    const marked: string[] = [];
+    run.deps.markWorking = async (fresh) => void marked.push(`${fresh}${run.worked.length}`);
+    await runAttempt(base(), run.deps);
+    assert.deepEqual(marked, [`<!-- proseco:attempt ${bodyHash(TWO_LOCKFILES.body)} -->\n\n**Working on it.**\n0`]);
+    assert.equal(run.comments[0]!.split("\n")[2], "**Waiting for review:** a person reviews and merges the pull requests below.");
+    const stopped = harness();
+    const saved: State[] = [];
+    stopped.deps.markWorking = async () => {};
+    stopped.deps.shouldStop = () => true;
+    stopped.deps.saveState = (state) => void saved.push(state);
+    await assert.rejects(runAttempt(base(recordShown(emptyState(), 12, "shown"), { force: true }), stopped.deps), ShutdownRequested);
+    assert.deepEqual(saved.map((state) => shownInComment(state, 12)), [null]);
+    const local = harness();
+    local.deps.markWorking = async () => assert.fail("marked a local run");
+    await runAttempt(base(emptyState(), { local: true }), local.deps);
+  });
+
+  it("refreshes the comment on a skipped pass only when its pull requests changed state", async () => {
+    const attempted = (await runAttempt(base(), harness().deps)).state;
+    const statuses: Record<string, PullState["state"]> = {};
+    const run = harness({ statuses });
+    const refreshes: [string[], string][] = [];
+    let saved = 0;
+    run.deps.refreshComment = async (pulls, status) => void refreshes.push([pulls.map((pull) => `${pull.url} ${pull.state}`), status]);
+    run.deps.saveState = () => void saved++;
+    const same = await runAttempt(base(attempted), run.deps);
+    assert.deepEqual([refreshes, saved], [[], 0]);
+    statuses["https://github.com/acme-org/acme-api/pull/1"] = "merged";
+    const one = await runAttempt(base(same.state), run.deps);
+    assert.deepEqual(refreshes.at(-1)![1], "**Waiting for review:** a person reviews and merges the pull requests below.");
+    statuses["https://github.com/acme-org/acme-api/pull/2"] = "closed";
+    const both = await runAttempt(base(one.state), run.deps);
+    assert.deepEqual(refreshes.at(-1), [
+      ["https://github.com/acme-org/acme-api/pull/1 merged", "https://github.com/acme-org/acme-api/pull/2 closed"],
+      "**Done on proseco's side:** nothing is left open. This ticket closes when the scanner no longer sees its alerts.",
+    ]);
+    await runAttempt(base(both.state), run.deps);
+    assert.deepEqual([refreshes.length, saved], [2, 2]);
   });
 
   it("works the ticket again when forced, even with an open pull request", async () => {
@@ -392,12 +435,12 @@ describe("pull request redo", () => {
 
   function redoHarness() {
     const run = harness({ work: async () => ({ outcome: { kind: "pr", url: WEB, draft: false } }) });
-    const merged: [string[], string][] = [];
+    const merged: [string[], string, string][] = [];
     const replies: [number, string][] = [];
     const redos: (PullRedo | null)[] = [];
     const work = run.deps.workUnit;
     run.deps.workUnit = async (unit, headSha, review, given) => (redos.push(given), work(unit, headSha, review, given));
-    run.deps.mergeComment = async (reports, fresh) => void merged.push([reports.map((report) => report.label), fresh]);
+    run.deps.mergeComment = async (reports, fresh, status) => void merged.push([reports.map((report) => report.label), fresh, status]);
     run.deps.reply = async (pull, body) => void replies.push([pull.number, body]);
     return { run, merged, replies, redos };
   }
@@ -405,8 +448,10 @@ describe("pull request redo", () => {
   it("redoes only the pull request's unit while the ticket would be skipped, merging its line into the ticket comment", async () => {
     const { run, merged, replies, redos } = redoHarness();
     const pull = redo("proseco/web-package-lock.json");
-    const result = await runAttempt(base(attempted, { pulls: [pull] }), run.deps);
+    const result = await runAttempt(base(recordShown(attempted, 12, "stale"), { pulls: [pull] }), run.deps);
     assert.deepEqual(result.decision, { attempt: true, reason: `ana asked for a redo of ${WEB}` });
+    assert.equal(merged[0]![2], "**Waiting for review:** a person reviews and merges the pull requests below.");
+    assert.equal(shownInComment(result.state, 12), null);
     assert.deepEqual(run.worked, ["web/package-lock.json"]);
     assert.deepEqual(redos, [pull]);
     assert.deepEqual(run.comments, []);

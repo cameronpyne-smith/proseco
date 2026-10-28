@@ -200,7 +200,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
         await store.fetch("acme-api");
         return store.headSha("acme-api");
       },
-      prStatus: async (url) => ({ url, state: "open" }),
+      prStatus: async (url) => ({ url, state: "open", draft: false }),
       workUnit: (unit, headSha) =>
         workUnit(
           {

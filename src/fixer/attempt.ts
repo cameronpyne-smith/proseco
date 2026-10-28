@@ -1,9 +1,9 @@
 import { parseRawTable } from "../core/ticket.ts";
 import { announcements, queueAnnouncement } from "./announce.ts";
-import { renderComment, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
+import { renderComment, shownPulls, statusLine, workingComment, type PullState, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
 import { redoDecision, redoReply, type PullRedo } from "./pulls.ts";
-import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, recordFeedback, type Decision, type PullRequestStatus, type State } from "./state.ts";
+import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, recordFeedback, recordShown, shownInComment, type Decision, type State } from "./state.ts";
 import type { LoopStats, TraceEntry } from "./agent/loop.ts";
 import type { Release } from "./lock.ts";
 import type { ReviewFindings } from "./reviewer.ts";
@@ -27,10 +27,12 @@ export interface AttemptInput {
 export interface AttemptDeps {
   org: string;
   fetch(): Promise<string>;
-  prStatus(url: string): Promise<PullRequestStatus>;
+  prStatus(url: string): Promise<PullState>;
   workUnit(unit: PrUnit, headSha: string, review: ReviewFindings | null, redo: PullRedo | null): Promise<UnitResult>;
   postComment(body: string): Promise<void>;
-  mergeComment?(reports: UnitReport[], fresh: string): Promise<void>;
+  mergeComment?(reports: UnitReport[], fresh: string, status: string): Promise<void>;
+  markWorking?(fresh: string): Promise<void>;
+  refreshComment?(pulls: PullState[], status: string): Promise<void>;
   reply?(pull: PullRedo, body: string): Promise<void>;
   saveState?(state: State): void;
   started?(decision: Decision): void;
@@ -87,20 +89,33 @@ async function work(unit: PrUnit, headSha: string, imageTicket: boolean, redo: P
   }
 }
 
+async function refreshed(state: State, ticket: number, prs: PullState[], deps: AttemptDeps): Promise<State> {
+  const shown = shownPulls(prs);
+  if (prs.length === 0 || !deps.refreshComment || shownInComment(state, ticket) === shown) return state;
+  await deps.refreshComment(prs, statusLine(prs));
+  const next = recordShown(state, ticket, shown);
+  deps.saveState?.(next);
+  return next;
+}
+
 export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promise<AttemptResult> {
   const { ticket, state } = input;
   const hash = bodyHash(ticket.body);
   const last = lastAttempt(state, ticket.number);
-  const prs: PullRequestStatus[] = [];
+  const prs: PullState[] = [];
   if (!input.local && last) for (const url of last.prUrls) prs.push(await deps.prStatus(url));
   const pulls = input.pulls ?? [];
   const ignored = isIgnored(state, ticket.number);
   const ticketDecision = decide(last, { bodyHash: hash, force: input.force, prs, ignored });
   const redoOnly = pulls.length > 0 && !ignored && (input.local || !ticketDecision.attempt);
   const decision = redoOnly ? redoDecision(pulls) : ticketDecision;
-  if (!decision.attempt && !input.local) return { skipped: true, decision, headSha: null, reports: [], state };
+  if (!decision.attempt && !input.local) return { skipped: true, decision, headSha: null, reports: [], state: await refreshed(state, ticket.number, prs, deps) };
 
   deps.started?.(decision);
+  if (!input.local && deps.markWorking) {
+    await deps.markWorking(workingComment(hash));
+    if (shownInComment(state, ticket.number) !== null) deps.saveState?.(recordShown(state, ticket.number, null));
+  }
   const planned = planUnits(parseRawTable(ticket.body), deps.org);
   const redoOf = (unit: PrUnit) => pulls.find((pull) => pull.branch === unit.branch) ?? null;
   const units = redoOnly ? planned.filter((unit) => redoOf(unit)) : planned;
@@ -133,11 +148,16 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
         outcome: urls.length > 0 ? "pr-opened" : "gave-up",
         prUrls: urls,
       });
-  const recorded = recordFeedback(attempted, ticket.number, revised);
+  const pullStates = (lastAttempt(attempted, ticket.number)?.prUrls ?? []).map((url): PullState => {
+    const outcome = reports.find((report) => report.outcome.kind === "pr" && report.outcome.url === url)?.outcome;
+    return outcome?.kind === "pr" ? { url, state: "open", draft: outcome.draft } : (prs.find((pr) => pr.url === url) ?? { url, state: "open", draft: false });
+  });
+  const status = statusLine(pullStates);
+  const recorded = recordShown(recordFeedback(attempted, ticket.number, revised), ticket.number, redoOnly ? null : shownPulls(pullStates));
   const next = deps.announce ? queueAnnouncement(recorded, ticket.number, announcements(reports), deps.now()) : recorded;
   try {
-    const fresh = renderComment(hash, reports);
-    if (redoOnly && deps.mergeComment) await deps.mergeComment(reports, fresh);
+    const fresh = renderComment(hash, reports, status);
+    if (redoOnly && deps.mergeComment) await deps.mergeComment(reports, fresh, status);
     else await deps.postComment(fresh);
     for (const pull of pulls) {
       const report = reports.find((item) => item.unit.branch === pull.branch);

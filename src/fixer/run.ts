@@ -9,12 +9,12 @@ import { OllamaClient } from "./agent/ollama.ts";
 import { runAttempt, type AttemptResult } from "./attempt.ts";
 import { applyCommands, fixRequests, memoised, requestFilters, trustedCommand, type FixRequest } from "./requests.ts";
 import type { PrUnit } from "./plan.ts";
-import { appendToComment, mergeIntoComment, upsertComment, type UnitReport } from "./comment.ts";
+import { appendToComment, editStatus, mergeIntoComment, upsertComment, withPulls, withStatus, WORKING, type PullState, type UnitReport } from "./comment.ts";
 import { scanPulls, type PullRedo, type PullSource } from "./pulls.ts";
 import { GitStore } from "./git.ts";
 import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { forgetClosedTickets, lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type State } from "./state.ts";
+import { forgetClosedTickets, lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type State } from "./state.ts";
 import { readTeamsCredential, TeamsClient } from "./teams.ts";
 import { workUnit, type Published, type PublishRequest, type Publisher } from "./unit.ts";
 
@@ -268,9 +268,9 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
         await store.fetch(repo);
         return store.headSha(repo);
       },
-      prStatus: async (url): Promise<PullRequestStatus> => {
+      prStatus: async (url): Promise<PullState> => {
         const details = await readApi.pullDetails(pullNumber(url));
-        return { url, state: details.state };
+        return { url, state: details.state, draft: details.draft };
       },
       ...(reviewer
         ? {
@@ -309,7 +309,9 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
         return outcome;
       },
       postComment: async (body) => void (await upsertComment(await tickets(), number, config.app.bot, body)),
-      mergeComment: async (reports, fresh) => mergeIntoComment(await tickets(), number, config.app.bot, reports, fresh),
+      mergeComment: async (reports, fresh, status) => mergeIntoComment(await tickets(), number, config.app.bot, reports, fresh, status),
+      markWorking: async (fresh) => editStatus(await tickets(), number, config.app.bot, (body) => withStatus(body, WORKING), fresh),
+      refreshComment: async (pulls, status) => editStatus(await tickets(), number, config.app.bot, (body) => withStatus(withPulls(body, pulls), status), null),
       reply: async (pull, body) => {
         const writeToken = await tokens({ repositories: [repo], permissions: { pull_requests: "write" } });
         await new RepoApi(writeToken, config.org, repo).commentOnPull(pull.number, body);
