@@ -281,13 +281,13 @@ function toPullInfo(pull: Pull): PullInfo {
   return { number: pull.number, url: pull.html_url, state: stateOf(pull), branch: pull.head?.ref ?? "", headSha: pull.head?.sha ?? "", author: pull.user?.login ?? "", body: pull.body ?? "" };
 }
 
-export function latestReviewsApprove(reviews: { user: { login: string } | null; state: string }[]): boolean {
-  const latest = new Map<string, string>();
+export function latestReviewsApprove(reviews: { user: { login: string } | null; state: string; commitId: string }[], headSha: string): boolean {
+  const latest = new Map<string, { state: string; commitId: string }>();
   for (const review of reviews) {
     if (!review.user || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) continue;
-    latest.set(review.user.login, review.state);
+    latest.set(review.user.login, review);
   }
-  return [...latest.values()].includes("APPROVED");
+  return [...latest.values()].some((review) => review.state === "APPROVED" && review.commitId === headSha);
 }
 
 export class RepoApi extends GitHubApi {
@@ -377,8 +377,8 @@ export class RepoApi extends GitHubApi {
     return items.map((item) => ({ id: item.id, author: item.user?.login ?? "", state: item.state, commitId: item.commit_id ?? "", body: item.body ?? "" }));
   }
 
-  async approved(number: number): Promise<boolean> {
-    return latestReviewsApprove((await this.reviews(number)).map((review) => ({ user: { login: review.author }, state: review.state })));
+  async approved(number: number, headSha: string): Promise<boolean> {
+    return latestReviewsApprove((await this.reviews(number)).map((review) => ({ user: { login: review.author }, state: review.state, commitId: review.commitId })), headSha);
   }
 
   async reviewComments(number: number): Promise<PullReviewComment[]> {

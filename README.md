@@ -243,7 +243,7 @@ A unit that is one package whose fix crosses a major version (the plan's `major`
 With `fixer.teams` set, a ready pull request is announced in the configured Teams chat by the bot, under the bot's own name and icon, when the attempt that published it:
 - opened it ready;
 - made a draft ready; or
-- pushed a different tree to it while a reviewer's latest deciding review (approve, request changes or dismissed) was an approval, since the push invalidates what was approved. That message starts `Re-review:`.
+- pushed a different tree to it while a reviewer's latest deciding review (approve, request changes or dismissed) was an approval of the head it replaced, since the push invalidates what was approved. An approval of an earlier head does not count: the push that replaced that head already asked for the re-review, so a person is asked once per approval, not once per push. That message starts `Re-review:`.
 
 An already-ready pull request that was only updated, and a draft, are not announced. One message per ticket and attempt, or two when it holds both new pull requests and re-reviews:
 

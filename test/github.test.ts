@@ -53,15 +53,17 @@ describe("repo api", () => {
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7");
   });
 
-  it("counts a pull request as approved only by each reviewer's latest deciding review", async () => {
-    const review = (login: string, state: string) => ({ user: { login }, state });
-    const approved = async (...reviews: unknown[]) => new RepoApi("tok", "acme-org", "acme-api", recorder(reviews).fetch).approved(7);
+  it("counts a pull request as approved only by each reviewer's latest deciding review, given on the head", async () => {
+    const review = (login: string, state: string, commit = "head1") => ({ user: { login }, state, commit_id: commit });
+    const approved = async (...reviews: unknown[]) => new RepoApi("tok", "acme-org", "acme-api", recorder(reviews).fetch).approved(7, "head1");
     assert.equal(await approved(review("ana", "APPROVED")), true);
     assert.equal(await approved(review("ana", "APPROVED"), review("ana", "COMMENTED")), true);
     assert.equal(await approved(review("ana", "APPROVED"), review("ana", "DISMISSED")), false);
     assert.equal(await approved(review("ana", "APPROVED"), review("ana", "CHANGES_REQUESTED")), false);
     assert.equal(await approved(review("ana", "CHANGES_REQUESTED"), review("bo", "APPROVED")), true);
     assert.equal(await approved(review("ana", "COMMENTED")), false);
+    assert.equal(await approved(review("ana", "APPROVED", "head0")), false);
+    assert.equal(await approved(review("ana", "APPROVED", "head0"), review("bo", "APPROVED")), true);
     assert.equal(await approved(), false);
   });
 

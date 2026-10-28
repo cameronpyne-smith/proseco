@@ -10,7 +10,7 @@ interface World {
   open: { draft: boolean; headSha: string; autoMerge?: boolean } | null;
   autoMergeRefused?: string;
   trees: Record<string, string>;
-  reviews: { user: { login: string }; state: string }[];
+  reviews: { user: { login: string }; state: string; commit_id: string }[];
 }
 
 function harness(world: World, localTree: string, reviewLabel: string | null = null, autoMerge: "merge" | "squash" | "rebase" | null = null) {
@@ -68,7 +68,7 @@ function request(draft: boolean): PublishRequest {
   };
 }
 
-const APPROVED = [{ user: { login: "ana" }, state: "APPROVED" }];
+const APPROVED = [{ user: { login: "ana" }, state: "APPROVED", commit_id: "old" }];
 
 describe("live publisher", () => {
   it("pushes and opens a new pull request, announcing it only when ready", async () => {
@@ -84,6 +84,12 @@ describe("live publisher", () => {
     assert.deepEqual(await run.publisher.publish(request(false)), { url: URL7, draft: false, announce: "re-review" });
     assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
     assert.ok(run.calls.includes("PATCH /pulls/7"));
+  });
+
+  it("does not announce a re-review for an approval of an earlier head, which an earlier push already announced", async () => {
+    const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews: [{ user: { login: "ana" }, state: "APPROVED", commit_id: "older" }] }, "t1");
+    assert.equal((await run.publisher.publish(request(false))).announce, null);
+    assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
   });
 
   it("does not push or announce when the tree is unchanged, so an approval stands, but still updates the body", async () => {

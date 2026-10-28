@@ -198,7 +198,7 @@ export class LivePublisher implements Publisher {
     }
     const tree = (await store.inCheckout(request.checkout, ["rev-parse", `${request.commit.sha}^{tree}`], "git rev-parse")).trim();
     const changed = (await api.commitTree(existing.headSha)) !== tree;
-    const approved = changed && !request.draft && (await api.approved(existing.number));
+    const approved = changed && !request.draft && (await api.approved(existing.number, existing.headSha));
     if (changed) await store.push(request.checkout, request.repo, request.branch, token);
     await api.updatePull(existing.number, { title: request.title, body: request.body });
     if (existing.draft !== request.draft) await api.setDraft(existing.nodeId, request.draft);
