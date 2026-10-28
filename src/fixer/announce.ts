@@ -273,9 +273,9 @@ export async function deliverTicket(deps: DeliveryDeps, ticket: number, pending:
   }
 }
 
-export async function deliverAnnouncements(deps: DeliveryDeps, only?: number): Promise<void> {
+export async function deliverAnnouncements(deps: DeliveryDeps, only?: ReadonlySet<number>): Promise<void> {
   const due = Object.entries(deps.loadState().tickets).flatMap(([number, entry]) =>
-    entry.announcement && (only === undefined || Number(number) === only) && Date.parse(entry.announcement.nextAt) <= deps.now().getTime() ? [{ ticket: Number(number), pending: entry.announcement }] : [],
+    entry.announcement && (only === undefined || only.has(Number(number))) && Date.parse(entry.announcement.nextAt) <= deps.now().getTime() ? [{ ticket: Number(number), pending: entry.announcement }] : [],
   );
   for (const { ticket, pending } of due) {
     const next = await deliverTicket(deps, ticket, pending);

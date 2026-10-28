@@ -229,7 +229,7 @@ describe("delivering announcements", () => {
 
   it("delivers only the named ticket's announcement when asked to, leaving other due ones queued", async () => {
     const run = delivery(queueAnnouncement(queueAnnouncement(emptyState(), 12, [LOCKFILE], NOW), 13, [MAJOR], NOW));
-    await deliverAnnouncements(run.deps, 13);
+    await deliverAnnouncements(run.deps, new Set([13]));
     assert.equal(run.sent.length, 1);
     assert.match(run.sent[0]!, /issues\/13">13<\/a>/);
     assert.ok(pendingAnnouncement(run.state, 12));

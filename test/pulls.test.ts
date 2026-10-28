@@ -97,6 +97,18 @@ describe("pull request commands", () => {
     assert.deepEqual(ignored.log.replies, [[7, "acme-org/acme-tickets#4 is ignored. Comment `@acme-proseco fix` on the ticket to resume it."]]);
   });
 
+  it("leaves alone the pull requests of tickets outside the ones it was limited to", async () => {
+    const { api, log } = source([pull(7), pull(8, { body: "Part of acme-org/acme-tickets#5" }), pull(9, { body: "no ticket" })], {
+      7: [comment(30, "@acme-proseco fix")],
+      8: [comment(31, "@acme-proseco fix")],
+      9: [comment(32, "@acme-proseco fix")],
+    }, [8]);
+    const result = await scanPulls([request()], api, emptyState(), { ...OPTIONS, only: new Set([4]) });
+    assert.deepEqual(result.requests[0]!.pulls.map((redo) => redo.number), [7]);
+    assert.deepEqual([log.reactions, log.replies, log.conflictChecks], [[30], [], []]);
+    assert.deepEqual(Object.keys(result.state.pulls!), [pull(7).url]);
+  });
+
   it("neither reacts, replies nor records when not acknowledging", async () => {
     const { api, log } = source([pull(7), pull(8)], { 7: [comment(30, "@acme-proseco fix")], 8: [comment(31, "@acme-proseco ignore")] }, [7]);
     const result = await scan(api, emptyState(), [request()], false);

@@ -20,7 +20,7 @@ import { TurnLock } from "./lock.ts";
 import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
 import { isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, saveState, withAnnouncement, type AnnouncedPr, type PendingAnnouncement } from "./state.ts";
 
-const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number | pull request URL> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve";
+const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number | pull request URL> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve [--only <ticket number,...>]";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -48,9 +48,15 @@ async function pullRedo(config: Config, tokens: TokenProvider, target: { repo: s
 async function ticketPulls(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, number: number, ticket: { key: string; repo: string }, acknowledge: boolean): Promise<PullRedo[]> {
   const state = loadState(config.fixer.stateFile);
   const request = { number, key: ticket.key, repo: ticket.repo, force: false, ignored: isIgnored(state, number), commentId: null, pulls: [] };
-  const scanned = await scanTicketPulls(config, tokens, [request], state, acknowledge, (line) => console.error(line));
+  const scanned = await scanTicketPulls(config, tokens, [request], state, acknowledge, (line) => console.error(line), new Set([number]));
   if (acknowledge) saveState(config.fixer.stateFile, scanned.state);
   return scanned.requests[0]!.pulls;
+}
+
+function serveOnly(flags: string[]): ReadonlySet<number> | null {
+  if (flags.length === 0) return null;
+  if (flags.length !== 2 || flags[0] !== "--only") throw new Error(USAGE);
+  return new Set(flags[1]!.split(",").map(ticketNumber));
 }
 
 function ticketNumber(argument: string | undefined): number {
@@ -85,7 +91,7 @@ async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: To
     return;
   }
   const delivery = deliveryDeps(config, tokens, async () => tickets, (line) => console.error(line), lock);
-  if (delivery) await deliverAnnouncements(delivery, number);
+  if (delivery) await deliverAnnouncements(delivery, new Set([number]));
 }
 
 async function lastAttemptAnnouncement(config: Config & { fixer: FixerConfig }, deps: Pick<DeliveryDeps, "pull" | "bot">, number: number, now: Date): Promise<PendingAnnouncement> {
@@ -246,7 +252,7 @@ function stamped(line: string): void {
   console.log(`${new Date().toISOString()} ${line}`);
 }
 
-async function serve(): Promise<void> {
+async function serve(only: ReadonlySet<number> | null): Promise<void> {
   const { results, config, tokens } = await prepare();
   if (!allPassed(results) || !config || !tokens) {
     console.error(formatChecks(results));
@@ -277,10 +283,11 @@ async function serve(): Promise<void> {
   const lock = turnLock(fixer, stamped);
   const delivery = deliveryDeps(config, tokens, ticketRepo, stamped, lock);
   stamped(`polling every ${fixer.pollMinutes} minute${fixer.pollMinutes === 1 ? "" : "s"}`);
+  if (only) stamped(`only tickets ${[...only].map((number) => `#${number}`).join(", ")}`);
   await runDaemon({
     pollMs: fixer.pollMinutes * 60_000,
     find: async () => {
-      const found = await findTickets(config, tokens, await ticketRepo(), stamped);
+      const found = await findTickets(config, tokens, await ticketRepo(), stamped, only ?? undefined);
       bodies = found.bodies;
       return found.requests;
     },
@@ -302,7 +309,7 @@ async function serve(): Promise<void> {
       });
       return { skipped: result.skipped, reason: result.decision.reason, units: result.reports.map((report) => ({ label: report.label, outcome: report.outcome })) };
     },
-    ...(delivery ? { deliver: () => deliverAnnouncements(delivery) } : {}),
+    ...(delivery ? { deliver: () => deliverAnnouncements(delivery, only ?? undefined) } : {}),
     sleep,
     stopping: () => stop.signal.aborted,
     log: stamped,
@@ -311,7 +318,7 @@ async function serve(): Promise<void> {
 
 async function main(args: string[]): Promise<void> {
   if (args[0] === "check" && args.length === 1) return checkCommand();
-  if (args[0] === "serve" && args.length === 1) return serve();
+  if (args[0] === "serve") return serve(serveOnly(args.slice(1)));
   const config = loadConfig(requireEnv("PROSECO_CONFIG"));
   if (!config.fixer) throw new Error("the config has no fixer section");
   const fixer = config.fixer;

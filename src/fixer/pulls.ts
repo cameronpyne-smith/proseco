@@ -28,6 +28,7 @@ export interface ScanOptions {
   ticketsRepo: string;
   bot: string;
   acknowledge: boolean;
+  only?: ReadonlySet<number>;
   log?(line: string): void;
 }
 
@@ -66,6 +67,7 @@ export async function scanPulls(requests: FixRequest[], source: PullSource, stat
     }
     for (const pull of open) {
       const ticket = ticketOfPull(pull.body, org, ticketsRepo);
+      if (options.only && (ticket === null || !options.only.has(ticket))) continue;
       const request = requests.find((item) => item.number === ticket && item.repo === repo);
       const known = pullState(next, pull.url);
       const command = await trustedCommand(await source.comments(repo, pull.number), bot, known.lastCommentId ?? null, canWrite);

@@ -120,15 +120,16 @@ export async function scanTicketPulls(
   state: State,
   acknowledge: boolean,
   log?: (line: string) => void,
+  only?: ReadonlySet<number>,
 ): Promise<{ requests: FixRequest[]; state: State }> {
-  return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(log ? { log } : {}) });
+  return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(log ? { log } : {}), ...(only ? { only } : {}) });
 }
 
-export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, log?: (line: string) => void): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
-  const open = await tickets.list(requestFilters(config.tickets.find));
+export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, log?: (line: string) => void, only?: ReadonlySet<number>): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
+  const open = (await tickets.list(requestFilters(config.tickets.find))).filter((ticket) => !only || only.has(ticket.number));
   const commanded = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, loadState(config.fixer.stateFile), true);
   saveState(config.fixer.stateFile, commanded.state);
-  const found = await scanTicketPulls(config, tokens, commanded.requests, commanded.state, true, log);
+  const found = await scanTicketPulls(config, tokens, commanded.requests, commanded.state, true, log, only);
   saveState(config.fixer.stateFile, found.state);
   return { requests: found.requests, bodies: new Map(open.map((ticket) => [ticket.number, ticket.body])) };
 }

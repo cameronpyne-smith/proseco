@@ -49,7 +49,7 @@ This document is the design. The README describes what is built.
 
 ```
 src/fixer/
-  main.ts         CLI: find, read, run <n> [--dry-run | --local], sandbox, check, serve
+  main.ts         CLI: find, read, run <n> [--dry-run | --local], sandbox, check, serve [--only]
   daemon.ts       the serve loop: poll, order, attempt one ticket at a time, log, stop on a signal
   startup.ts      the startup checks shared by check and serve
   run.ts          wires the real dependencies (tokens, git, Docker, Ollama, GitHub) into an attempt; find, shared by the CLI and the daemon
