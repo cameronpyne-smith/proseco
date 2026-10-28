@@ -14,7 +14,7 @@ import { scanPulls, type PullRedo, type PullSource } from "./pulls.ts";
 import { GitStore } from "./git.ts";
 import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type ReviewVerdict, type State } from "./state.ts";
+import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type State } from "./state.ts";
 import { readTeamsCredential, TeamsClient } from "./teams.ts";
 import { workUnit, type Published, type PublishRequest, type Publisher } from "./unit.ts";
 
@@ -106,6 +106,7 @@ export function pullSource(org: string, tokens: TokenProvider): PullSource {
   return {
     openPulls: async (repo) => (await repoApi(repo)).openPulls(),
     conflicted: async (repo, number) => (await repoApi(repo)).conflicted(number),
+    reviews: async (repo, number) => (await repoApi(repo)).reviews(number),
     comments: async (repo, number) => (await issues(repo)).comments(number),
     react: async (repo, commentId) => (await issues(repo)).react(commentId, "eyes"),
     reply: async (repo, number, body) => (await repoApi(repo)).commentOnPull(number, body),
@@ -122,7 +123,7 @@ export async function scanTicketPulls(
   log?: (line: string) => void,
   only?: ReadonlySet<number>,
 ): Promise<{ requests: FixRequest[]; state: State }> {
-  return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(log ? { log } : {}), ...(only ? { only } : {}) });
+  return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(config.fixer.reviewer ? { reviewer: config.fixer.reviewer.bot } : {}), ...(log ? { log } : {}), ...(only ? { only } : {}) });
 }
 
 export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, log?: (line: string) => void, only?: ReadonlySet<number>): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
@@ -247,7 +248,6 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
   const reviewer = fixer.reviewer;
   const publisher = local ? new LocalPublisher() : new LivePublisher({ org: config.org, tokens, store, reviewLabel: reviewer?.label ?? null, autoMerge: fixer.autoMerge, log: (line) => console.error(line) });
   const checkouts: string[] = [];
-  const verdictOf = async (number: number, headSha: string): Promise<ReviewVerdict | null> => (reviewer ? verdictAt(await readApi.reviews(number), reviewer.bot, headSha) : null);
   const result = await runAttempt(
     { ticket: { number, key, repo, body: input.body }, force: input.request ? input.request.force : command?.command === "fix", pulls: input.pulls ?? [], state, local },
     {
@@ -258,7 +258,7 @@ export async function runTicket(input: RunTicket): Promise<AttemptResult & { che
       },
       prStatus: async (url): Promise<PullRequestStatus> => {
         const details = await readApi.pullDetails(pullNumber(url));
-        return { url, state: details.state, review: details.state === "open" ? await verdictOf(pullNumber(url), details.headSha) : null };
+        return { url, state: details.state };
       },
       ...(reviewer
         ? {

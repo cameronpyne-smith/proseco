@@ -1,15 +1,16 @@
-import type { PullInfo } from "../core/github.ts";
+import type { PullInfo, PullReview } from "../core/github.ts";
 import type { TicketComment } from "../core/types.ts";
 import type { UnitOutcomeReport } from "./comment.ts";
 import { memoised, trustedCommand, type FixRequest } from "./requests.ts";
-import { pullState, withoutPulls, withPull, type Decision, type State } from "./state.ts";
+import { verdictAt } from "./reviewer.ts";
+import { feedbackRounds, MAX_FEEDBACK_ROUNDS, pullState, withoutPulls, withPull, type Decision, type State } from "./state.ts";
 
 export interface PullRedo {
   url: string;
   number: number;
   branch: string;
   headSha: string;
-  reason: "command" | "conflict" | "manual";
+  reason: "command" | "conflict" | "review" | "manual";
   requester: string | null;
   note: string | null;
 }
@@ -17,6 +18,7 @@ export interface PullRedo {
 export interface PullSource {
   openPulls(repo: string): Promise<PullInfo[]>;
   conflicted(repo: string, number: number): Promise<boolean>;
+  reviews(repo: string, number: number): Promise<PullReview[]>;
   comments(repo: string, number: number): Promise<TicketComment[]>;
   react(repo: string, commentId: number): Promise<void>;
   reply(repo: string, number: number, body: string): Promise<void>;
@@ -28,6 +30,7 @@ export interface ScanOptions {
   ticketsRepo: string;
   bot: string;
   acknowledge: boolean;
+  reviewer?: string;
   only?: ReadonlySet<number>;
   log?(line: string): void;
 }
@@ -48,6 +51,12 @@ export function redoOf(pull: Pick<PullInfo, "url" | "number" | "branch" | "headS
 
 function pullPrefix(org: string, repo: string): string {
   return `https://github.com/${org}/${repo}/pull/`;
+}
+
+async function wantsReviewRound(source: PullSource, repo: string, pull: PullInfo, reviewer: string | undefined, rounds: number): Promise<boolean> {
+  if (!reviewer || rounds >= MAX_FEEDBACK_ROUNDS) return false;
+  const verdict = verdictAt(await source.reviews(repo, pull.number), reviewer, pull.headSha);
+  return verdict === "caution" || verdict === "blocked";
 }
 
 export async function scanPulls(requests: FixRequest[], source: PullSource, state: State, options: ScanOptions): Promise<{ requests: FixRequest[]; state: State }> {
@@ -92,10 +101,12 @@ export async function scanPulls(requests: FixRequest[], source: PullSource, stat
         continue;
       }
       if (!request || request.ignored || known.refreshedHead === pull.headSha) continue;
-      if (!(await source.conflicted(repo, pull.number))) continue;
-      options.log?.(`${pull.url} conflicts with the default branch`);
+      const rounds = feedbackRounds(next, request.number)[pull.url] ?? 0;
+      const reason = (await wantsReviewRound(source, repo, pull, options.reviewer, rounds)) ? "review" : (await source.conflicted(repo, pull.number)) ? "conflict" : null;
+      if (!reason) continue;
+      options.log?.(reason === "review" ? `${pull.url} has findings from the reviewer` : `${pull.url} conflicts with the default branch`);
       if (acknowledge) next = withPull(next, pull.url, { ...pullState(next, pull.url), refreshedHead: pull.headSha });
-      redos.set(request.number, [...(redos.get(request.number) ?? []), redoOf(pull, "conflict")]);
+      redos.set(request.number, [...(redos.get(request.number) ?? []), redoOf(pull, reason)]);
     }
   }
   return { requests: requests.map((request) => ({ ...request, pulls: [...request.pulls, ...(redos.get(request.number) ?? [])] })), state: next };
@@ -108,12 +119,13 @@ export function redoDecision(pulls: PullRedo[]): Decision {
 export function describeRedo(pull: PullRedo): string {
   if (pull.reason === "conflict") return `${pull.url} conflicts with the default branch`;
   if (pull.reason === "command") return `${pull.requester} asked for a redo of ${pull.url}`;
+  if (pull.reason === "review") return `the reviewer raised findings on ${pull.url}`;
   return `a redo of ${pull.url} was run by hand`;
 }
 
 export function redoReply(pull: PullRedo, headSha: string, outcome: UnitOutcomeReport | null): string {
   if (!outcome) return "proseco did not redo this pull request: its findings are no longer on the ticket, so it can be closed.\n";
-  const why = pull.reason === "conflict" ? "because it conflicted with the default branch" : pull.reason === "command" ? `as ${pull.requester} asked` : "by hand";
+  const why = pull.reason === "conflict" ? "because it conflicted with the default branch" : pull.reason === "command" ? `as ${pull.requester} asked` : pull.reason === "review" ? "to address the reviewer's findings" : "by hand";
   const lines = [`proseco redid this pull request from the default branch at ${headSha.slice(0, 7)}, ${why}.`, ""];
   if (outcome.kind === "pr") lines.push(`Result: ${outcome.draft ? "draft" : "ready for review"}.${outcome.url === pull.url ? "" : ` The change is now in ${outcome.url}.`}`);
   else if (outcome.reason === "already fixed on the default branch") lines.push("Result: already fixed on the default branch, so this pull request is no longer needed and can be closed.");

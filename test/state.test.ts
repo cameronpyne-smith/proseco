@@ -189,17 +189,6 @@ describe("pending announcements", () => {
 });
 
 describe("review feedback", () => {
-  const blocked = { url: PR, state: "open" as const, review: "blocked" as const };
-
-  it("attempts a ticket whose open pull request the reviewer blocked, once", () => {
-    const decision = decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked] });
-    assert.deepEqual(decision, { attempt: true, reason: `the reviewer requested changes on ${PR}` });
-    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked], feedback: { [PR]: 1 } }).attempt, false);
-    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [{ ...blocked, review: "caution" }] }).attempt, false);
-    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [{ ...blocked, state: "closed" }] }).attempt, false);
-    assert.equal(decide(attempt(), { bodyHash: bodyHash(BODY), force: false, prs: [blocked], ignored: true }).attempt, false);
-  });
-
   it("counts feedback rounds per pull request, keeps them through the file and refuses a malformed record", () => {
     const once = recordFeedback(emptyState(), 12, [PR]);
     assert.deepEqual(feedbackRounds(once, 12), { [PR]: 1 });

@@ -203,10 +203,10 @@ export async function reviewOutcome(deps: Pick<MessageDeps, "reviewer" | "verdic
   if (!deps.reviewer) return null;
   const location = pullLocation(pr.url)!;
   const verdict = await deps.verdict(location, details.headSha);
-  if (verdict === "ready" || verdict === "caution") return verdict;
-  if (verdict === "blocked") return query.force || (query.rounds[pr.url] ?? 0) >= MAX_FEEDBACK_ROUNDS ? "changes-requested" : "waiting";
-  if (query.force || query.now.getTime() - Date.parse(query.queuedAt) >= REVIEW_WAIT_MS) return "no-review";
-  return "waiting";
+  const settled = query.force || query.now.getTime() - Date.parse(query.queuedAt) >= REVIEW_WAIT_MS;
+  if (verdict === "ready") return verdict;
+  if (verdict === "caution" || verdict === "blocked") return settled || (query.rounds[pr.url] ?? 0) >= MAX_FEEDBACK_ROUNDS ? (verdict === "caution" ? "caution" : "changes-requested") : "waiting";
+  return settled ? "no-review" : "waiting";
 }
 
 export async function buildMessage(deps: MessageDeps, ticket: number, group: MessageGroup): Promise<string> {

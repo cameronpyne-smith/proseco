@@ -315,34 +315,40 @@ describe("attempt", () => {
 describe("review feedback and the turn lock", () => {
   const blocked = (url: string) => ({ url, headSha: "h1", summary: "s", findings: [{ path: "a.ts", line: 1, severity: "critical", title: "t", body: "b" }] });
 
-  it("attempts a blocked pull request once more, gives its unit the findings and counts the round", async () => {
+  it("redoes only the reviewed pull request with its findings, counts the round and leaves the reply to the review", async () => {
+    const url = "https://github.com/acme-org/acme-api/pull/1";
     const attempted = (await runAttempt(base(), harness().deps)).state;
     const given: (string | null)[] = [];
-    const run = harness();
-    run.deps.prStatus = async (url) => ({ url, state: "open", review: url.endsWith("/1") ? "blocked" : "ready" });
-    run.deps.findings = async (unit) => (unit.source === "package-lock.json" ? blocked("https://github.com/acme-org/acme-api/pull/1") : null);
+    const replies: string[] = [];
+    const run = harness({ work: async () => ({ outcome: { kind: "pr", url, draft: false } }) });
+    run.deps.findings = async (unit) => (unit.source === "package-lock.json" ? blocked(url) : null);
+    run.deps.reply = async (_pull, body) => void replies.push(body);
     const work = run.deps.workUnit;
     run.deps.workUnit = async (unit, headSha, review, redo) => {
       given.push(review?.url ?? null);
       return work(unit, headSha, review, redo);
     };
-    const result = await runAttempt(base(attempted), run.deps);
-    assert.equal(result.skipped, false);
-    assert.match(result.decision.reason, /requested changes on https:\/\/github\.com\/acme-org\/acme-api\/pull\/1/);
-    assert.deepEqual(given, ["https://github.com/acme-org/acme-api/pull/1", null]);
-    assert.deepEqual(result.state.tickets["12"]!.feedback, { "https://github.com/acme-org/acme-api/pull/1": 1 });
-    const again = await runAttempt(base(result.state), run.deps);
-    assert.equal(again.skipped, true);
-    assert.match(again.decision.reason, /open pull request/);
+    const pull: PullRedo = { url, number: 1, branch: "proseco/package-lock.json", headSha: "h1", reason: "review", requester: null, note: null };
+    const result = await runAttempt(base(attempted, { pulls: [pull] }), run.deps);
+    assert.deepEqual(result.decision, { attempt: true, reason: `the reviewer raised findings on ${url}` });
+    assert.deepEqual(run.worked, ["package-lock.json"]);
+    assert.deepEqual(given, [url]);
+    assert.deepEqual(result.state.tickets["12"]!.feedback, { [url]: 1 });
+    assert.deepEqual(replies, []);
   });
 
-  it("counts the round even when the revised unit produces no pull request", async () => {
+  it("counts the round and explains on the pull request when the revised unit produces no pull request", async () => {
+    const url = "https://github.com/acme-org/acme-api/pull/1";
     const attempted = (await runAttempt(base(), harness().deps)).state;
+    const replies: string[] = [];
     const run = harness({ work: async () => ({ outcome: { kind: "none", reason: "the agent gave up" } }) });
-    run.deps.prStatus = async (url) => ({ url, state: "open", review: "blocked" });
-    run.deps.findings = async (unit) => blocked(`https://github.com/acme-org/acme-api/pull/${unit.source === "package-lock.json" ? 1 : 2}`);
-    const result = await runAttempt(base(attempted), run.deps);
-    assert.deepEqual(result.state.tickets["12"]!.feedback, { "https://github.com/acme-org/acme-api/pull/1": 1, "https://github.com/acme-org/acme-api/pull/2": 1 });
+    run.deps.findings = async () => blocked(url);
+    run.deps.reply = async (_pull, body) => void replies.push(body);
+    const pull: PullRedo = { url, number: 1, branch: "proseco/package-lock.json", headSha: "h1", reason: "review", requester: null, note: null };
+    const result = await runAttempt(base(attempted, { pulls: [pull] }), run.deps);
+    assert.deepEqual(result.state.tickets["12"]!.feedback, { [url]: 1 });
+    assert.equal(replies.length, 1);
+    assert.match(replies[0]!, /to address the reviewer's findings\.\n\nResult: not updated: the agent gave up/);
   });
 
   it("holds the lock from before the fetch until after the last unit, and releases it when a unit throws or a stop is requested", async () => {

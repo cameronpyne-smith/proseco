@@ -49,7 +49,6 @@ export type ReviewVerdict = "ready" | "caution" | "blocked";
 export interface PullRequestStatus {
   url: string;
   state: "open" | "merged" | "closed";
-  review?: ReviewVerdict | null;
 }
 
 export interface AttemptQuery {
@@ -57,7 +56,6 @@ export interface AttemptQuery {
   force: boolean;
   prs: PullRequestStatus[];
   ignored?: boolean;
-  feedback?: Record<string, number>;
 }
 
 export const MAX_FEEDBACK_ROUNDS = 1;
@@ -129,10 +127,6 @@ export function recordFeedback(state: State, ticket: number, urls: string[]): St
   return withEntry(state, ticket, { ...entry(state, ticket), feedback });
 }
 
-export function wantsFeedback(prs: PullRequestStatus[], feedback: Record<string, number> = {}): PullRequestStatus | undefined {
-  return prs.find((pr) => pr.state === "open" && pr.review === "blocked" && (feedback[pr.url] ?? 0) < MAX_FEEDBACK_ROUNDS);
-}
-
 export function isIgnored(state: State, ticket: number): boolean {
   return entry(state, ticket).ignored === true;
 }
@@ -148,8 +142,6 @@ export function lastAttempt(state: State, ticket: number): Attempt | undefined {
 export function decide(last: Attempt | undefined, query: AttemptQuery): Decision {
   if (query.ignored) return { attempt: false, reason: "ignored by a comment command" };
   if (query.force) return { attempt: true, reason: "a comment command forces a new attempt" };
-  const blocked = wantsFeedback(query.prs, query.feedback);
-  if (blocked) return { attempt: true, reason: `the reviewer requested changes on ${blocked.url}` };
   if (query.prs.some((pr) => pr.state === "open")) return { attempt: false, reason: "an open pull request exists for the ticket" };
   if (!last) return { attempt: true, reason: "never attempted" };
   if (last.bodyHash === query.bodyHash) return { attempt: false, reason: `already attempted this ticket body (${last.outcome})` };

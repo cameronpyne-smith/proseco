@@ -43,7 +43,7 @@ describe("findings", () => {
     assert.deepEqual(parseFinding({ path: "b.ts", line: 3, body: "plain text" }), { path: "b.ts", line: 3, severity: "unknown", title: "", body: "plain text" });
   });
 
-  it("collects the findings of a blocked review of the head, and nothing for other verdicts", async () => {
+  it("collects the findings of a blocked or caution review of the head, and nothing for a ready one", async () => {
     const comments: PullReviewComment[] = [
       { id: 10, reviewId: 1, path: "src/a.ts", line: 10, body: "**Critical: Infinite retry**\n\nNo cap on attempts." },
       { id: 11, reviewId: 9, path: "src/b.ts", line: 1, body: "**Minor: Old**\n\nFrom an earlier review." },
@@ -56,7 +56,8 @@ describe("findings", () => {
       summary: "The retry loop can spin forever.",
       findings: [{ path: "src/a.ts", line: 10, severity: "critical", title: "Infinite retry", body: "No cap on attempts." }],
     });
-    assert.equal(await collectFindings({ ...api, reviews: async () => [review({ body: "<!-- reviewdo verdict=caution -->" })] }, "reviewdo-bot", pull), null);
+    assert.equal((await collectFindings({ ...api, reviews: async () => [review({ body: "<!-- reviewdo verdict=caution -->" })] }, "reviewdo-bot", pull))?.findings.length, 1);
+    assert.equal(await collectFindings({ ...api, reviews: async () => [review({ body: "<!-- reviewdo verdict=ready -->" })] }, "reviewdo-bot", pull), null);
     assert.equal(await collectFindings(api, "reviewdo-bot", { ...pull, headSha: "head2" }), null);
   });
 });

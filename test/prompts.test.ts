@@ -162,7 +162,7 @@ describe("reviewer findings in the prompt", () => {
   it("adds the findings as third-party data after the host measurements, and nothing without them", () => {
     const review = { url: "https://github.com/acme-org/acme-api/pull/7", headSha: "h", summary: "One problem.", findings: [{ path: "src/a.ts", line: 10, severity: "critical", title: "Infinite retry", body: "No cap." }] };
     const prompt = userPrompt({ ...facts, context: ["baseline"], review });
-    assert.match(prompt, /- baseline\n\nA reviewer examined the pull request[\s\S]*<review-summary>One problem\.<\/review-summary>\n<finding path="src\/a\.ts" line="10" severity="critical">Infinite retry: No cap\.<\/finding>\n\nBegin by looking/);
+    assert.match(prompt, /- baseline\n\nAn automated reviewer examined the pull request[\s\S]*<review-summary>One problem\.<\/review-summary>\n<finding path="src\/a\.ts" line="10" severity="critical">Infinite retry: No cap\.<\/finding>\n\nBegin by looking/);
     assert.doesNotMatch(userPrompt({ ...facts, review: null }), /reviewer examined/);
   });
 });

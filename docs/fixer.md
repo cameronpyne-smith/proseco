@@ -62,7 +62,7 @@ src/fixer/
   releases.ts     release notes between the installed and target versions, from the registry and GitHub
   dryrun.ts       the dry-run report
   requests.ts     fix requests and the comment command
-  pulls.ts        pull request redos: commands and conflicts on the fixer's own pull requests
+  pulls.ts        pull request redos: commands, review findings and conflicts on the fixer's own pull requests
   check.ts        the deterministic lockfile check
   publish.ts      the commit guard: allowed files, discard, commit
   pr.ts           commit message, pull request body

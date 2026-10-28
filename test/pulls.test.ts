@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { PullInfo } from "../src/core/github.ts";
+import type { PullInfo, PullReview } from "../src/core/github.ts";
 import type { TicketComment } from "../src/core/types.ts";
 import { redoReply, scanPulls, ticketOfPull, type PullRedo, type PullSource } from "../src/fixer/pulls.ts";
 import type { FixRequest } from "../src/fixer/requests.ts";
-import { emptyState, pullState, withPull, type State } from "../src/fixer/state.ts";
+import { emptyState, pullState, recordFeedback, withPull, type State } from "../src/fixer/state.ts";
 
 const BOT = "acme-proseco";
 const OPTIONS = { org: "acme-org", ticketsRepo: "acme-tickets", bot: BOT, acknowledge: true };
@@ -30,11 +30,16 @@ function request(overrides: Partial<FixRequest> = {}): FixRequest {
   return { number: 4, key: "acme-api", repo: "acme-api", force: false, ignored: false, commentId: null, pulls: [], ...overrides };
 }
 
-function source(pulls: PullInfo[], comments: Record<number, TicketComment[]> = {}, conflicted: number[] = []) {
+function verdict(number: number, value: string, author = "acme-reviewer[bot]"): PullReview {
+  return { id: number, author, state: "COMMENTED", commitId: `head${number}`, body: `<!-- reviewdo verdict=${value} -->` };
+}
+
+function source(pulls: PullInfo[], comments: Record<number, TicketComment[]> = {}, conflicted: number[] = [], reviews: Record<number, PullReview[]> = {}) {
   const log = { reactions: [] as number[], replies: [] as [number, string][], conflictChecks: [] as number[] };
   const api: PullSource = {
     openPulls: async () => pulls,
     conflicted: async (_repo, number) => (log.conflictChecks.push(number), conflicted.includes(number)),
+    reviews: async (_repo, number) => reviews[number] ?? [],
     comments: async (_repo, number) => comments[number] ?? [],
     react: async (_repo, id) => void log.reactions.push(id),
     reply: async (_repo, number, body) => void log.replies.push([number, body]),
@@ -43,8 +48,8 @@ function source(pulls: PullInfo[], comments: Record<number, TicketComment[]> = {
   return { api, log };
 }
 
-async function scan(api: PullSource, state: State = emptyState(), requests = [request()], acknowledge = true) {
-  return scanPulls(requests, api, state, { ...OPTIONS, acknowledge });
+async function scan(api: PullSource, state: State = emptyState(), requests = [request()], acknowledge = true, reviewer?: string) {
+  return scanPulls(requests, api, state, { ...OPTIONS, acknowledge, ...(reviewer ? { reviewer } : {}) });
 }
 
 describe("finding a pull request's ticket", () => {
@@ -147,12 +152,32 @@ describe("conflicted pull requests", () => {
   });
 });
 
+describe("reviewed pull requests", () => {
+  it("redoes a pull request whose head the reviewer marked caution or blocked, once per head and before checking for a conflict", async () => {
+    const { api, log } = source([pull(7), pull(8), pull(9)], {}, [7], { 7: [verdict(7, "caution")], 8: [verdict(8, "blocked")], 9: [verdict(9, "ready")] });
+    const result = await scan(api, emptyState(), [request()], true, "acme-reviewer");
+    assert.deepEqual(result.requests[0]!.pulls.map((redo) => [redo.number, redo.reason]), [[7, "review"], [8, "review"]]);
+    assert.deepEqual(pullState(result.state, pull(7).url), { refreshedHead: "head7" });
+    assert.deepEqual(log.conflictChecks, [9]);
+    assert.deepEqual((await scan(api, result.state, [request()], true, "acme-reviewer")).requests[0]!.pulls, []);
+  });
+
+  it("stops after the feedback round, ignores other authors' verdicts and older heads, and needs a configured reviewer", async () => {
+    const once = recordFeedback(emptyState(), 4, [pull(7).url]);
+    const reviews = { 7: [verdict(7, "caution")], 8: [verdict(8, "blocked", "ana")], 9: [{ ...verdict(9, "blocked"), commitId: "old" }] };
+    const { api } = source([pull(7), pull(8), pull(9)], {}, [], reviews);
+    assert.deepEqual((await scan(api, once, [request()], true, "acme-reviewer")).requests[0]!.pulls, []);
+    assert.deepEqual((await scan(source([pull(7)], {}, [], reviews).api)).requests[0]!.pulls, []);
+  });
+});
+
 describe("redo reply", () => {
   const redo: PullRedo = { url: pull(7).url, number: 7, branch: "proseco/branch-7", headSha: "head7", reason: "command", requester: "ana", note: null };
 
   it("says why and what came of it", () => {
     assert.equal(redoReply(redo, "abcdef1234", { kind: "pr", url: redo.url, draft: false }), "proseco redid this pull request from the default branch at abcdef1, as ana asked.\n\nResult: ready for review.\n");
     assert.match(redoReply({ ...redo, reason: "conflict" }, "abcdef1234", { kind: "none", reason: "already fixed on the default branch" }), /because it conflicted with the default branch\.\n\nResult: already fixed on the default branch, so this pull request is no longer needed and can be closed\./);
+    assert.match(redoReply({ ...redo, reason: "review" }, "abcdef1234", { kind: "none", reason: "tests failed" }), /to address the reviewer's findings\.\n\nResult: not updated: tests failed/);
     assert.match(redoReply({ ...redo, reason: "manual" }, "abcdef1234", { kind: "none", reason: "tests failed" }), /by hand\.\n\nResult: not updated: tests failed/);
     assert.equal(redoReply(redo, "abcdef1234", null), "proseco did not redo this pull request: its findings are no longer on the ticket, so it can be closed.\n");
   });

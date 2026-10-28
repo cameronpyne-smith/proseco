@@ -296,7 +296,7 @@ describe("waiting for the reviewer", () => {
   const key = (url: string, head = "head1") => `${url}@${head}`;
 
   it("announces ready and merge-with-care verdicts in one message that does not mention the review, logging the verdicts", async () => {
-    const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW), { verdicts: { [key(URL1)]: "ready", [key(URL2)]: "caution" } });
+    const run = delivery(recordFeedback(queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW), 12, [URL2]), { verdicts: { [key(URL1)]: "ready", [key(URL2)]: "caution" } });
     await deliverAnnouncements(run.deps);
     assert.equal(run.sent.length, 1);
     assert.match(run.sent[0]!, new RegExp(`${URL1}</a><br><a href="${URL2}">${URL2}</a>$`));
@@ -310,6 +310,17 @@ describe("waiting for the reviewer", () => {
     await deliverAnnouncements(run.deps);
     assert.equal(run.sent.length, 1);
     assert.deepEqual(pendingAnnouncement(run.state, 12), { prs: [MAJOR], queuedAt: NOW.toISOString(), attempts: 0, nextAt: NOW.toISOString(), lastError: null });
+  });
+
+  it("waits on a caution verdict while a feedback round is still to come, or until a day has passed", async () => {
+    const queued = queueAnnouncement(emptyState(), 12, [MAJOR], NOW);
+    const first = delivery(queued, { verdicts: { [key(URL2)]: "caution" } });
+    await deliverAnnouncements(first.deps);
+    assert.deepEqual(first.sent, []);
+    assert.ok(pendingAnnouncement(first.state, 12));
+    const late = delivery(queued, { verdicts: { [key(URL2)]: "caution" }, now: new Date(NOW.getTime() + REVIEW_WAIT_MS) });
+    await deliverAnnouncements(late.deps);
+    assert.match(late.log.at(-1)!, /announced in Teams: .*\(caution\)/);
   });
 
   it("waits on a blocked verdict while a feedback round is still to come, then announces changes requested", async () => {

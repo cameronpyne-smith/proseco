@@ -3,7 +3,7 @@ import { announcements, queueAnnouncement } from "./announce.ts";
 import { renderComment, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
 import { planUnits, type PrUnit } from "./plan.ts";
 import { redoDecision, redoReply, type PullRedo } from "./pulls.ts";
-import { bodyHash, decide, feedbackRounds, isIgnored, lastAttempt, recordAttempt, recordFeedback, type Decision, type PullRequestStatus, type State } from "./state.ts";
+import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, recordFeedback, type Decision, type PullRequestStatus, type State } from "./state.ts";
 import type { LoopStats, TraceEntry } from "./agent/loop.ts";
 import type { Release } from "./lock.ts";
 import type { ReviewFindings } from "./reviewer.ts";
@@ -95,7 +95,7 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
   if (!input.local && last) for (const url of last.prUrls) prs.push(await deps.prStatus(url));
   const pulls = input.pulls ?? [];
   const ignored = isIgnored(state, ticket.number);
-  const ticketDecision = decide(last, { bodyHash: hash, force: input.force, prs, ignored, feedback: feedbackRounds(state, ticket.number) });
+  const ticketDecision = decide(last, { bodyHash: hash, force: input.force, prs, ignored });
   const redoOnly = pulls.length > 0 && !ignored && (input.local || !ticketDecision.attempt);
   const decision = redoOnly ? redoDecision(pulls) : ticketDecision;
   if (!decision.attempt && !input.local) return { skipped: true, decision, headSha: null, reports: [], state };
@@ -139,7 +139,11 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
     const fresh = renderComment(hash, reports);
     if (redoOnly && deps.mergeComment) await deps.mergeComment(reports, fresh);
     else await deps.postComment(fresh);
-    for (const pull of pulls) await deps.reply?.(pull, redoReply(pull, headSha, reports.find((report) => report.unit.branch === pull.branch)?.outcome ?? null));
+    for (const pull of pulls) {
+      const report = reports.find((item) => item.unit.branch === pull.branch);
+      if (pull.reason === "review" && report?.review && report.outcome.kind === "pr") continue;
+      await deps.reply?.(pull, redoReply(pull, headSha, report?.outcome ?? null));
+    }
   } finally {
     deps.saveState?.(next);
   }
