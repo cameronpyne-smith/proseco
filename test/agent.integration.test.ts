@@ -188,7 +188,7 @@ async function attempt(scenario: Scenario, workspace: string): Promise<Result> {
   const publisher: Publisher = {
     async publish(request) {
       result.captured.push(request);
-      return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: request.draft ? null : "new" };
+      return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: !request.draft };
     },
   };
   const body = renderBody("acme-api", [scenario.finding], ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" });

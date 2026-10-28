@@ -161,7 +161,7 @@ describe("state file", () => {
 
 describe("pending announcements", () => {
   const pending: PendingAnnouncement = {
-    prs: [{ url: PR, reason: "new", facts: { title: "Bump a to 1.0.1", major: false, lockfile: "package-lock.json", packages: [{ name: "a", from: "1.0.0", to: "1.0.1" }] } }],
+    prs: [{ url: PR, facts: { title: "Bump a to 1.0.1", major: false, lockfile: "package-lock.json", packages: [{ name: "a", from: "1.0.0", to: "1.0.1" }] } }],
     queuedAt: "2026-10-01T10:00:00.000Z",
     attempts: 0,
     nextAt: "2026-10-01T10:00:00.000Z",
@@ -181,7 +181,7 @@ describe("pending announcements", () => {
     const file = join(mkdtempSync(join(tmpdir(), "proseco-state-")), "state.json");
     saveState(file, withAnnouncement(emptyState(), 12, pending));
     assert.deepEqual(pendingAnnouncement(loadState(file), 12), pending);
-    for (const bad of [{ ...pending, prs: [{ ...pending.prs[0], reason: "later" }] }, { ...pending, attempts: "1" }, { ...pending, prs: [{ ...pending.prs[0], facts: { title: "t" } }] }, { ...pending, lastError: 3 }]) {
+    for (const bad of [{ ...pending, prs: [{ ...pending.prs[0], url: 3 }] }, { ...pending, attempts: "1" }, { ...pending, prs: [{ ...pending.prs[0], facts: { title: "t" } }] }, { ...pending, lastError: 3 }]) {
       writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, announcement: bad } } }));
       assert.throws(() => loadState(file), /malformed announcement/);
     }

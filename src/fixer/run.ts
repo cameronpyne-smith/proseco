@@ -1,7 +1,7 @@
 import type { TokenProvider } from "../core/app.ts";
 import type { Config, FixerConfig, MergeMethod } from "../core/config.ts";
 import { RepoApi, TicketRepo, type PullRequest } from "../core/github.ts";
-import { announceReason, announcements, buildMessage, messageGroups, writeSentence, type DeliveryDeps, type MessageDeps } from "./announce.ts";
+import { announceable, announcements, buildMessage, writeSentence, type DeliveryDeps, type MessageDeps } from "./announce.ts";
 import type { TurnLock } from "./lock.ts";
 import { collectFindings, verdictAt } from "./reviewer.ts";
 import { Advisories } from "./advisories.ts";
@@ -90,9 +90,8 @@ export function deliveryDeps(config: Config & { fixer: FixerConfig }, tokens: To
 
 export async function localAnnouncement(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, ticket: number, reports: UnitReport[]): Promise<string[]> {
   const deps = messageDeps(config, tokens);
-  const messages: string[] = [];
-  for (const group of messageGroups(announcements(reports))) messages.push(await buildMessage(deps, ticket, group));
-  return messages;
+  const prs = announcements(reports);
+  return prs.length > 0 ? [await buildMessage(deps, ticket, prs)] : [];
 }
 
 export function pullSource(org: string, tokens: TokenProvider): PullSource {
@@ -194,18 +193,17 @@ export class LivePublisher implements Publisher {
         await this.#requestReview(api, request.repo, created.number);
         await this.#enableAutoMerge(api, created);
       }
-      return { url: created.url, draft: request.draft, announce: announceReason(null, request.draft) };
+      return { url: created.url, draft: request.draft, announce: announceable(null, request.draft) };
     }
     const tree = (await store.inCheckout(request.checkout, ["rev-parse", `${request.commit.sha}^{tree}`], "git rev-parse")).trim();
     const changed = (await api.commitTree(existing.headSha)) !== tree;
-    const approved = changed && !request.draft && (await api.approved(existing.number, existing.headSha));
     if (changed) await store.push(request.checkout, request.repo, request.branch, token);
     await api.updatePull(existing.number, { title: request.title, body: request.body });
     if (existing.draft !== request.draft) await api.setDraft(existing.nodeId, request.draft);
     if (request.reviewReply) await api.commentOnPull(existing.number, request.reviewReply);
     if (!request.draft && (changed || existing.draft)) await this.#requestReview(api, request.repo, existing.number);
     if (!request.draft) await this.#enableAutoMerge(api, existing);
-    return { url: existing.url, draft: request.draft, announce: announceReason({ draft: existing.draft, approved, changed }, request.draft) };
+    return { url: existing.url, draft: request.draft, announce: announceable(existing, request.draft) };
   }
 }
 
@@ -220,7 +218,7 @@ class LocalPublisher implements Publisher {
     console.log(`--- test result: ${tests.kind}${tests.kind === "failed" ? ` (${tests.step}, exit code ${tests.exitCode}${tests.timedOut ? ", timed out" : ""})` : ""}`);
     if (tests.tail.trim() !== "") console.log(tests.tail.trim().split("\n").slice(-40).join("\n"));
     console.log(`--- pull request body\n${request.body}`);
-    return { url: `https://github.com/local/not-pushed/pull/0#${request.branch}`, draft: request.draft, announce: announceReason(null, request.draft) };
+    return { url: `https://github.com/local/not-pushed/pull/0#${request.branch}`, draft: request.draft, announce: announceable(null, request.draft) };
   }
 }
 

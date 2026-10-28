@@ -2,7 +2,6 @@ import type { TicketComment } from "../core/types.ts";
 
 export const COMMENT_PREFIX = "<!-- proseco:attempt ";
 
-export type AnnounceReason = "new" | "re-review";
 
 export interface PrFacts {
   title: string;
@@ -11,7 +10,7 @@ export interface PrFacts {
   packages: { name: string; from: string; to: string }[];
 }
 
-export type UnitOutcomeReport = { kind: "pr"; url: string; draft: boolean; announce?: AnnounceReason | null; facts?: PrFacts } | { kind: "none"; reason: string };
+export type UnitOutcomeReport = { kind: "pr"; url: string; draft: boolean; announce?: boolean; facts?: PrFacts } | { kind: "none"; reason: string };
 
 export interface UnitReport {
   label: string;

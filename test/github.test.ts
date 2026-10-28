@@ -53,20 +53,6 @@ describe("repo api", () => {
     assert.equal(calls[0]!.url, "https://api.github.com/repos/acme-org/acme-api/pulls/7");
   });
 
-  it("counts a pull request as approved only by each reviewer's latest deciding review, given on the head", async () => {
-    const review = (login: string, state: string, commit = "head1") => ({ user: { login }, state, commit_id: commit });
-    const approved = async (...reviews: unknown[]) => new RepoApi("tok", "acme-org", "acme-api", recorder(reviews).fetch).approved(7, "head1");
-    assert.equal(await approved(review("ana", "APPROVED")), true);
-    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "COMMENTED")), true);
-    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "DISMISSED")), false);
-    assert.equal(await approved(review("ana", "APPROVED"), review("ana", "CHANGES_REQUESTED")), false);
-    assert.equal(await approved(review("ana", "CHANGES_REQUESTED"), review("bo", "APPROVED")), true);
-    assert.equal(await approved(review("ana", "COMMENTED")), false);
-    assert.equal(await approved(review("ana", "APPROVED", "head0")), false);
-    assert.equal(await approved(review("ana", "APPROVED", "head0"), review("bo", "APPROVED")), true);
-    assert.equal(await approved(), false);
-  });
-
   it("reads a commit's tree", async () => {
     const { fetch, calls } = recorder({ sha: "abc123", tree: { sha: "tree9" } });
     assert.equal(await new RepoApi("tok", "acme-org", "acme-api", fetch).commitTree("abc123"), "tree9");

@@ -5,7 +5,6 @@ import { basename, dirname } from "node:path/posix";
 import type { FixerConfig } from "../core/config.ts";
 import type { Advisory } from "./advisories.ts";
 import type { UnitResult } from "./attempt.ts";
-import type { AnnounceReason } from "./comment.ts";
 import { alreadyFixed, checkedFix, checkLockfile, checkPassed, type CheckedFix, type PackageCheck } from "./check.ts";
 import { declaredToolchain } from "./dryrun.ts";
 import { ecosystemFor, type Ecosystem, type ManifestPair, type ResolverReference, type Verification } from "./ecosystems/ecosystem.ts";
@@ -57,7 +56,7 @@ export interface PublishRequest {
 export interface Published {
   url: string;
   draft: boolean;
-  announce: AnnounceReason | null;
+  announce: boolean;
 }
 
 export interface Publisher {

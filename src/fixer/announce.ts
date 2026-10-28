@@ -1,8 +1,8 @@
 import type { PullDetails } from "../core/github.ts";
 import type { ChatMessage, ChatResult, ToolDefinition } from "./agent/ollama.ts";
-import type { AnnounceReason, UnitReport } from "./comment.ts";
+import type { UnitReport } from "./comment.ts";
 import type { ReviewOutcome } from "./reviewer.ts";
-import { feedbackRounds, MAX_FEEDBACK_ROUNDS, pendingAnnouncement, withAnnouncement, type AnnouncedPr, type PendingAnnouncement, type ReviewVerdict, type State } from "./state.ts";
+import { announcedPrs, feedbackRounds, MAX_FEEDBACK_ROUNDS, pendingAnnouncement, recordAnnounced, withAnnouncement, type AnnouncedPr, type PendingAnnouncement, type ReviewVerdict, type State } from "./state.ts";
 
 export const GIVE_UP_MS = 24 * 60 * 60_000;
 export const REVIEW_WAIT_MS = 24 * 60 * 60_000;
@@ -18,10 +18,12 @@ export const SENTENCE_PROMPT = [
 ].join("\n");
 
 export function announcements(reports: UnitReport[]): AnnouncedPr[] {
-  return reports.flatMap(({ outcome }) => (outcome.kind === "pr" && outcome.announce && outcome.facts ? [{ url: outcome.url, reason: outcome.announce, facts: outcome.facts }] : []));
+  return reports.flatMap(({ outcome }) => (outcome.kind === "pr" && outcome.announce && outcome.facts ? [{ url: outcome.url, facts: outcome.facts }] : []));
 }
 
-export function queueAnnouncement(state: State, ticket: number, prs: AnnouncedPr[], now: Date): State {
+export function queueAnnouncement(state: State, ticket: number, queued: AnnouncedPr[], now: Date): State {
+  const announced = new Set(announcedPrs(state, ticket));
+  const prs = queued.filter((pr) => !announced.has(pr.url));
   if (prs.length === 0) return state;
   const existing = pendingAnnouncement(state, ticket);
   const fresh = new Set(prs.map((pr) => pr.url));
@@ -35,22 +37,6 @@ export function retryDelay(attempts: number): number {
 
 export interface DecidedPr extends AnnouncedPr {
   outcome?: ReviewOutcome | null;
-}
-
-export interface MessageGroup<T extends AnnouncedPr = AnnouncedPr> {
-  reReview: boolean;
-  prs: T[];
-}
-
-export function messageGroups<T extends AnnouncedPr>(prs: T[]): MessageGroup<T>[] {
-  const groups = new Map<boolean, MessageGroup<T>>();
-  for (const pr of prs) {
-    const reReview = pr.reason === "re-review";
-    const group = groups.get(reReview) ?? { reReview, prs: [] };
-    group.prs.push(pr);
-    groups.set(reReview, group);
-  }
-  return [...groups.values()].sort((a, b) => Number(a.reReview) - Number(b.reReview));
 }
 
 function lower(text: string): string {
@@ -148,10 +134,10 @@ function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; reReview: boolean; urls: string[] }): string {
+export function renderMessage(input: { ticket: number; ticketUrl: string; sentence: string; urls: string[] }): string {
   const link = (url: string, text: string) => `<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`;
   return [
-    `${link(input.ticketUrl, String(input.ticket))} - ${escapeHtml(`${input.reReview ? "Re-review: " : ""}${input.sentence}`)}`,
+    `${link(input.ticketUrl, String(input.ticket))} - ${escapeHtml(input.sentence)}`,
     ...input.urls.map((url) => link(url, url)),
   ].join("<br>");
 }
@@ -209,10 +195,10 @@ export async function reviewOutcome(deps: Pick<MessageDeps, "reviewer" | "verdic
   return settled ? "no-review" : "waiting";
 }
 
-export async function buildMessage(deps: MessageDeps, ticket: number, group: MessageGroup): Promise<string> {
-  const repos = [...new Set(group.prs.map((pr) => pullLocation(pr.url)?.repo ?? ""))].join(", ");
-  const sentence = await deps.sentence(repos, group.prs);
-  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, reReview: group.reReview, urls: group.prs.map((pr) => pr.url) });
+export async function buildMessage(deps: MessageDeps, ticket: number, prs: AnnouncedPr[]): Promise<string> {
+  const repos = [...new Set(prs.map((pr) => pullLocation(pr.url)?.repo ?? ""))].join(", ");
+  const sentence = await deps.sentence(repos, prs);
+  return renderMessage({ ticket, ticketUrl: deps.ticketUrl(ticket), sentence, urls: prs.map((pr) => pr.url) });
 }
 
 export interface DeliveryDeps extends MessageDeps {
@@ -234,7 +220,8 @@ function errorText(error: unknown): string {
 }
 
 export async function deliverTicket(deps: DeliveryDeps, ticket: number, pending: PendingAnnouncement, options: DeliveryOptions = {}): Promise<PendingAnnouncement | null> {
-  let remaining = pending.prs;
+  const announced = new Set(announcedPrs(deps.loadState(), ticket));
+  let remaining = pending.prs.filter((pr) => !announced.has(pr.url));
   try {
     const query: ReviewQuery = { queuedAt: pending.queuedAt, rounds: feedbackRounds(deps.loadState(), ticket), now: deps.now(), force: options.force === true };
     const decided: DecidedPr[] = [];
@@ -246,11 +233,12 @@ export async function deliverTicket(deps: DeliveryDeps, ticket: number, pending:
     }
     const kept = new Set([...waiting, ...decided].map((pr) => pr.url));
     remaining = remaining.filter((pr) => kept.has(pr.url));
-    for (const group of messageGroups(decided)) {
-      await deps.send(await buildMessage(deps, ticket, group));
-      const sent = new Set(group.prs.map((pr) => pr.url));
-      remaining = remaining.filter((pr) => !sent.has(pr.url));
-      deps.log(`#${ticket} announced in Teams: ${group.prs.map((pr) => `${pr.url}${pr.outcome ? ` (${pr.outcome})` : ""}`).join(", ")}`);
+    if (decided.length > 0) {
+      await deps.send(await buildMessage(deps, ticket, decided));
+      const sent = decided.map((pr) => pr.url);
+      deps.saveState(recordAnnounced(deps.loadState(), ticket, sent));
+      remaining = remaining.filter((pr) => !sent.includes(pr.url));
+      deps.log(`#${ticket} announced in Teams: ${decided.map((pr) => `${pr.url}${pr.outcome ? ` (${pr.outcome})` : ""}`).join(", ")}`);
     }
     for (const pr of waiting) options.waiting?.(pr);
     return waiting.length > 0 ? { ...pending, prs: waiting } : null;
@@ -283,9 +271,6 @@ export async function deliverAnnouncements(deps: DeliveryDeps, only?: ReadonlySe
   }
 }
 
-export function announceReason(before: { draft: boolean; approved: boolean; changed: boolean } | null, draft: boolean): AnnounceReason | null {
-  if (draft) return null;
-  if (!before) return "new";
-  if (before.approved && before.changed) return "re-review";
-  return before.draft ? "new" : null;
+export function announceable(before: { draft: boolean } | null, draft: boolean): boolean {
+  return !draft && (!before || before.draft);
 }

@@ -150,7 +150,7 @@ async function run(options: { ecosystem: Ecosystem; edits?: (ReturnType<typeof w
     publisher: {
       async publish(request) {
         seen.published.push(request);
-        return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: request.draft ? null : "new" };
+        return { url: "https://github.com/acme-org/acme-api/pull/1", draft: request.draft, announce: !request.draft };
       },
     },
     keepCheckout: false,
@@ -573,7 +573,7 @@ describe("workUnit for a major upgrade", () => {
       kind: "pr",
       url: "https://github.com/acme-org/acme-api/pull/1",
       draft: false,
-      announce: "new",
+      announce: true,
       facts: { title: "Upgrade pkg to 2.0.0 (major)", major: true, lockfile: "svc/fake.lock", packages: [{ name: "pkg", from: "1.0.0", to: "2.0.0" }] },
     });
   });
@@ -671,7 +671,7 @@ describe("workUnit for a major upgrade", () => {
     assert.equal(seen.published[0]!.draft, true);
     assert.match(seen.published[0]!.body, /`fake-test` failed with exit code 3/);
     assert.match(seen.published[0]!.body, /### Why this is a draft\n\n- `fake-test` fails in the sandbox with failures the default branch does not have/);
-    assert.equal(result.outcome.kind === "pr" && result.outcome.announce, null);
+    assert.equal(result.outcome.kind === "pr" && result.outcome.announce, false);
   });
 
   it("says in the body when no release notes were found", async () => {

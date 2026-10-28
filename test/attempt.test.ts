@@ -206,13 +206,13 @@ describe("attempt", () => {
     const facts = { title: "Bump minimist to 1.2.6", major: false, lockfile: "package-lock.json", packages: [{ name: "minimist", from: "1.2.5", to: "1.2.6" }] };
     const work = async (unit: PrUnit): Promise<UnitResult> =>
       unit.source === "package-lock.json"
-        ? { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/1", draft: false, announce: "new", facts } }
-        : { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/2", draft: true, announce: null, facts } };
+        ? { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/1", draft: false, announce: true, facts } }
+        : { outcome: { kind: "pr", url: "https://github.com/acme-org/acme-api/pull/2", draft: true, announce: false, facts } };
     const on = harness({ work });
     on.deps.announce = true;
     const queued = await runAttempt(base(), on.deps);
     assert.deepEqual(pendingAnnouncement(queued.state, 12), {
-      prs: [{ url: "https://github.com/acme-org/acme-api/pull/1", reason: "new", facts }],
+      prs: [{ url: "https://github.com/acme-org/acme-api/pull/1", facts }],
       queuedAt: "2026-02-03T04:05:06.000Z",
       attempts: 0,
       nextAt: "2026-02-03T04:05:06.000Z",

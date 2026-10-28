@@ -73,48 +73,38 @@ const APPROVED = [{ user: { login: "ana" }, state: "APPROVED", commit_id: "old" 
 describe("live publisher", () => {
   it("pushes and opens a new pull request, announcing it only when ready", async () => {
     const ready = harness({ open: null, trees: {}, reviews: [] }, "t1");
-    assert.deepEqual(await ready.publisher.publish(request(false)), { url: "https://github.com/acme-org/acme-api/pull/8", draft: false, announce: "new" });
+    assert.deepEqual(await ready.publisher.publish(request(false)), { url: "https://github.com/acme-org/acme-api/pull/8", draft: false, announce: true });
     assert.deepEqual(ready.pushes, ["proseco/package-lock.json"]);
     const draft = harness({ open: null, trees: {}, reviews: [] }, "t1");
-    assert.equal((await draft.publisher.publish(request(true))).announce, null);
+    assert.equal((await draft.publisher.publish(request(true))).announce, false);
   });
 
-  it("announces an approved pull request for re-review when the push changes its tree", async () => {
-    const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews: APPROVED }, "t1");
-    assert.deepEqual(await run.publisher.publish(request(false)), { url: URL7, draft: false, announce: "re-review" });
-    assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
-    assert.ok(run.calls.includes("PATCH /pulls/7"));
-  });
-
-  it("does not announce a re-review for an approval of an earlier head, which an earlier push already announced", async () => {
-    const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews: [{ user: { login: "ana" }, state: "APPROVED", commit_id: "older" }] }, "t1");
-    assert.equal((await run.publisher.publish(request(false))).announce, null);
-    assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
+  it("does not announce an already ready pull request again when a push changes its tree, approved or not", async () => {
+    for (const reviews of [APPROVED, []]) {
+      const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews }, "t1");
+      assert.deepEqual(await run.publisher.publish(request(false)), { url: URL7, draft: false, announce: false });
+      assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
+      assert.equal(run.calls.some((call) => call.includes("/reviews")), false);
+    }
   });
 
   it("does not push or announce when the tree is unchanged, so an approval stands, but still updates the body", async () => {
     const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t1" }, reviews: APPROVED }, "t1");
-    assert.deepEqual(await run.publisher.publish(request(false)), { url: URL7, draft: false, announce: null });
+    assert.deepEqual(await run.publisher.publish(request(false)), { url: URL7, draft: false, announce: false });
     assert.deepEqual(run.pushes, []);
     assert.ok(run.calls.includes("PATCH /pulls/7"));
     assert.equal(run.calls.some((call) => call.includes("/reviews")), false);
   });
 
-  it("does not announce an unapproved ready pull request that was updated", async () => {
-    const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews: [] }, "t1");
-    assert.equal((await run.publisher.publish(request(false))).announce, null);
-    assert.deepEqual(run.pushes, ["proseco/package-lock.json"]);
-  });
-
   it("announces a draft that this run made ready, and marks it ready", async () => {
     const run = harness({ open: { draft: true, headSha: "old" }, trees: { old: "t0" }, reviews: [] }, "t1");
-    assert.equal((await run.publisher.publish(request(false))).announce, "new");
+    assert.equal((await run.publisher.publish(request(false))).announce, true);
     assert.ok(run.calls.includes("POST https://api.github.com/graphql"));
   });
 
   it("does not announce a pull request that stays or becomes a draft", async () => {
     const run = harness({ open: { draft: false, headSha: "old" }, trees: { old: "t0" }, reviews: APPROVED }, "t1");
-    assert.equal((await run.publisher.publish(request(true))).announce, null);
+    assert.equal((await run.publisher.publish(request(true))).announce, false);
     assert.equal(run.calls.some((call) => call.includes("/reviews")), false);
   });
 });
@@ -182,7 +172,7 @@ describe("live publisher with auto-merge", () => {
   it("logs a refusal and still publishes", async () => {
     const run = harness({ open: null, trees: {}, reviews: [], autoMergeRefused: "Pull request Auto merge is not allowed for this repository" }, "t1", "reviewdo", "squash");
     const published = await run.publisher.publish(request(false));
-    assert.equal(published.announce, "new");
+    assert.equal(published.announce, true);
     assert.deepEqual(run.log, ["could not enable auto-merge on https://github.com/acme-org/acme-api/pull/8: graphql failed: [{\"message\":\"Pull request Auto merge is not allowed for this repository\"}]"]);
     assert.ok(run.calls.includes("POST /issues/8/labels"));
   });

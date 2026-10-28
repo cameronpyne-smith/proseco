@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { PullDetails } from "../src/core/github.ts";
 import {
-  announceReason,
+  announceable,
   announcements,
   checkSentence,
   deliverAnnouncements,
   deliverTicket,
   fallbackSentence,
   GIVE_UP_MS,
-  messageGroups,
   pullLocation,
   queueAnnouncement,
   renderMessage,
@@ -21,7 +20,7 @@ import {
   type DeliveryDeps,
 } from "../src/fixer/announce.ts";
 import type { ChatMessage } from "../src/fixer/agent/ollama.ts";
-import { emptyState, pendingAnnouncement, recordAttempt, recordFeedback, withAnnouncement, type AnnouncedPr, type ReviewVerdict, type State } from "../src/fixer/state.ts";
+import { announcedPrs, emptyState, pendingAnnouncement, recordAnnounced, recordAttempt, recordFeedback, withAnnouncement, type AnnouncedPr, type ReviewVerdict, type State } from "../src/fixer/state.ts";
 
 const URL1 = "https://github.com/acme-org/acme-api/pull/1";
 const URL2 = "https://github.com/acme-org/acme-api/pull/2";
@@ -29,11 +28,10 @@ const URL3 = "https://github.com/acme-org/acme-api/pull/3";
 
 const LOCKFILE: AnnouncedPr = {
   url: URL1,
-  reason: "new",
   facts: { title: "Fix 2 vulnerable packages in package-lock.json", major: false, lockfile: "package-lock.json", packages: [{ name: "minimist", from: "1.2.5", to: "1.2.8" }, { name: "left-pad", from: "1.0.0", to: "1.3.0" }] },
 };
-const MAJOR: AnnouncedPr = { url: URL2, reason: "new", facts: { title: "Upgrade vite to 6.4.4 (major)", major: true, lockfile: "web/package-lock.json", packages: [{ name: "vite", from: "5.4.21", to: "6.4.4" }] } };
-const SECOND_MAJOR: AnnouncedPr = { url: URL3, reason: "new", facts: { title: "Upgrade svelte-check to 4.0.0 (major)", major: true, lockfile: "web/package-lock.json", packages: [{ name: "svelte-check", from: "3.8.0", to: "4.0.0" }] } };
+const MAJOR: AnnouncedPr = { url: URL2, facts: { title: "Upgrade vite to 6.4.4 (major)", major: true, lockfile: "web/package-lock.json", packages: [{ name: "vite", from: "5.4.21", to: "6.4.4" }] } };
+const SECOND_MAJOR: AnnouncedPr = { url: URL3, facts: { title: "Upgrade svelte-check to 4.0.0 (major)", major: true, lockfile: "web/package-lock.json", packages: [{ name: "svelte-check", from: "3.8.0", to: "4.0.0" }] } };
 
 const NOW = new Date("2026-03-01T10:00:00Z");
 
@@ -42,24 +40,18 @@ function details(url: string, overrides: Partial<PullDetails> = {}): PullDetails
 }
 
 describe("when a pull request is announced", () => {
-  it("announces a new ready pull request, a draft made ready, and an approved one whose tree changed", () => {
-    assert.equal(announceReason(null, false), "new");
-    assert.equal(announceReason({ draft: true, approved: false, changed: true }, false), "new");
-    assert.equal(announceReason({ draft: false, approved: true, changed: true }, false), "re-review");
-    assert.equal(announceReason({ draft: true, approved: true, changed: true }, false), "re-review");
-  });
-
-  it("does not announce a draft, an unapproved ready one that was updated, or an approved one whose tree did not change", () => {
-    assert.equal(announceReason(null, true), null);
-    assert.equal(announceReason({ draft: false, approved: true, changed: true }, true), null);
-    assert.equal(announceReason({ draft: false, approved: false, changed: true }, false), null);
-    assert.equal(announceReason({ draft: false, approved: true, changed: false }, false), null);
+  it("announces a new ready pull request and a draft made ready, and nothing else", () => {
+    assert.equal(announceable(null, false), true);
+    assert.equal(announceable({ draft: true }, false), true);
+    assert.equal(announceable(null, true), false);
+    assert.equal(announceable({ draft: false }, false), false);
+    assert.equal(announceable({ draft: true }, true), false);
   });
 
   it("takes only pull request outcomes marked for announcing", () => {
     const prs = announcements([
-      { label: "a", outcome: { kind: "pr", url: URL1, draft: false, announce: "new", facts: LOCKFILE.facts } },
-      { label: "b", outcome: { kind: "pr", url: URL2, draft: true, announce: null, facts: MAJOR.facts } },
+      { label: "a", outcome: { kind: "pr", url: URL1, draft: false, announce: true, facts: LOCKFILE.facts } },
+      { label: "b", outcome: { kind: "pr", url: URL2, draft: true, announce: false, facts: MAJOR.facts } },
       { label: "c", outcome: { kind: "pr", url: URL3, draft: false } },
       { label: "d", outcome: { kind: "none", reason: "x" } },
     ]);
@@ -75,14 +67,21 @@ describe("the announcement queue", () => {
     assert.equal(queueAnnouncement(empty, 12, [], NOW), empty);
   });
 
-  it("merges with a pending announcement by URL, the newer reason winning, and keeps the attempt", () => {
+  it("merges with a pending announcement by URL and keeps the attempt", () => {
     const attempted = recordAttempt(emptyState(), 12, { bodyHash: "h", headSha: "s", attemptedAt: "t", outcome: "pr-opened", prUrls: [URL1] });
     const first = queueAnnouncement(attempted, 12, [LOCKFILE, MAJOR], NOW);
     const later = new Date(NOW.getTime() + 60_000);
-    const second = queueAnnouncement(first, 12, [{ ...LOCKFILE, reason: "re-review" }], later);
-    assert.deepEqual(pendingAnnouncement(second, 12)!.prs, [MAJOR, { ...LOCKFILE, reason: "re-review" }]);
+    const changed = { ...LOCKFILE, facts: { ...LOCKFILE.facts, title: "Fix 3 vulnerable packages in package-lock.json" } };
+    const second = queueAnnouncement(first, 12, [changed], later);
+    assert.deepEqual(pendingAnnouncement(second, 12)!.prs, [MAJOR, changed]);
     assert.equal(pendingAnnouncement(second, 12)!.nextAt, later.toISOString());
     assert.equal(second.tickets["12"]!.attempt!.prUrls[0], URL1);
+  });
+
+  it("never queues a pull request that was already announced", () => {
+    const announced = recordAnnounced(emptyState(), 12, [URL1]);
+    assert.equal(queueAnnouncement(announced, 12, [LOCKFILE], NOW), announced);
+    assert.deepEqual(pendingAnnouncement(queueAnnouncement(announced, 12, [LOCKFILE, MAJOR], NOW), 12)!.prs, [MAJOR]);
   });
 
   it("backs off from five minutes, doubling up to two hours", () => {
@@ -91,14 +90,6 @@ describe("the announcement queue", () => {
 });
 
 describe("the message", () => {
-  it("splits re-reviews from new pull requests", () => {
-    assert.deepEqual(messageGroups([LOCKFILE, { ...MAJOR, reason: "re-review" }, SECOND_MAJOR]), [
-      { reReview: false, prs: [LOCKFILE, SECOND_MAJOR] },
-      { reReview: true, prs: [{ ...MAJOR, reason: "re-review" }] },
-    ]);
-    assert.deepEqual(messageGroups([MAJOR]), [{ reReview: false, prs: [MAJOR] }]);
-  });
-
   it("falls back to the title for one pull request and to a fixed sentence for several", () => {
     assert.equal(fallbackSentence([MAJOR]), "Upgrade vite to 6.4.4 (major)");
     assert.equal(fallbackSentence([LOCKFILE, MAJOR]), "Fix 2 vulnerable packages in package-lock.json and upgrade vite to 6.4.4 (major)");
@@ -107,12 +98,11 @@ describe("the message", () => {
   });
 
   it("renders the linked ticket, the sentence and one linked URL per line, escaping text", () => {
-    const html = renderMessage({ ticket: 12, ticketUrl: "https://github.com/acme-org/acme-tickets/issues/12", sentence: "Fix <b>a</b> & b", reReview: false, urls: [URL1, URL2] });
+    const html = renderMessage({ ticket: 12, ticketUrl: "https://github.com/acme-org/acme-tickets/issues/12", sentence: "Fix <b>a</b> & b", urls: [URL1, URL2] });
     assert.equal(
       html,
       `<a href="https://github.com/acme-org/acme-tickets/issues/12">12</a> - Fix &lt;b&gt;a&lt;/b&gt; &amp; b<br><a href="${URL1}">${URL1}</a><br><a href="${URL2}">${URL2}</a>`,
     );
-    assert.match(renderMessage({ ticket: 12, ticketUrl: "u", sentence: "Upgrade vite", reReview: true, urls: [URL1] }), /^<a href="u">12<\/a> - Re-review: Upgrade vite<br>/);
   });
 
   it("reads only github.com pull request URLs", () => {
@@ -250,17 +240,32 @@ describe("delivering announcements", () => {
     assert.equal(pendingAnnouncement(run.state, 12), undefined);
   });
 
-  it("keeps a failed announcement with a later retry, and only the pull requests not yet posted", async () => {
-    const state = queueAnnouncement(emptyState(), 12, [LOCKFILE, { ...MAJOR, reason: "re-review" }], NOW);
+  it("posts each pull request once: records what it posted, drops it from later queues and pending entries", async () => {
+    const run = delivery(queueAnnouncement(emptyState(), 12, [LOCKFILE], NOW));
+    await deliverAnnouncements(run.deps);
+    assert.deepEqual(announcedPrs(run.state, 12), [URL1]);
+    run.state = queueAnnouncement(run.state, 12, [LOCKFILE, MAJOR], NOW);
+    assert.deepEqual(pendingAnnouncement(run.state, 12)!.prs, [MAJOR]);
+    run.state = withAnnouncement(run.state, 12, { ...pendingAnnouncement(run.state, 12)!, prs: [LOCKFILE, MAJOR] });
+    await deliverAnnouncements(run.deps);
+    assert.equal(run.sent.length, 2);
+    assert.doesNotMatch(run.sent[1]!, new RegExp(URL1));
+    assert.deepEqual(announcedPrs(run.state, 12), [URL1, URL2]);
+    assert.equal(pendingAnnouncement(run.state, 12), undefined);
+  });
+
+  it("keeps a failed announcement with a later retry, recording nothing as posted", async () => {
+    const state = queueAnnouncement(emptyState(), 12, [LOCKFILE, MAJOR], NOW);
     const run = delivery(state, {
-      send: async (_html, count) => {
-        if (count === 1) throw new Error("Teams post failed: 403 Forbidden BotNotInConversationRoster");
+      send: async () => {
+        throw new Error("Teams post failed: 403 Forbidden BotNotInConversationRoster");
       },
     });
     await deliverAnnouncements(run.deps);
-    assert.equal(run.sent.length, 1);
+    assert.equal(run.sent.length, 0);
+    assert.deepEqual(announcedPrs(run.state, 12), []);
     const pending = pendingAnnouncement(run.state, 12)!;
-    assert.deepEqual(pending.prs, [{ ...MAJOR, reason: "re-review" }]);
+    assert.deepEqual(pending.prs, [LOCKFILE, MAJOR]);
     assert.equal(pending.attempts, 1);
     assert.equal(pending.nextAt, new Date(NOW.getTime() + 5 * 60_000).toISOString());
     assert.match(pending.lastError!, /BotNotInConversationRoster/);

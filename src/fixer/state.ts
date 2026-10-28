@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AnnounceReason, PrFacts } from "./comment.ts";
+import type { PrFacts } from "./comment.ts";
 
 export interface Attempt {
   bodyHash: string;
@@ -13,7 +13,6 @@ export interface Attempt {
 
 export interface AnnouncedPr {
   url: string;
-  reason: AnnounceReason;
   facts: PrFacts;
 }
 
@@ -30,6 +29,7 @@ export interface TicketState {
   lastCommentId: number | null;
   ignored?: boolean;
   announcement?: PendingAnnouncement;
+  announced?: string[];
   feedback?: Record<string, number>;
 }
 
@@ -112,6 +112,15 @@ export function withAnnouncement(state: State, ticket: number, announcement: Pen
   return withEntry(state, ticket, announcement ? { ...rest, announcement } : rest);
 }
 
+export function announcedPrs(state: State, ticket: number): string[] {
+  return entry(state, ticket).announced ?? [];
+}
+
+export function recordAnnounced(state: State, ticket: number, urls: string[]): State {
+  if (urls.length === 0) return state;
+  return withEntry(state, ticket, { ...entry(state, ticket), announced: [...new Set([...announcedPrs(state, ticket), ...urls])] });
+}
+
 export function pendingAnnouncement(state: State, ticket: number): PendingAnnouncement | undefined {
   return entry(state, ticket).announcement;
 }
@@ -169,7 +178,7 @@ function validAnnouncement(value: unknown): boolean {
     typeof pending === "object" &&
     pending !== null &&
     Array.isArray(pending.prs) &&
-    pending.prs.every((pr) => typeof pr === "object" && pr !== null && typeof pr.url === "string" && (pr.reason === "new" || pr.reason === "re-review") && validFacts(pr.facts)) &&
+    pending.prs.every((pr) => typeof pr === "object" && pr !== null && typeof pr.url === "string" && validFacts(pr.facts)) &&
     typeof pending.queuedAt === "string" &&
     Number.isInteger(pending.attempts) &&
     typeof pending.nextAt === "string" &&
@@ -208,6 +217,7 @@ function validate(value: unknown, file: string): State {
     if (item.lastCommentId !== null && !Number.isInteger(item.lastCommentId)) fail(`ticket ${number} has a malformed lastCommentId`);
     if (item.ignored !== undefined && typeof item.ignored !== "boolean") fail(`ticket ${number} has a malformed ignored flag`);
     if (item.announcement !== undefined && !validAnnouncement(item.announcement)) fail(`ticket ${number} has a malformed announcement`);
+    if (item.announced !== undefined && !(Array.isArray(item.announced) && item.announced.every((url) => typeof url === "string"))) fail(`ticket ${number} has a malformed announced list`);
     if (item.feedback !== undefined && !validFeedback(item.feedback)) fail(`ticket ${number} has a malformed feedback record`);
     const attempt = item.attempt;
     if (attempt === null) continue;

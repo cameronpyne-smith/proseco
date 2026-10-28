@@ -18,7 +18,7 @@ import { deliverAnnouncements, deliverTicket, isAnnounceable, pullLocation, type
 import { appendToComment } from "./comment.ts";
 import { TurnLock } from "./lock.ts";
 import { allPassed, checkOllama, formatChecks, runChecks, type CheckResult, type StartupCheck } from "./startup.ts";
-import { isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, saveState, withAnnouncement, type AnnouncedPr, type PendingAnnouncement } from "./state.ts";
+import { announcedPrs, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, saveState, withAnnouncement, type AnnouncedPr, type PendingAnnouncement } from "./state.ts";
 
 const USAGE = "usage: fixer find | fixer read <ticket number> | fixer run <ticket number | pull request URL> [--dry-run | --local] | fixer announce <ticket number> [--dry-run] [--now] | fixer sandbox <repo> <lockfile path> -- <command...> | fixer sandbox --sweep | fixer check | fixer serve [--only <ticket number,...>]";
 
@@ -95,14 +95,18 @@ async function attemptTicket(config: Config & { fixer: FixerConfig }, tokens: To
 }
 
 async function lastAttemptAnnouncement(config: Config & { fixer: FixerConfig }, deps: Pick<DeliveryDeps, "pull" | "bot">, number: number, now: Date): Promise<PendingAnnouncement> {
-  const last = lastAttempt(loadState(config.fixer.stateFile), number);
+  const state = loadState(config.fixer.stateFile);
+  const last = lastAttempt(state, number);
   if (!last || last.prUrls.length === 0) throw new Error(`#${number} has no pull requests in the fixer's state`);
+  const announced = new Set(announcedPrs(state, number));
+  const fresh = last.prUrls.filter((url) => !announced.has(url));
+  if (fresh.length === 0) throw new Error(`#${number}'s pull requests were all announced already, and a pull request is announced only once`);
   const prs: AnnouncedPr[] = [];
-  for (const url of last.prUrls) {
+  for (const url of fresh) {
     const location = pullLocation(url);
     if (!location || location.org !== config.org) continue;
     const details = await deps.pull(location);
-    if (isAnnounceable(deps, url, details)) prs.push({ url, reason: "new", facts: { title: details.title, major: / \(major\)$/.test(details.title), lockfile: "", packages: [] } });
+    if (isAnnounceable(deps, url, details)) prs.push({ url, facts: { title: details.title, major: / \(major\)$/.test(details.title), lockfile: "", packages: [] } });
   }
   if (prs.length === 0) throw new Error(`#${number} has no open, ready pull request by ${config.app.bot}[bot] to announce`);
   return { prs, queuedAt: now.toISOString(), attempts: 0, nextAt: now.toISOString(), lastError: null };
@@ -121,7 +125,9 @@ async function announceCommand(config: Config & { fixer: FixerConfig }, tokens: 
   const delivery: DeliveryDeps = {
     ...deps,
     loadState: () => loadState(fixer.stateFile),
-    saveState: (state) => saveState(fixer.stateFile, state),
+    saveState: (state) => {
+      if (!options.dryRun) saveState(fixer.stateFile, state);
+    },
     send: async (html) => {
       console.log(html);
       if (!options.dryRun) await teams!.send(html);
