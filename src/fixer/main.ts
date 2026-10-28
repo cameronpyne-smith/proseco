@@ -293,7 +293,7 @@ async function serve(only: ReadonlySet<number> | null): Promise<void> {
   await runDaemon({
     pollMs: fixer.pollMinutes * 60_000,
     find: async () => {
-      const found = await findTickets(config, tokens, await ticketRepo(), stamped, only ?? undefined);
+      const found = await findTickets(config, tokens, await ticketRepo(), { log: stamped, ...(only ? { only } : { forgetClosed: true }) });
       bodies = found.bodies;
       return found.requests;
     },

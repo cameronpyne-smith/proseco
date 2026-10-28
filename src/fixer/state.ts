@@ -81,6 +81,13 @@ function withEntry(state: State, ticket: number, next: TicketState): State {
   return { ...state, tickets: { ...state.tickets, [String(ticket)]: next } };
 }
 
+export function forgetClosedTickets(state: State, open: ReadonlySet<number>): { state: State; forgotten: number[] } {
+  const forgotten = Object.entries(state.tickets).flatMap(([number, item]) => (open.has(Number(number)) || item.announcement ? [] : [Number(number)]));
+  if (forgotten.length === 0) return { state, forgotten };
+  const tickets = Object.fromEntries(Object.entries(state.tickets).filter(([number]) => !forgotten.includes(Number(number))));
+  return { state: { ...state, tickets }, forgotten };
+}
+
 export function pullState(state: State, url: string): PullState {
   return state.pulls?.[url] ?? {};
 }

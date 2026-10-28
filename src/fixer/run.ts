@@ -14,7 +14,7 @@ import { scanPulls, type PullRedo, type PullSource } from "./pulls.ts";
 import { GitStore } from "./git.ts";
 import { Releases } from "./releases.ts";
 import { Docker } from "./sandbox/docker.ts";
-import { lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type State } from "./state.ts";
+import { forgetClosedTickets, lastCommentId, loadState, recordComment, recordIgnored, saveState, type Decision, type PullRequestStatus, type State } from "./state.ts";
 import { readTeamsCredential, TeamsClient } from "./teams.ts";
 import { workUnit, type Published, type PublishRequest, type Publisher } from "./unit.ts";
 
@@ -125,9 +125,23 @@ export async function scanTicketPulls(
   return scanPulls(requests, pullSource(config.org, tokens), state, { org: config.org, ticketsRepo: config.tickets.repo, bot: config.app.bot, acknowledge, ...(config.fixer.reviewer ? { reviewer: config.fixer.reviewer.bot } : {}), ...(log ? { log } : {}), ...(only ? { only } : {}) });
 }
 
-export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, log?: (line: string) => void, only?: ReadonlySet<number>): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
-  const open = (await tickets.list(requestFilters(config.tickets.find))).filter((ticket) => !only || only.has(ticket.number));
-  const commanded = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, loadState(config.fixer.stateFile), true);
+export interface FindOptions {
+  log?(line: string): void;
+  only?: ReadonlySet<number>;
+  forgetClosed?: boolean;
+}
+
+export async function findTickets(config: Config & { fixer: FixerConfig }, tokens: TokenProvider, tickets: TicketRepo, options: FindOptions = {}): Promise<{ requests: FixRequest[]; bodies: Map<number, string> }> {
+  const { log, only } = options;
+  const listed = await tickets.list(requestFilters(config.tickets.find));
+  const open = listed.filter((ticket) => !only || only.has(ticket.number));
+  let state = loadState(config.fixer.stateFile);
+  if (options.forgetClosed && !only) {
+    const forgot = forgetClosedTickets(state, new Set(listed.map((ticket) => ticket.number)));
+    if (forgot.forgotten.length > 0) log?.(`forgot closed tickets ${forgot.forgotten.map((number) => `#${number}`).join(", ")}`);
+    state = forgot.state;
+  }
+  const commanded = await applyCommands(fixRequests(open, config.tickets.find.creators), tickets, config.app.bot, state, true);
   saveState(config.fixer.stateFile, commanded.state);
   const found = await scanTicketPulls(config, tokens, commanded.requests, commanded.state, true, log, only);
   saveState(config.fixer.stateFile, found.state);

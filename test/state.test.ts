@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { bodyHash, decide, emptyState, feedbackRounds, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, withoutPulls, withPull, pullState, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
+import { bodyHash, decide, emptyState, feedbackRounds, forgetClosedTickets, isIgnored, lastAttempt, lastCommentId, loadState, pendingAnnouncement, recordAttempt, recordComment, recordFeedback, recordIgnored, saveState, withAnnouncement, withoutPulls, withPull, pullState, type Attempt, type PendingAnnouncement } from "../src/fixer/state.ts";
 
 const BODY = "<!-- proseco:acme-api -->\n\nrows";
 
@@ -185,6 +185,19 @@ describe("pending announcements", () => {
       writeFileSync(file, JSON.stringify({ version: 1, tickets: { "12": { attempt: null, lastCommentId: null, announcement: bad } } }));
       assert.throws(() => loadState(file), /malformed announcement/);
     }
+  });
+});
+
+describe("forgetting closed tickets", () => {
+  it("drops the entries of tickets no longer open, keeps open ones and any with an announcement still to post", () => {
+    const pending: PendingAnnouncement = { prs: [], queuedAt: "t", attempts: 0, nextAt: "t", lastError: null };
+    const state = withAnnouncement(recordIgnored(recordAttempt(recordAttempt(emptyState(), 12, attempt()), 13, attempt()), 14, true), 15, pending);
+    const forgot = forgetClosedTickets(state, new Set([12]));
+    assert.deepEqual(forgot.forgotten, [13, 14]);
+    assert.deepEqual(Object.keys(forgot.state.tickets), ["12", "15"]);
+    assert.deepEqual(lastAttempt(forgot.state, 12), attempt());
+    const kept = forgetClosedTickets(forgot.state, new Set([12]));
+    assert.equal(kept.state, forgot.state);
   });
 });
 
