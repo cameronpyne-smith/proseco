@@ -53,6 +53,10 @@ function findingOf(row: TicketRow): Finding {
   };
 }
 
+export function imageTicketUnit(key: string): PrUnit {
+  return { kind: "image", source: key, ecosystem: null, branch: `proseco/${refSafe(key)}`, fixes: [] };
+}
+
 export function planUnits(rows: TicketRow[], org: string): PrUnit[] {
   const rowByFinding = new Map<Finding, TicketRow>();
   const findings = rows.map((row) => {

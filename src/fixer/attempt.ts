@@ -1,7 +1,7 @@
 import { parseRawTable } from "../core/ticket.ts";
 import { announcements, queueAnnouncement } from "./announce.ts";
 import { renderComment, shownPulls, statusLine, workingComment, type PullState, type UnitOutcomeReport, type UnitReport } from "./comment.ts";
-import { planUnits, type PrUnit } from "./plan.ts";
+import { imageTicketUnit, planUnits, type PrUnit } from "./plan.ts";
 import { redoDecision, redoReply, type PullRedo } from "./pulls.ts";
 import { bodyHash, decide, isIgnored, lastAttempt, recordAttempt, recordFeedback, recordShown, shownInComment, type Decision, type State } from "./state.ts";
 import type { LoopStats, TraceEntry } from "./agent/loop.ts";
@@ -116,7 +116,8 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
     await deps.markWorking(workingComment(hash));
     if (shownInComment(state, ticket.number) !== null) deps.saveState?.(recordShown(state, ticket.number, null));
   }
-  const planned = planUnits(parseRawTable(ticket.body), deps.org);
+  const imageTicket = ticket.key !== ticket.repo;
+  const planned = imageTicket ? [imageTicketUnit(ticket.key)] : planUnits(parseRawTable(ticket.body), deps.org);
   const redoOf = (unit: PrUnit) => pulls.find((pull) => pull.branch === unit.branch) ?? null;
   const units = redoOnly ? planned.filter((unit) => redoOf(unit)) : planned;
   const reports: UnitReportDetail[] = [];
@@ -126,7 +127,7 @@ export async function runAttempt(input: AttemptInput, deps: AttemptDeps): Promis
     headSha = await deps.fetch();
     for (const unit of units) {
       if (deps.shouldStop?.()) throw new ShutdownRequested();
-      const { result, review } = await work(unit, headSha, ticket.key !== ticket.repo, redoOf(unit), deps);
+      const { result, review } = await work(unit, headSha, imageTicket, redoOf(unit), deps);
       reports.push({ label: labelOf(unit), outcome: result.outcome, unit, result, review });
     }
   } finally {

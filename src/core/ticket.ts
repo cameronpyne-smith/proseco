@@ -251,7 +251,7 @@ export function cvesInBody(body: string): Set<string> {
   return new Set(rawCells(body).map((cells) => cells[0]!));
 }
 
-const PACKAGE_NAME = /^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*\/)?[A-Za-z0-9][A-Za-z0-9._+~:-]*$/;
+const PACKAGE_NAME = /^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*\/[A-Za-z0-9][A-Za-z0-9._+~:-]*|[A-Za-z0-9][A-Za-z0-9._+~:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._+~-]*)*)$/;
 
 function validSource(source: string): boolean {
   if (source === "" || source.startsWith("/") || /[\s\0\\]/.test(source)) return false;

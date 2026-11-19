@@ -313,6 +313,16 @@ describe("attempt", () => {
     assert.equal(result.state.tickets["13"]!.attempt!.outcome, "gave-up");
   });
 
+  it("reports an image ticket as unsupported without reading its rows, so a row the fixer cannot use does not fail it", async () => {
+    const key = "docker.io/acme/tool";
+    const body = renderBody(key, [finding({ repo: "acme-infra", imageKey: key, ecosystem: "os", package: "not a package", source: key })], ENRICHMENT, { org: "acme-org", maintainedIn: "acme-ops" });
+    const run = harness();
+    const result = await runAttempt({ ticket: { number: 14, key, repo: "acme-infra", body }, force: false, state: emptyState(), local: false }, run.deps);
+    assert.deepEqual(run.worked, []);
+    assert.match(run.comments[0]!, /`docker\.io\/acme\/tool` \(image\): no pull request: image tickets are not attempted yet/);
+    assert.equal(result.state.tickets["14"]!.attempt!.outcome, "gave-up");
+  });
+
   it("tells the ticket to rebuild an image built from the repository, without working it, and still works the lockfile", async () => {
     const own = ticket([finding({}), finding({ cve: "CVE-2026-0021", ecosystem: "os", package: "zlib1g", installed: "1:1.3.dfsg-3.1ubuntu2.2", fixedIn: "1:1.3.dfsg-3.1ubuntu2.3", source: "ghcr.io/acme-org/acme-api" })]);
     const run = harness();

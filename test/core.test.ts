@@ -307,9 +307,9 @@ describe("reading a ticket back", () => {
 
   it("refuses a raw row whose package or source could reach outside the repository or a shell", () => {
     const body = (pkg: string, source: string) => render("acme-docs", [finding({ package: pkg, source })], enrichment());
-    for (const pkg of ["a b", "x;rm", "$(id)", "../x", "a/b", "@scope", "-x"]) assert.throws(() => parseRawTable(body(pkg, "package-lock.json")), /invalid package name/, pkg);
+    for (const pkg of ["a b", "x;rm", "$(id)", "../x", "a/../b", "a//b", "a/", "a/-b", "a/.b", "@scope", "@scope/a/b", "-x"]) assert.throws(() => parseRawTable(body(pkg, "package-lock.json")), /invalid package name/, pkg);
     for (const source of ["../package-lock.json", "/etc/x", "a//b", "a/./b", "a/../b", "a b/uv.lock", "a\\b"]) assert.throws(() => parseRawTable(body("lodash", source)), /invalid source path/, source);
-    for (const pkg of ["@babel/core", "Pillow", "zope.interface", "Newtonsoft.Json", "libstdc++6", "libssl1.1", "python3.11-minimal", "gcc-12-base"]) assert.equal(parseRawTable(body(pkg, "web/package-lock.json"))[0]!.package, pkg);
+    for (const pkg of ["@babel/core", "Pillow", "zope.interface", "Newtonsoft.Json", "libstdc++6", "libssl1.1", "python3.11-minimal", "gcc-12-base", "golang.org/x/crypto", "github.com/go-jose/go-jose/v3", "k8s.io/client-go"]) assert.equal(parseRawTable(body(pkg, "web/package-lock.json"))[0]!.package, pkg);
     assert.equal(parseRawTable(body("lodash", "ghcr.io/acme/app:1.2"))[0]!.source, "ghcr.io/acme/app:1.2");
   });
 
